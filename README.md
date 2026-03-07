@@ -1,63 +1,71 @@
 ﻿# Halo
 
-Halo is a Windows desktop media toolbox built with Tauri 2, React 19, TypeScript, and Rust. It focuses on local desktop playback and source management for personal media workflows, including live streams, VOD source import/parsing, music control, lyrics retrieval, mini-player mode, and desktop-oriented settings.
+Halo 是一个基于 Tauri 2、React 19、TypeScript 与 Rust 构建的 Windows 桌面媒体工具箱。项目目前聚焦于桌面端的媒体播放、源管理与兼容能力，包括直播源、点播源导入与解析、音乐控制、歌词获取、迷你播放器、桌面设置与更新能力等。
 
-## Open Source Status
+## 项目定位
 
-This repository is maintained as a public open-source project.
+本仓库现阶段作为 `Halo` 项目的成果仓库使用，公开托管当前工作区内容，并持续记录项目源码、资源、构建产物、研究文档与兼容性实现。
 
-- The repository source code is published under the MIT License. See [LICENSE](./LICENSE).
-- Third-party dependencies, bundled resources, and compatibility artifacts keep their own licenses or upstream terms where applicable.
-- If a file or resource comes from an external project, its original source and licensing should be preserved or recorded in this repository before redistribution.
+## 开源说明
 
-A detailed attribution and provenance note is available in [docs/OPEN_SOURCE_NOTICE.md](./docs/OPEN_SOURCE_NOTICE.md).
+本仓库按公开开源项目方式维护。
 
-## What The Project Contains
+- 仓库中由 Halo 项目原创编写的源码，默认按根目录 [LICENSE](./LICENSE) 中的 MIT License 发布。
+- 第三方依赖、第三方资源、兼容性桥接文件、Jar 包、构建产物等，仍然分别遵循其原始许可证或上游使用条款。
+- 如果仓库中存在借鉴、复制、改写、适配、内嵌的第三方代码或资源，必须保留原始来源说明，并在文档中记录来源与许可边界。
 
-Halo currently includes these major areas:
+详细来源与归属说明见 [docs/OPEN_SOURCE_NOTICE.md](./docs/OPEN_SOURCE_NOTICE.md)。
 
-- Desktop shell and UI built with Tauri + React.
-- Media source management for live/VOD workflows.
-- TVBox-like configuration import, parsing, and compatibility helpers.
-- Video playback helpers for HLS, FLV, MPEG-TS, DASH, and direct media links.
-- Music control, lyrics providers, and mini-player interaction.
-- Windows-specific integrations such as tray, global shortcuts, autostart, updater hooks, and system/media controls.
-- Research and compatibility notes under `docs/` for media source formats and parsing behavior.
+## 项目内容
 
-## Repository Structure
+当前 Halo 仓库主要包含以下内容：
 
-- `src/`: React UI, pages, and front-end modules.
-- `src-tauri/src/`: Rust backend commands, media services, settings, updater, compatibility helpers, and music/media subsystems.
-- `src-tauri/resources/`: Runtime resources bundled with the desktop app.
-- `docs/`: project notes, parsing research, and source-format documentation.
-- `scripts/`: build and packaging scripts.
-- `tools/`: local development helpers.
+- 基于 Tauri + React 的桌面应用主程序。
+- 直播、点播、播放器窗口、悬浮播放器等前端页面与交互模块。
+- 基于 Rust 的桌面端后端命令、设置管理、更新器、媒体服务、歌词服务、网络兼容逻辑。
+- TVBox 类配置导入、解析、兼容处理、桥接逻辑与相关实验性资源。
+- 与桌面播放相关的 HLS、FLV、MPEG-TS、DASH 等能力接入。
+- 与音乐播放、歌词获取、历史记录、迷你模式相关的功能实现。
+- `docs/` 下的研究资料、格式文档、调试记录、样例与来源说明。
+- 当前工作区中的构建结果、成果产物、临时验证材料与工程辅助脚本。
 
-## Main Capabilities
+## 目录结构
 
-- Import or manage media source configurations.
-- Browse live/VOD related pages and player windows.
-- Handle source parsing and network compatibility rules.
-- Run a floating or mini player workflow on desktop.
-- Control music playback and retrieve lyrics from supported providers.
-- Configure updater endpoints, background assets, startup behavior, and shortcut preferences.
+- `src/`：React 前端页面、组件、模块与业务逻辑。
+- `src-tauri/src/`：Rust 后端命令、媒体逻辑、设置、更新器、兼容与系统集成代码。
+- `src-tauri/resources/`：应用运行时资源与兼容性资源。
+- `docs/`：项目说明、研究文档、格式分析、来源记录。
+- `scripts/`：构建、打包、资源处理脚本。
+- `tools/`：开发辅助工具、解包结果、测试辅助脚本。
+- `release-artifacts/`：打包产物与发布材料。
+- `temp/`、`tmp/`：阶段性实验、调试和临时文件。
+- `src-tauri/target/`：Rust/Tauri 构建输出目录。
 
-## Development Stack
+## 主要能力
 
-- Frontend: React, TypeScript, Vite.
-- Desktop runtime: Tauri 2.
-- Backend: Rust.
-- Playback/network ecosystem: hls.js, flv.js, dash.js, mpegts.js, mpv-related integration, and custom Rust media helpers.
+- 导入与管理媒体源配置。
+- 直播与点播内容浏览、播放与窗口化显示。
+- TVBox 类配置的兼容解析与网络策略处理。
+- 桌面端悬浮播放器与迷你播放器模式。
+- 音乐控制、歌词抓取、播放历史与桌面交互。
+- 更新源、背景资源、启动行为、快捷键等设置项管理。
 
-## Local Development
+## 技术栈
 
-Requirements:
+- 前端：React、TypeScript、Vite
+- 桌面运行时：Tauri 2
+- 后端：Rust
+- 播放与媒体相关生态：hls.js、flv.js、dash.js、mpegts.js、mpv 相关集成，以及自定义 Rust 媒体处理逻辑
+
+## 本地开发
+
+环境要求：
 
 - Node.js / pnpm
-- Rust toolchain
-- Tauri prerequisites for Windows
+- Rust 工具链
+- Windows 下的 Tauri 依赖环境
 
-Common commands:
+常用命令：
 
 ```bash
 pnpm install
@@ -67,40 +75,41 @@ pnpm test
 pnpm tauri dev
 ```
 
-## Open Source, Compliance, and Content Boundary
+## 开源、借鉴与合规要求
 
-Halo is an application framework and compatibility project. The repository does not claim ownership of third-party media content, streaming endpoints, or upstream site data.
+Halo 是一个应用工程与兼容性项目，本仓库不主张拥有第三方媒体内容、远程站点数据、用户导入源、上游站点接口或第三方生态资源的所有权。
 
-Please pay attention to the following:
+请遵守以下边界：
 
-- Do not use this project to distribute media content without authorization.
-- User-imported source lists, remote endpoints, and third-party site configurations must be used only when you have the legal right to access and process them.
-- If you redistribute this repository publicly, keep attribution information intact and add provenance for any newly introduced third-party code, assets, or jars.
-- Before publishing bundled third-party artifacts, verify that redistribution is allowed by their upstream licenses.
+- 不得利用本项目未经授权分发受版权保护的媒体内容。
+- 用户自行导入的源地址、远程接口、站点配置，仅应在具备合法授权的前提下使用。
+- 如果对外发布、镜像、再分发本仓库，必须保留来源说明、许可证声明与第三方归属记录。
+- 对于仓库中 bundled 的第三方 Jar、类文件、桥接资源、图标或其他二进制内容，发布前必须逐项确认其再分发许可。
 
-## Inspiration and Referenced Ecosystems
+## 借鉴与来源说明
 
-This project draws from and interoperates with several public ecosystems and tools. At minimum, public-facing documentation should retain attribution to the following kinds of upstream work when relevant:
+本项目在框架选型、兼容目标、行为参考或生态接入层面，参考或对接了以下公开项目与官方资料：
 
-- [Tauri](https://tauri.app/)
-- [React](https://react.dev/)
-- [Vite](https://vite.dev/)
-- [hls.js](https://github.com/video-dev/hls.js)
-- [dash.js](https://github.com/Dash-Industry-Forum/dash.js)
-- [flv.js](https://github.com/bilibili/flv.js)
-- [mpegts.js](https://github.com/xqq/mpegts.js)
+- [Tauri 官方网站](https://tauri.app/)
+- [React 官方网站](https://react.dev/)
+- [Vite 官方网站](https://vite.dev/)
+- [hls.js 官方仓库](https://github.com/video-dev/hls.js)
+- [dash.js 官方仓库](https://github.com/Dash-Industry-Forum/dash.js)
+- [flv.js 官方仓库](https://github.com/bilibili/flv.js)
+- [mpegts.js 官方仓库](https://github.com/xqq/mpegts.js)
 - [FongMi/TV](https://github.com/FongMi/TV)
 - [yoursmile66/TVBox](https://github.com/yoursmile66/TVBox)
 
-These links are listed as upstream references for framework use, compatibility targets, or ecosystem context. They do not imply endorsement.
+上述条目用于说明项目所依赖的框架来源、兼容背景或生态上下文，不代表这些上游项目对 Halo 进行背书，也不表示 Halo 为其官方衍生发行版。
 
-## Notes For Future Contributions
+## 后续新增内容的要求
 
-When adding borrowed code, adapted logic, copied assets, or bundled binaries:
+如果后续继续向仓库加入借鉴代码、改写逻辑、复制资源、内嵌二进制、构建成果或第三方文件，至少需要补充以下信息：
 
-1. Record the original source URL.
-2. Record the upstream license.
-3. Mark whether the file was copied, modified, or only used as a behavioral reference.
-4. Update `docs/OPEN_SOURCE_NOTICE.md`.
+1. 原始来源链接。
+2. 上游项目或作者。
+3. 上游许可证。
+4. 属于复制、修改、嵌入，还是仅行为参考。
+5. 是否存在再分发限制。
 
-That keeps the repository publishable as an open-source project without losing provenance.
+这样可以保证仓库在成果归档阶段仍保留清晰的来源链路与开源边界。

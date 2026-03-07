@@ -1,95 +1,97 @@
-﻿# Open Source Notice And Provenance
+﻿# 开源说明与来源记录
 
-This repository is intended to remain a public open-source project. This file records the current provenance boundary for the Halo workspace and should be updated whenever new third-party code, assets, or bundled binaries are introduced.
+本仓库计划持续以公开开源项目的方式维护。本文件用于记录当前 Halo 工作区的来源边界、开源边界与第三方材料归属情况；后续只要新增第三方代码、资源、二进制文件、构建成果或文档改编内容，都应同步更新本文件。
 
-## 1. Licensing Boundary
+## 1. 许可边界
 
-- Unless a file states otherwise, original source code authored for Halo is released under the MIT License in the repository root.
-- Third-party dependencies installed through npm, Cargo, Maven-style jars, or other package managers remain under their own upstream licenses.
-- Bundled compatibility resources, jars, icons, and other embedded artifacts may have separate redistribution terms and are not implicitly relicensed by the root MIT license.
+- 除非文件内另有说明，Halo 项目原创编写的源码默认按仓库根目录 `LICENSE` 中的 MIT License 发布。
+- 通过 npm、Cargo、Maven 仓库或其他包管理方式引入的第三方依赖，仍然遵循各自上游许可证。
+- 仓库中的兼容性资源、Jar 包、图标、类文件、桥接文件、构建成果等二进制内容，不因根目录 MIT 许可证而自动改为 MIT。
 
-## 2. Project Positioning
+## 2. 项目归属定位
 
-Halo is a desktop application project and compatibility toolkit.
+Halo 是一个桌面应用工程与兼容性工具项目。
 
-It does **not** claim ownership of:
+本仓库**不主张拥有**以下内容的所有权：
 
-- Third-party media catalog data
-- Streaming endpoints
-- User-imported source lists
-- Remote site configurations
-- Upstream spider/jar ecosystems
+- 第三方媒体目录数据
+- 远程流媒体地址
+- 用户自行导入的源列表
+- 第三方站点配置与接口
+- 上游 spider / jar 生态资源
 
-Anyone publishing, forking, or redistributing this repository should verify that their use of external resources is lawful and that upstream notices are preserved.
+任何对外发布、镜像、再分发或商业化使用仓库内容的人，都应自行确认相关内容的合法性，并保留上游来源与许可证说明。
 
-## 3. Referenced Upstream Projects And Ecosystems
+## 3. 当前涉及的上游项目与公开生态
 
-The current codebase or documentation references, integrates, or targets behavior from the following public projects/ecosystems:
+当前代码库或文档中，已经引用、接入、适配或参考了以下公开项目 / 官方资料：
 
 - Tauri
-  - Official site: <https://tauri.app/>
-  - Role: desktop runtime and application shell.
+  - 官方网站：<https://tauri.app/>
+  - 作用：桌面应用运行时与壳层框架。
 - React
-  - Official site: <https://react.dev/>
-  - Role: front-end UI framework.
+  - 官方网站：<https://react.dev/>
+  - 作用：前端 UI 框架。
 - Vite
-  - Official site: <https://vite.dev/>
-  - Role: front-end build and dev server.
+  - 官方网站：<https://vite.dev/>
+  - 作用：前端构建与开发服务器。
 - hls.js
-  - Official repository: <https://github.com/video-dev/hls.js>
-  - Role: HLS playback support in the web layer.
+  - 官方仓库：<https://github.com/video-dev/hls.js>
+  - 作用：Web 层 HLS 播放支持。
 - dash.js
-  - Official repository: <https://github.com/Dash-Industry-Forum/dash.js>
-  - Role: DASH playback support.
+  - 官方仓库：<https://github.com/Dash-Industry-Forum/dash.js>
+  - 作用：DASH 播放支持。
 - flv.js
-  - Official repository: <https://github.com/bilibili/flv.js>
-  - Role: FLV playback support.
+  - 官方仓库：<https://github.com/bilibili/flv.js>
+  - 作用：FLV 播放支持。
 - mpegts.js
-  - Official repository: <https://github.com/xqq/mpegts.js>
-  - Role: MPEG-TS playback support.
+  - 官方仓库：<https://github.com/xqq/mpegts.js>
+  - 作用：MPEG-TS 播放支持。
 - FongMi/TV
-  - Official repository: <https://github.com/FongMi/TV>
-  - Role: ecosystem/context reference for TVBox-compatible configuration and behavior.
+  - 官方仓库：<https://github.com/FongMi/TV>
+  - 作用：TVBox 类配置与行为兼容背景参考。
 - yoursmile66/TVBox
-  - Official repository: <https://github.com/yoursmile66/TVBox>
-  - Role: ecosystem/context reference; the current codebase contains compatibility logic and URL handling around this ecosystem.
+  - 官方仓库：<https://github.com/yoursmile66/TVBox>
+  - 作用：当前项目中的部分兼容逻辑与 URL 处理参考生态。
 
-These entries document source attribution and interoperability context. They do not imply that Halo is an official derivative, affiliate, or endorsed distribution of any upstream project.
+这些条目仅用于记录来源、兼容背景与生态上下文，不代表 Halo 为其官方衍生发行版，也不代表上游项目对 Halo 进行任何形式的背书。
 
-## 4. Bundled Resources Requiring Extra Care
+## 4. 当前需要重点关注的资源目录
 
-The repository currently contains bundled runtime resources under paths such as:
+仓库中当前存在以下运行时资源或兼容性资源目录：
 
 - `src-tauri/resources/`
 - `src-tauri/resources/jar/`
 - `src-tauri/resources/local_spiders/`
+- `com/`
+- `META-INF/`
 
-Before redistributing those files in a public release, verify:
+在对外公开发布前，应逐项核对：
 
-- original source URL
-- original license or permission status
-- whether modification was performed
-- whether redistribution is allowed
+- 原始来源 URL
+- 原始许可证或授权状态
+- 是否进行过修改
+- 是否允许公开再分发
 
-If a bundled file originates from a third party, add a per-file or per-directory note describing its origin.
+如果某个目录或文件来源于第三方，应在目录说明、README、附属文档或单独 notice 中补充更细的来源记录。
 
-## 5. Documentation And Research Materials
+## 5. 文档与研究资料要求
 
-The `docs/` directory contains project notes, source-format research, parsing notes, and interoperability documentation. If any document is copied or adapted from an external author, the copied/adapted document should include:
+`docs/` 目录下包含项目说明、研究过程、格式分析、解析记录与兼容性文档。如果其中任意文档来自外部作者、外部项目或改编自公开资料，应补充以下信息：
 
-- original author or project name
-- original URL
-- adaptation scope
-- original license if known
+- 原作者或原项目名称
+- 原始链接
+- 改编范围
+- 原始许可证（如果已知）
 
-## 6. Contribution Rule For Borrowed Material
+## 6. 后续新增借鉴内容时必须记录的信息
 
-When adding borrowed material to this repository, contributors should record at least:
+如果后续向本仓库新增借鉴代码、复制资源、修改后的上游文件、嵌入式二进制、构建产物或其他第三方材料，至少需要记录：
 
-1. Source URL.
-2. Upstream project or author.
-3. Upstream license.
-4. Whether the material was copied, modified, embedded, or only behaviorally referenced.
-5. Any redistribution limitation.
+1. 原始来源链接。
+2. 上游项目或作者。
+3. 上游许可证。
+4. 属于复制、修改、嵌入还是仅行为参考。
+5. 是否存在再分发限制。
 
-This is the minimum bar for keeping the repository openly published with clear provenance.
+这是保证 Halo 在成果归档和公开开源阶段仍具备清晰来源链路的最低要求。
