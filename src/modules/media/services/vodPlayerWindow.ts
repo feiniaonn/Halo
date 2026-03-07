@@ -1,0 +1,106 @@
+import { emitTo } from "@tauri-apps/api/event";
+import { isTauri } from "@tauri-apps/api/core";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
+import { EVENT_VOD_PLAYER_LAUNCH } from "@/modules/shared/services/events";
+import type { VodPlayerLaunchPayload } from "@/modules/media/types/vodWindow.types";
+
+export const VOD_PLAYER_WINDOW_LABEL = "vod_player";
+
+const VOD_PLAYER_BOOTSTRAP_KEY = "halo_vod_player_bootstrap_payload_v1";
+
+function buildVodPlayerUrl(): string {
+    const next = new URL(window.location.href);
+    next.searchParams.set("window", VOD_PLAYER_WINDOW_LABEL);
+    next.hash = "";
+    return next.toString();
+}
+
+function rememberLaunchPayload(payload: VodPlayerLaunchPayload): void {
+    try {
+        localStorage.setItem(VOD_PLAYER_BOOTSTRAP_KEY, JSON.stringify(payload));
+    } catch {
+        // Ignore
+    }
+}
+
+async function emitLaunchPayload(payload: VodPlayerLaunchPayload): Promise<void> {
+    await emitTo(VOD_PLAYER_WINDOW_LABEL, EVENT_VOD_PLAYER_LAUNCH, payload);
+}
+
+async function ensureFocused(win: WebviewWindow): Promise<void> {
+    await win.unminimize().catch(() => void 0);
+    await win.show();
+    await win.setFocus();
+}
+
+export function readBootstrappedVodLaunchPayload(): VodPlayerLaunchPayload | null {
+    try {
+        const raw = localStorage.getItem(VOD_PLAYER_BOOTSTRAP_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw) as VodPlayerLaunchPayload;
+    } catch {
+        return null;
+    }
+}
+
+export function clearBootstrappedVodLaunchPayload(): void {
+    try {
+        localStorage.removeItem(VOD_PLAYER_BOOTSTRAP_KEY);
+    } catch {
+        // Ignore
+    }
+}
+
+export async function openVodPlayerWindow(payload: VodPlayerLaunchPayload): Promise<void> {
+    if (!isTauri()) return;
+
+    rememberLaunchPayload(payload);
+
+    const existing = await WebviewWindow.getByLabel(VOD_PLAYER_WINDOW_LABEL);
+    if (existing) {
+        await ensureFocused(existing);
+        await emitLaunchPayload(payload);
+        return;
+    }
+
+    const mainWindow = getCurrentWindow();
+    const size = await mainWindow.innerSize();
+    const scaleFactor = await mainWindow.scaleFactor();
+    const width = size.width / scaleFactor;
+    const height = size.height / scaleFactor;
+
+    const win = new WebviewWindow(VOD_PLAYER_WINDOW_LABEL, {
+        url: buildVodPlayerUrl(),
+        title: "VOD Player",
+        width: width,
+        height: height,
+        minWidth: 960,
+        minHeight: 620,
+        transparent: true,
+        decorations: false,
+        shadow: false,
+        center: true,
+        focus: true,
+        visible: true,
+        resizable: true,
+        parent: "main",
+    });
+
+    await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        void win.once("tauri://created", () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+        });
+        void win.once("tauri://error", (event) => {
+            if (settled) return;
+            settled = true;
+            reject(new Error(String(event.payload)));
+        });
+    });
+
+    await ensureFocused(win);
+}

@@ -1,0 +1,52 @@
+export const SETTINGS_MESSAGES = {
+  desktopOnly: "该功能仅在桌面端可用。",
+  unknownError: "未知错误",
+  storage: {
+    switched: "存储位置已更新，新数据会保存在所选目录的 HaloTemp 下。",
+    restored: "已恢复默认存储位置。",
+    switchFailed: "存储位置更新失败",
+    restoreFailed: "默认存储位置恢复失败",
+  },
+  background: {
+    restoredDefault: "已恢复默认背景。",
+    applyFailed: "背景应用失败",
+    setupFailed: "背景设置失败",
+    switchFailed: "背景切换失败",
+    switchedSaved: {
+      image: "已切换到已保存的图片背景。",
+      video: "已切换到已保存的视频背景。",
+    },
+    notSavedYet: {
+      image: "还没有已保存的图片背景，可在下方选择图片。",
+      video: "还没有已保存的视频背景，可在下方选择视频。",
+    },
+    previewFailed: {
+      image: "图片预览失败，可重新选择。",
+      video: "视频预览失败，可重新选择。",
+    },
+    optimizeHint: {
+      enabled: "已开启视频优化组件下载。后续设置视频背景时会在后台自动准备。",
+      disabled: "已关闭视频优化组件下载。当前会继续使用原视频。",
+      notEnabled: "视频优化组件下载未开启。",
+      settingFailed: "视频优化组件设置失败",
+      prepareFailed: "视频优化组件准备失败",
+    },
+    loadFailedPrefix: "背景加载失败",
+  },
+  launchAtLoginFailed: "开机自启设置失败",
+  closeBehaviorFailed: "关闭行为设置失败",
+  miniRestoreModeFailed: "迷你窗口恢复方式设置失败",
+  migration: {
+    noneFound: "未发现可合并的旧数据。",
+    successRemoved: "数据合并完成，旧目录已清理。",
+    successKept: "数据合并完成，旧目录已保留。",
+    canceled: "已取消合并任务。",
+    failed: "合并失败",
+    startOk: "后台数据合并已启动，可继续使用应用。",
+    startFailed: "后台合并启动失败",
+    cancelFailed: "取消合并失败",
+    runFailed: "迁移失败",
+    runDoneRemoved: "迁移完成，旧目录已清理。",
+    runDoneKept: "迁移完成，旧目录已保留。",
+  },
+} as const;

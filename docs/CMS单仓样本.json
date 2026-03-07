@@ -1,0 +1,33 @@
+﻿{
+  "spider": "https://example.com/spider.jar",
+  "logo": "https://example.com/logo.png",
+  "wallpaper": "https://example.com/wallpaper.jpg",
+  "parses": [
+    {
+      "name": "全局解析",
+      "type": 1,
+      "url": "https://example.com/jx?url=",
+      "ext": {
+        "flag": ["qq", "youku"],
+        "header": {
+          "Referer": "https://example.com/"
+        }
+      }
+    }
+  ],
+  "sites": [
+    {
+      "key": "cms_demo",
+      "name": "CMS示例站",
+      "type": 1,
+      "api": "https://cms.example.com/api.php",
+      "searchable": 1,
+      "quickSearch": 0,
+      "filterable": 1,
+      "playUrl": "https://example.com/site-jx?url=",
+      "click": ".btn-play",
+      "playerType": "2",
+      "categories": ["电影", "电视剧"]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "halo",
+  "version": "0.3.14",
+  "identifier": "com.tauri-app.halo",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "halo",
+        "width": 1000,
+        "height": 680,
+        "visible": true,
+        "decorations": true,
+        "transparent": false
+      }
+    ]
+  }
+}

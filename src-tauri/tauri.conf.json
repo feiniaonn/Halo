@@ -1,0 +1,80 @@
+{
+    "$schema":  "https://schema.tauri.app/config/2",
+    "productName":  "Halo",
+    "version":  "0.3.100",
+    "identifier":  "com.tauri-app.halo",
+    "build":  {
+                  "beforeDevCommand":  "pnpm dev",
+                  "devUrl":  "http://127.0.0.1:1420",
+                  "beforeBuildCommand":  "pnpm build",
+                  "frontendDist":  "../dist"
+              },
+    "app":  {
+                "windows":  [
+                                {
+                                    "title":  "halo",
+                                    "width":  1200,
+                                    "height":  700,
+                                    "visible":  false,
+                                    "decorations":  false,
+                                    "transparent":  true,
+                                    "shadow":  false,
+                                    "devtools":  false
+                                }
+                            ],
+                "security":  {
+                                 "csp":  "default-src \u0027self\u0027; img-src \u0027self\u0027 asset: http://asset.localhost https://asset.localhost data: blob: http: https:; media-src \u0027self\u0027 asset: http://asset.localhost https://asset.localhost data: blob: http: https:; style-src \u0027self\u0027 \u0027unsafe-inline\u0027; script-src \u0027self\u0027 \u0027unsafe-inline\u0027; connect-src \u0027self\u0027 ipc: http://ipc.localhost https: http: ws: wss: blob: data:; font-src \u0027self\u0027 data:; frame-src \u0027self\u0027 http: https:; worker-src \u0027self\u0027 blob:;",
+                                 "devCsp":  "default-src \u0027self\u0027 http://127.0.0.1:1420 http://localhost:1420; img-src \u0027self\u0027 asset: http://asset.localhost https://asset.localhost data: blob: http: https: http://127.0.0.1:1420 http://localhost:1420; media-src \u0027self\u0027 asset: http://asset.localhost https://asset.localhost data: blob: http: https: http://127.0.0.1:1420 http://localhost:1420; style-src \u0027self\u0027 \u0027unsafe-inline\u0027 http://127.0.0.1:1420 http://localhost:1420; script-src \u0027self\u0027 \u0027unsafe-inline\u0027 \u0027unsafe-eval\u0027 http://127.0.0.1:1420 http://localhost:1420; connect-src \u0027self\u0027 ipc: http://ipc.localhost https: http: ws: wss: blob: data: http://127.0.0.1:1420 http://localhost:1420 ws://127.0.0.1:1420 ws://localhost:1420; font-src \u0027self\u0027 data:; frame-src \u0027self\u0027 http: https: http://127.0.0.1:1420 http://localhost:1420; worker-src \u0027self\u0027 blob:;",
+                                 "assetProtocol":  {
+                                                       "enable":  true,
+                                                       "scope":  [
+                                                                     "$LOCALDATA/**",
+                                                                     "$APPLOCALDATA/**",
+                                                                     "$APPDATA/**"
+                                                                 ]
+                                                   }
+                             }
+            },
+    "bundle":  {
+                   "active":  true,
+                   "createUpdaterArtifacts":  false,
+                   "resources":  [
+                                     "resources/jar/"
+                                 ],
+                   "targets":  [
+                                   "nsis",
+                                   "msi"
+                               ],
+                   "windows":  {
+                                   "nsis":  {
+                                                "languages":  [
+                                                                  "SimpChinese"
+                                                              ],
+                                                "displayLanguageSelector":  false,
+                                                "installMode":  "currentUser",
+                                                "installerHooks":  "installer-hooks.nsh"
+                                            },
+                                   "wix":  {
+                                               "language":  "zh-CN"
+                                           }
+                               },
+                   "icon":  [
+                                "icons/32x32.png",
+                                "icons/128x128.png",
+                                "icons/128x128@2x.png",
+                                "icons/icon.ico"
+                            ]
+               },
+    "plugins":  {
+                    "updater":  {
+                                    "pubkey":  "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyRkI1NDMwQjFEREEwMDkKUldRSm9OMnhNRlQ3TW9yWExSZmNSekdVcmN0dzkxT2p4dys1WDlzVU5nRk44Mk05RkJiTlRFVnkK",
+                                    "dangerousInsecureTransportProtocol":  true,
+                                    "endpoints":  [
+                                                      "http://192.168.1.120:1421/latest.json"
+                                                  ],
+                                    "windows":  {
+                                                    "installMode":  "passive"
+                                                }
+                                }
+                }
+}

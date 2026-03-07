@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src"],
+  "exclude": [
+    "src/components/LivePlayer.core1.tsx",
+    "src/components/LivePlayer.core2.tsx",
+    "src/components/LivePlayer.ui.tsx",
+    "src/components/VodPlayer.part1.tsx",
+    "src/components/VodPlayer.part2.tsx",
+    "src/pages/MediaPage.part1.tsx",
+    "src/pages/MediaPage.part2.tsx"
+  ],
+  "references": [{ "path": "./tsconfig.node.json" }]
+}

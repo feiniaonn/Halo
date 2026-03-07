@@ -1,0 +1,14 @@
+[Unit]
+Description=Halo Update Server Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/halo-update
+ExecStart=/usr/bin/python3 -m http.server 1421 --bind 0.0.0.0
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
