@@ -1,0 +1,25 @@
+﻿
+> halo@0.3.101 lint
+> eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0
+
+
+D:\Development\Projects\Halo\src\components\LivePlayer.tsx
+  847:8  warning  React Hook useCallback has a missing dependency: 'setActiveKernelDisplay'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+D:\Development\Projects\Halo\src\main.tsx
+  2:1  error  Irregular whitespace not allowed  no-irregular-whitespace
+
+D:\Development\Projects\Halo\src\modules\music\components\MusicLyricsPanel.tsx
+  152:9  warning  The 'lines' logical expression could make the dependencies of useMemo Hook (at line 161) change on every render. To fix this, wrap the initialization of 'lines' in its own useMemo() Hook  react-hooks/exhaustive-deps
+  160:5  error    Unused eslint-disable directive (no problems were reported from 'react-hooks/exhaustive-deps')
+
+D:\Development\Projects\Halo\src\modules\music\hooks\useMusicLyrics.ts
+  2:1  error  Irregular whitespace not allowed  no-irregular-whitespace
+
+D:\Development\Projects\Halo\src\pages\MusicPage.tsx
+  385:9  warning  The 'requestCloseSettings' function makes the dependencies of useEffect Hook (at line 485) change on every render. To fix this, wrap the definition of 'requestCloseSettings' in its own useCallback() Hook  react-hooks/exhaustive-deps
+  484:5  error    Unused eslint-disable directive (no problems were reported from 'react-hooks/exhaustive-deps')
+
+鉁?7 problems (4 errors, 3 warnings)
+  2 errors and 0 warnings potentially fixable with the `--fix` option.
+
