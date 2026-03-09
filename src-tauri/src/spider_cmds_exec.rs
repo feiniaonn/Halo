@@ -33,6 +33,42 @@ fn profile_class_name(site_profile: &Option<SpiderSiteProfile>) -> Option<String
         .map(ToOwned::to_owned)
 }
 
+fn site_requires_anotherds_fallback(class_hint: &str) -> bool {
+    let normalized = class_hint.to_ascii_lowercase();
+    [
+        "douban",
+        "config",
+        "localfile",
+        "ygp",
+        "apprj",
+        "appget",
+        "appnox",
+        "appqi",
+        "appys",
+        "appysv2",
+        "hxq",
+        "bili",
+        "biliys",
+        "xbpq",
+        "jpys",
+        "wwys",
+        "jianpian",
+        "saohuo",
+        "gz360",
+        "liteapple",
+        "czsapp",
+        "sp360",
+        "kugou",
+    ]
+    .iter()
+    .any(|token| normalized.contains(token))
+}
+
+fn site_prefers_compat_runtime(class_hint: &str) -> bool {
+    let normalized = class_hint.to_ascii_lowercase();
+    normalized.contains("hxq") || normalized.contains("douban")
+}
+
 fn build_minimal_site_profile(
     prepared: &PreparedSpiderJar,
     app: &AppHandle,
@@ -176,7 +212,14 @@ fn validate_semantic_payload(method: &str, payload: &str) -> Result<(), String> 
         .unwrap_or(0);
 
     if method == "homeContent" {
-        const DEFAULT_CLASS_NAMES: [&str; 6] = ["电影", "连续剧", "综艺", "动漫", "4K", "体育"];
+        const DEFAULT_CLASS_NAMES: [&str; 6] = [
+            "\u{7535}\u{5f71}",
+            "\u{8fde}\u{7eed}\u{5267}",
+            "\u{7efc}\u{827a}",
+            "\u{52a8}\u{6f2b}",
+            "4K",
+            "\u{4f53}\u{80b2}",
+        ];
 
         if class_names == DEFAULT_CLASS_NAMES && list_len == 0 {
             return Err(
@@ -195,9 +238,134 @@ fn validate_semantic_payload(method: &str, payload: &str) -> Result<(), String> 
 
     Ok(())
 }
+fn summarize_text_payload_for_log(payload: &str) -> String {
+    let trimmed = payload.trim();
+    if trimmed.is_empty() {
+        return "empty".to_string();
+    }
+
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(value) => summarize_json_payload_for_log(&value),
+        Err(_) => format!("text chars={}", trimmed.chars().count()),
+    }
+}
+
+fn summarize_json_payload_for_log(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(flag) => format!("bool={flag}"),
+        serde_json::Value::Number(number) => format!("number={number}"),
+        serde_json::Value::String(text) => format!("string chars={}", text.chars().count()),
+        serde_json::Value::Array(items) => {
+            if let Some(first) = items.first() {
+                format!(
+                    "array len={} first={}",
+                    items.len(),
+                    summarize_json_payload_for_log(first)
+                )
+            } else {
+                "array len=0".to_string()
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let mut fields = Vec::new();
+
+            if let Some(len) = map
+                .get("class")
+                .and_then(|value| value.as_array())
+                .map(|items| items.len())
+            {
+                fields.push(format!("class={len}"));
+            }
+
+            if let Some(len) = map
+                .get("list")
+                .and_then(|value| value.as_array())
+                .map(|items| items.len())
+            {
+                fields.push(format!("list={len}"));
+            }
+
+            if let Some(len) = map
+                .get("filters")
+                .and_then(|value| value.as_object())
+                .map(|items| items.len())
+            {
+                fields.push(format!("filters={len}"));
+            }
+
+            for key in ["page", "pagecount", "total", "code"] {
+                if let Some(number) = map.get(key).and_then(|value| value.as_i64()) {
+                    fields.push(format!("{key}={number}"));
+                }
+            }
+
+            if fields.is_empty() {
+                let keys = map.keys().take(6).cloned().collect::<Vec<_>>().join(",");
+                fields.push(format!("keys={keys}"));
+            }
+
+            format!("object {}", fields.join(" "))
+        }
+    }
+}
+
+fn summarize_input_for_log(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return "empty".to_string();
+    }
+
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("file://")
+    {
+        return format!("path chars={}", trimmed.chars().count());
+    }
+
+    summarize_text_payload_for_log(trimmed)
+}
+
+fn sanitize_bridge_stderr(stderr: &str) -> String {
+    let mut sanitized = Vec::new();
+    let mut lines = stderr.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed == "SPIDER_DEBUG: result" {
+            let payload_line = lines.next().unwrap_or_default();
+            sanitized.push(format!(
+                "SPIDER_DEBUG: result [{}]",
+                summarize_text_payload_for_log(payload_line)
+            ));
+            continue;
+        }
+
+        if let Some(payload) = trimmed.strip_prefix("DEBUG: invokeMethod result value: ") {
+            sanitized.push(format!(
+                "DEBUG: invokeMethod result value: [{}]",
+                summarize_text_payload_for_log(payload)
+            ));
+            continue;
+        }
+
+        sanitized.push(trimmed.to_string());
+    }
+
+    sanitized.join("\n")
+}
 
 fn looks_like_compat_linkage_error(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
+    if normalized.contains("com.github.catvod.spider.init.context")
+        || normalized.contains("init.context()")
+    {
+        return false;
+    }
     normalized.contains("nosuchmethoderror")
         || normalized.contains("nosuchfielderror")
         || normalized.contains("incompatibleclasschangeerror")
@@ -403,12 +571,15 @@ async fn execute_bridge(
     let bridge_jar_cleaned = clean_path(&bridge_jar);
     let spider_jar_cleaned = clean_path(spider_jar_path);
     let cp_separator = if cfg!(windows) { ";" } else { ":" };
-    let mut classpath_parts = vec![bridge_jar_cleaned.clone()];
+    let prefer_compat_runtime = site_prefers_compat_runtime(class_hint);
+    let mut classpath_parts = Vec::new();
+    let compat_classpath_parts = compat_jars
+        .iter()
+        .filter(|compat_jar| compat_jar.is_file())
+        .map(|compat_jar| clean_path(compat_jar))
+        .collect::<Vec<_>>();
 
-    let class_hint_lower = class_hint.to_ascii_lowercase();
-    let needs_anotherds_fallback =
-        class_hint_lower.contains("apprj") || class_hint_lower.contains("hxq");
-    if needs_anotherds_fallback {
+    let fallback_jar = if site_requires_anotherds_fallback(class_hint) {
         let mut fallback_candidates: Vec<PathBuf> = Vec::new();
         if let Some(jar_root) = libs_root.as_ref().and_then(|root| root.parent()) {
             fallback_candidates.push(jar_root.join("fallbacks").join("anotherds_spider.jar"));
@@ -416,16 +587,14 @@ async fn execute_bridge(
         if let Some(spider_parent) = spider_jar_path.parent() {
             fallback_candidates.push(spider_parent.join("fallbacks").join("anotherds_spider.jar"));
         }
-        if let Some(found) = fallback_candidates.into_iter().find(|path| path.is_file()) {
-            classpath_parts.push(clean_path(&found));
-        }
-    }
+        fallback_candidates.into_iter().find(|path| path.is_file())
+    } else {
+        None
+    };
+    let fallback_jar_cleaned = fallback_jar.as_ref().map(|path| clean_path(path));
+    let compat_classpath = compat_classpath_parts.join(cp_separator);
 
-    for compat_jar in compat_jars {
-        if compat_jar.is_file() {
-            classpath_parts.push(clean_path(compat_jar));
-        }
-    }
+    classpath_parts.push(bridge_jar_cleaned.clone());
 
     if let Some(libs_root) = libs_root.as_ref() {
         let preferred_lang3 = libs_root.join("commons-lang3.jar");
@@ -470,7 +639,9 @@ async fn execute_bridge(
         }
     }
 
-    let mut cmd = Command::new("java");
+    let java_bin = crate::java_runtime::resolve_java_binary(app)?;
+    let java_home = crate::java_runtime::resolve_java_home(app)?;
+    let mut cmd = Command::new(&java_bin);
     #[cfg(target_os = "windows")]
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -478,10 +649,10 @@ async fn execute_bridge(
     }
 
     crate::spider_cmds::append_spider_debug_log(&format!(
-        "[SpiderBridge Rust] method: {}, ext originally: '{}', resolved_ext: '{}'",
+        "[SpiderBridge Rust] method={} ext={} resolved_ext={}",
         method,
-        ext.trim(),
-        resolved_ext.trim()
+        summarize_input_for_log(ext),
+        summarize_input_for_log(&resolved_ext)
     ));
 
     let lib_dir = crate::spider_compat::get_native_lib_dir(spider_jar_path);
@@ -494,12 +665,22 @@ async fn execute_bridge(
         .arg("-cp")
         .arg(&classpath)
         .arg("com.halo.spider.BridgeRunnerCompat")
+        .env("JAVA_HOME", java_home)
         .env("HALO_JAR_PATH", &spider_jar_cleaned)
         .env("HALO_SITE_KEY", site_key)
         .env("HALO_CLASS_HINT", class_hint)
         .env("HALO_EXT", &resolved_ext)
         .env("HALO_METHOD", method)
+        .env("HALO_COMPAT_JARS", &compat_classpath)
+        .env(
+            "HALO_PREFER_COMPAT_RUNTIME",
+            if prefer_compat_runtime { "1" } else { "0" },
+        )
         .env("HALO_ARG_COUNT", args.len().to_string());
+
+    if let Some(fallback) = fallback_jar_cleaned.as_ref() {
+        cmd.env("HALO_FALLBACK_JAR", fallback);
+    }
 
     println!(
         "[SpiderBridge] Invoking {} -> {} (Site: {}, Hint: {})",
@@ -519,9 +700,10 @@ async fn execute_bridge(
         Ok(Ok(output)) => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let sanitized_stderr = sanitize_bridge_stderr(&stderr);
 
-            if !stderr.is_empty() {
-                eprintln!("[SpiderBridge:Log]\n{}", stderr.trim_end());
+            if !sanitized_stderr.is_empty() {
+                eprintln!("[SpiderBridge:Log]\n{}", sanitized_stderr.trim_end());
 
                 let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
                 crate::spider_cmds::append_spider_debug_log(&format!(
@@ -529,7 +711,7 @@ async fn execute_bridge(
                     timestamp,
                     spider_jar_cleaned,
                     method,
-                    stderr.trim_end()
+                    sanitized_stderr.trim_end()
                 ));
             }
 
@@ -539,7 +721,7 @@ async fn execute_bridge(
                     output.status.code().unwrap_or(-1),
                     bridge_jar.display(),
                     stdout,
-                    stderr
+                    sanitized_stderr
                 ));
             }
 
@@ -641,10 +823,10 @@ async fn execute_bridge(
                                     } else {
                                         "Bridge execution failed with unparseable JSON.".to_string()
                                     };
-                                    if !stderr.trim().is_empty() {
+                                    if !sanitized_stderr.trim().is_empty() {
                                         final_err.push_str(&format!(
                                             "\n\n======== Java stderr ========\n{}",
-                                            stderr.trim_end()
+                                            sanitized_stderr.trim_end()
                                         ));
                                     }
                                     Err(final_err)
@@ -652,10 +834,10 @@ async fn execute_bridge(
                             } else {
                                 let mut err_msg =
                                     format!("Invalid response structure: {}", json_payload);
-                                if !stderr.trim().is_empty() {
+                                if !sanitized_stderr.trim().is_empty() {
                                     err_msg.push_str(&format!(
                                         "\n\n======== Java stderr ========\n{}",
-                                        stderr.trim_end()
+                                        sanitized_stderr.trim_end()
                                     ));
                                 }
                                 Err(err_msg)
@@ -673,7 +855,11 @@ async fn execute_bridge(
                 Err(format!(
                     "Spider bridge failed to return delimited response. Stdout snippet:\n{}\nStderr:\n{}",
                     first_lines,
-                    stderr.lines().take(5).collect::<Vec<_>>().join("\n")
+                    sanitized_stderr
+                        .lines()
+                        .take(5)
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 ))
             }
         }
@@ -696,19 +882,70 @@ fn bridge_timeout_secs(method: &str) -> u64 {
 }
 
 #[cfg(test)]
+mod log_summary_tests {
+    use super::{
+        looks_like_compat_linkage_error, sanitize_bridge_stderr, summarize_input_for_log,
+        summarize_text_payload_for_log,
+    };
+
+    #[test]
+    fn summarizes_result_payloads_in_stderr() {
+        let stderr = concat!(
+            "SPIDER_DEBUG: result\n",
+            "{\"class\":[{\"type_name\":\"movie\"}],\"list\":[{\"vod_id\":\"1\"},{\"vod_id\":\"2\"}],\"page\":1}\n",
+            "DEBUG: invokeMethod result value: [{\"list\":[{\"vod_id\":\"1\"}],\"page\":2}]"
+        );
+
+        let sanitized = sanitize_bridge_stderr(stderr);
+
+        assert!(sanitized.contains("SPIDER_DEBUG: result [object class=1 list=2 page=1]"));
+        assert!(sanitized.contains(
+            "DEBUG: invokeMethod result value: [array len=1 first=object list=1 page=2]"
+        ));
+        assert!(!sanitized.contains("\"vod_id\":\"1\""));
+    }
+
+    #[test]
+    fn summarizes_large_json_payloads_without_dumping_fields() {
+        let summary = summarize_text_payload_for_log(
+            r#"{"class":[{"type_name":"movie"}],"list":[{"vod_id":"1"},{"vod_id":"2"}],"filters":{"genre":[]}}"#,
+        );
+
+        assert_eq!(summary, "object class=1 list=2 filters=1");
+    }
+
+    #[test]
+    fn summarizes_ext_input_by_shape() {
+        assert_eq!(
+            summarize_input_for_log("https://example.com/ext.json"),
+            "path chars=28"
+        );
+        assert_eq!(summarize_input_for_log("{\"a\":1}"), "object keys=a");
+    }
+
+    #[test]
+    fn init_context_linkage_error_keeps_compat_classpath() {
+        assert!(!looks_like_compat_linkage_error(
+            "java.lang.NoSuchMethodError: 'android.app.Application com.github.catvod.spider.Init.context()'"
+        ));
+    }
+}
+#[cfg(test)]
 mod tests {
-    use super::validate_semantic_payload;
+    use super::{
+        site_prefers_compat_runtime, site_requires_anotherds_fallback, validate_semantic_payload,
+    };
 
     #[test]
     fn rejects_fallback_default_categories() {
         let payload = r#"{
             "class":[
-                {"type_name":"电影"},
-                {"type_name":"连续剧"},
-                {"type_name":"综艺"},
-                {"type_name":"动漫"},
+                {"type_name":"\u7535\u5f71"},
+                {"type_name":"\u8fde\u7eed\u5267"},
+                {"type_name":"\u7efc\u827a"},
+                {"type_name":"\u52a8\u6f2b"},
                 {"type_name":"4K"},
-                {"type_name":"体育"}
+                {"type_name":"\u4f53\u80b2"}
             ],
             "list":[]
         }"#;
@@ -718,9 +955,27 @@ mod tests {
     #[test]
     fn accepts_regular_home_payload() {
         let payload = r#"{
-            "class":[{"type_name":"电影"}],
+            "class":[{"type_name":"\u7535\u5f71"}],
             "list":[{"vod_id":"1","vod_name":"demo"}]
         }"#;
         assert!(validate_semantic_payload("homeContent", payload).is_ok());
+    }
+
+    #[test]
+    fn routes_douban_and_hxq_through_anotherds_fallback() {
+        assert!(site_requires_anotherds_fallback("csp_Douban"));
+        assert!(site_requires_anotherds_fallback("csp_Hxq"));
+        assert!(site_requires_anotherds_fallback("csp_AppGet"));
+        assert!(site_requires_anotherds_fallback("csp_LiteApple"));
+        assert!(site_requires_anotherds_fallback("csp_YGP"));
+        assert!(site_requires_anotherds_fallback("csp_XBPQ"));
+        assert!(!site_requires_anotherds_fallback("csp_Other"));
+    }
+
+    #[test]
+    fn prefers_compat_runtime_for_douban_and_hxq() {
+        assert!(site_prefers_compat_runtime("csp_Douban"));
+        assert!(site_prefers_compat_runtime("csp_Hxq"));
+        assert!(!site_prefers_compat_runtime("csp_AppRJ"));
     }
 }

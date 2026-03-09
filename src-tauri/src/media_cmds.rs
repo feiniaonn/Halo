@@ -4,6 +4,8 @@ mod media_cmds_hls;
 mod media_cmds_jiexi;
 #[path = "media_cmds/media_cmds_network.rs"]
 mod media_cmds_network;
+#[path = "media_cmds/media_cmds_source_fallbacks.rs"]
+mod media_cmds_source_fallbacks;
 #[path = "media_cmds/media_cmds_stream_probe.rs"]
 mod media_cmds_stream_probe;
 #[path = "media_cmds/media_cmds_tvbox.rs"]

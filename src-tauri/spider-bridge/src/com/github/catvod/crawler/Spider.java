@@ -9,6 +9,11 @@ import java.util.List;
  * All spider implementations must extend this class.
  */
 public abstract class Spider {
+    protected SpiderApi spiderApi;
+
+    public void initApi(SpiderApi spiderApi) {
+        this.spiderApi = spiderApi;
+    }
 
     public void init(Context context, String extend) throws Exception {
     }
@@ -44,6 +49,14 @@ public abstract class Spider {
         return "";
     }
 
+    public String action(String action) {
+        return "";
+    }
+
+    public String liveContent(String url) {
+        return "";
+    }
+
     public boolean manualVideoCheck() throws Exception {
         return false;
     }
@@ -56,7 +69,7 @@ public abstract class Spider {
         return null;
     }
 
-    public okhttp3.Dns safeDns() {
+    public static okhttp3.Dns safeDns() {
         return okhttp3.Dns.SYSTEM;
     }
 

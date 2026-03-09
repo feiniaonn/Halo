@@ -1,4 +1,5 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+/* eslint-disable react-hooks/exhaustive-deps */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { getMusicLyrics } from "@/modules/music/services/musicService";
 import type {

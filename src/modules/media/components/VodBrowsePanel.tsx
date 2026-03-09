@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Info, Play, Search, X } from "lucide-react";
 
 import { Card } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { NormalizedTvBoxSite, TvBoxClass, TvBoxVodItem } from "@/modules/media/types/tvbox.types";
 
@@ -65,7 +66,7 @@ export function VodBrowsePanel({
   return (
     <div className="flex h-full w-full animate-in fade-in duration-500 overflow-hidden">
       {canCategory && !isSearchMode && (
-        <div className="custom-scrollbar mr-6 flex w-60 shrink-0 flex-col overflow-y-auto rounded-3xl border border-white/5 bg-black/20 p-3 backdrop-blur-xl">
+        <div className="mr-6 flex w-60 shrink-0 flex-col overflow-hidden rounded-3xl border bg-card/60 p-3 backdrop-blur-2xl shadow-sm">
           <div className="mb-4 px-2 pt-2">
             <div className="relative group">
               <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary" />
@@ -74,97 +75,103 @@ export function VodBrowsePanel({
                 onChange={(event) => onClassFilterChange(event.target.value)}
                 placeholder="快速筛选分类..."
                 disabled={!canCategory || isSearchMode}
-                className="w-full rounded-2xl border border-white/5 bg-white/5 py-2.5 pl-9 pr-4 text-sm outline-none transition-all placeholder:text-muted-foreground/40 focus:bg-white/10 focus:ring-2 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60"
+                className="w-full rounded-2xl border bg-background/50 py-2.5 pl-9 pr-4 text-sm outline-none transition-all placeholder:text-muted-foreground/60 focus:bg-background/90 focus:ring-2 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60"
               />
             </div>
           </div>
           
-          <div className="flex flex-col gap-1.5">
-            {filteredVodClasses.length > 0 && filteredVodClasses.map((cls) => (
-              <button
-                key={cls.type_id}
-                onClick={() => onClassClick(cls.type_id)}
-                className={cn(
-                  "group relative flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left transition-all duration-300",
-                  activeClassId === cls.type_id
-                    ? "bg-primary text-primary-foreground shadow-[0_0_20px_rgba(var(--primary),0.2)]"
-                    : "text-zinc-400 hover:bg-white/5 hover:text-zinc-100",
-                )}
-              >
-                <span className="relative z-10 block truncate font-semibold tracking-wide">{cls.type_name}</span>
-                {activeClassId === cls.type_id && (
-                   <div className="size-1.5 rounded-full bg-primary-foreground/50" />
-                )}
-                {activeClassId !== cls.type_id && (
-                   <div className="size-1.5 rounded-full bg-white/5 opacity-0 transition-opacity group-hover:opacity-100" />
-                )}
-              </button>
-            ))}
-          </div>
-          
-          {filteredVodClasses.length === 0 && !loadingVod && (
-            <div className="mt-8 flex flex-col items-center justify-center px-4 text-center">
-               <Info className="mb-2 size-6 text-muted-foreground/20" />
-               <div className="text-xs text-zinc-500">无匹配分类喵~</div>
-            </div>
-          )}
-
-          {loadingVod && (
-            <div className="mt-2 flex flex-col gap-2 p-2">
-              {Array.from({ length: 8 }).map((_, index) => (
-                <div key={index} className="h-12 w-full shrink-0 animate-pulse rounded-2xl bg-white/5" />
+          <ScrollArea className="flex-1 -mr-3 pr-3">
+            <div className="flex flex-col gap-1.5 pb-4">
+              {filteredVodClasses.length > 0 && filteredVodClasses.map((cls) => (
+                <button
+                  key={cls.type_id}
+                  onClick={() => onClassClick(cls.type_id)}
+                  className={cn(
+                    "group relative flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left transition-all duration-300",
+                    activeClassId === cls.type_id
+                      ? "bg-primary text-primary-foreground shadow-[0_0_20px_rgba(var(--primary),0.2)]"
+                      : "text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground",
+                  )}
+                >
+                  <span className="relative z-10 block truncate font-semibold tracking-wide">{cls.type_name}</span>
+                  {activeClassId === cls.type_id && (
+                     <div className="size-1.5 rounded-full bg-primary-foreground/50" />
+                  )}
+                  {activeClassId !== cls.type_id && (
+                     <div className="size-1.5 rounded-full bg-white/5 opacity-0 transition-opacity group-hover:opacity-100" />
+                  )}
+                </button>
               ))}
             </div>
-          )}
+            
+            {filteredVodClasses.length === 0 && !loadingVod && (
+              <div className="mt-8 flex flex-col items-center justify-center px-4 text-center">
+                 <Info className="mb-2 size-6 text-muted-foreground/40" />
+                 <div className="text-xs text-muted-foreground">分类内容为空喵~</div>
+              </div>
+            )}
+
+            {loadingVod && (
+              <div className="mt-2 flex flex-col gap-2 p-2">
+                {Array.from({ length: 8 }).map((_, index) => (
+                  <div key={index} className="h-12 w-full shrink-0 animate-pulse rounded-2xl bg-muted/50" />
+                ))}
+              </div>
+            )}
+          </ScrollArea>
         </div>
       )}
 
+
       <div className="custom-scrollbar flex flex-1 flex-col gap-6 overflow-y-auto pb-10 pr-2">
-        <div className="rounded-3xl border border-white/5 bg-black/40 p-5 backdrop-blur-md shadow-2xl">
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <div className="relative flex-1 group">
-              <Search className="absolute left-4 top-1/2 size-5 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary" />
+        <div className="flex flex-col gap-6 w-full h-full pb-10">
+          {/* Top Search Bar */}
+          <div className="sticky top-0 z-40 flex items-center gap-3 backdrop-blur-2xl bg-background/60 border-b py-4 px-2 -mx-2 rounded-xl shadow-sm">
+            <div className="relative flex-1 max-w-[400px] group w-full">
+              <Search className="absolute left-4 top-1/2 size-4.5 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary" />
               <input
                 value={vodSearchKeyword}
                 onChange={(event) => onVodSearchKeywordChange(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") onSearchSubmit();
                 }}
-                placeholder={canSearch ? "输入片名、演员或内容关键词..." : "当前站点不支持搜索喵~"}
+                placeholder={canSearch ? "输入片名、演员或内容关键词搜片..." : "当前站点不支持搜索喵~"}
                 disabled={!canSearch}
-                className="w-full rounded-2xl border border-white/5 bg-white/5 py-3 pl-12 pr-4 text-base outline-none transition-all placeholder:text-muted-foreground/30 focus:bg-white/10 focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-40"
+                className="w-full rounded-2xl border bg-background/50 py-3 pl-11 pr-4 text-sm text-foreground font-medium outline-none transition-all placeholder:text-muted-foreground/60 focus:bg-background focus:border-primary/50 focus:ring-4 focus:ring-primary/20 shadow-inner disabled:cursor-not-allowed disabled:opacity-40"
               />
             </div>
-            <div className="flex gap-2">
+            
+            <button
+              onClick={onSearchSubmit}
+              disabled={!canSearch || !vodSearchKeyword.trim()}
+              className="rounded-2xl bg-primary px-6 py-3 text-sm font-bold tracking-wide text-primary-foreground shadow-lg shadow-primary/25 transition-all hover:-translate-y-0.5 hover:shadow-primary/40 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:transform-none"
+            >
+              全网搜
+            </button>
+            
+            {isSearchMode && (
               <button
-                onClick={onSearchSubmit}
-                disabled={!canSearch || !vodSearchKeyword.trim()}
-                className="rounded-2xl bg-primary px-8 py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/20 transition-all hover:scale-105 hover:bg-primary/90 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 disabled:scale-100"
+                onClick={onSearchReset}
+                className="flex h-[44px] items-center gap-2 rounded-2xl border bg-accent/50 px-5 text-sm font-bold tracking-wide text-muted-foreground transition-all hover:bg-destructive/10 hover:text-destructive hover:border-destructive/30 active:scale-95"
               >
-                全网搜
+                <X className="size-4" />
+                重置
               </button>
-              {isSearchMode && (
-                <button
-                  onClick={onSearchReset}
-                  className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-bold transition-all hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/20 active:scale-95"
-                >
-                  <X className="size-4" />
-                  重置
-                </button>
-              )}
-            </div>
-          </div>
-          {isSearchMode && (
-            <div className="mt-4 flex items-center gap-2 px-1">
-              <div className="size-1.5 rounded-full bg-primary animate-pulse" />
-              <div className="text-xs font-medium text-muted-foreground">
-                正在展示 <span className="text-foreground underline decoration-primary/30 underline-offset-4">“{activeSearchKeyword}”</span> 的结果喵~
-              </div>
-            </div>
-          )}
-        </div>
+            )}
 
-        <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            <div className="flex-1" />
+
+            {isSearchMode && (
+              <div className="hidden lg:flex items-center gap-2 px-3 border-l">
+                <div className="size-1.5 rounded-full bg-primary animate-pulse" />
+                <div className="text-xs font-semibold text-muted-foreground">
+                  正展示 <span className="text-foreground decoration-primary/50 underline underline-offset-4 font-bold">“{activeSearchKeyword}”</span> 结果
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-5 gap-y-7 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 pt-2 px-1">
           {!loadingVod && vodList.length > 0 && vodList.map((item) => (
           <Card
             key={item.vod_id}
@@ -212,7 +219,7 @@ export function VodBrowsePanel({
         ))}
 
         {loadingVod && Array.from({ length: 10 }).map((_, index) => (
-          <Card key={index} className="aspect-[3/4] animate-pulse rounded-2xl border border-white/10 bg-white/5" />
+          <Card key={index} className="aspect-[3/4] animate-pulse rounded-2xl border bg-muted/40" />
         ))}
 
         {!loadingVod && vodList.length === 0 && isSearchOnly && !isSearchMode && (
@@ -232,15 +239,16 @@ export function VodBrowsePanel({
             <button
               onClick={onLoadMore}
               disabled={loadingMore}
-              className="rounded-full border border-white/10 bg-white/5 px-6 py-2.5 text-sm font-medium backdrop-blur transition-all hover:bg-white/10 hover:text-primary active:scale-95 disabled:pointer-events-none disabled:opacity-50"
+              className="rounded-full border bg-background/50 px-6 py-2.5 text-sm font-medium backdrop-blur transition-all hover:bg-accent hover:text-primary active:scale-95 disabled:pointer-events-none disabled:opacity-50"
             >
               {loadingMore ? "加载中..." : "加载更多"}
             </button>
           ) : (
-            vodList.length > 0 && <span className="text-xs text-muted-foreground/50">没有更多内容了。</span>
+            <span className="text-xs text-muted-foreground/50">没有更多内容了。</span>
           )}
         </div>
       )}
+        </div>
       </div>
     </div>
   );

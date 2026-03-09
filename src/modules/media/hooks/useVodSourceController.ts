@@ -18,13 +18,20 @@ import {
   readSpiderExecutionReport,
 } from "@/modules/media/services/mediaSourceLoader";
 import {
+  clearVodSourceSelectionSnapshot,
+  pickStoredSiteKey,
+  readVodSourceSelectionSnapshot,
+  writeVodSourceSelectionSnapshot,
+} from "@/modules/media/services/vodSourceSelection";
+import { clearVodImageProxyCache } from "@/modules/media/services/vodImageProxy";
+import {
   buildPresetClasses,
   parseSingleSource,
   parseVodResponse,
   resolveSiteSpiderUrl,
 } from "@/modules/media/services/tvboxConfig";
 import { openVodPlayerWindow } from "@/modules/media/services/vodPlayerWindow";
-import { resolveSiteExtInput } from "@/modules/media/services/tvboxRuntime";
+import { clearTvBoxRuntimeCaches, resolveSiteExtInput } from "@/modules/media/services/tvboxRuntime";
 import { fetchVodDetail } from "@/modules/media/services/vodDetail";
 import type { MediaNotice } from "@/modules/media/types/mediaPage.types";
 import type {
@@ -40,6 +47,7 @@ import type {
 import type { VodDetail, VodRoute } from "@/modules/media/types/vodWindow.types";
 
 const MEDIA_VOD_SOURCE_KEY = "halo_media_source_vod_single";
+const MEDIA_VOD_SITE_KEY = "halo_media_active_site_key";
 
 type SpiderJarStatus = "idle" | "loading" | "ready" | "error";
 
@@ -82,22 +90,79 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
   const [selectedVodId, setSelectedVodId] = useState<string | null>(null);
 
   const activeSiteKeyRef = useRef("");
+  const activeRepoUrlRef = useRef("");
+  const sourceRef = useRef(source);
   const activeClassIdRef = useRef("");
   const prefetchInFlightRef = useRef("");
   const homeRequestRef = useRef(0);
   const homeInFlightRef = useRef("");
   const categoryRequestRef = useRef(0);
   const categoryInFlightRef = useRef("");
+  const searchRequestRef = useRef(0);
+  const searchInFlightRef = useRef("");
+  const skipInitialCategoryFetchRef = useRef<{
+    siteKey: string;
+    classId: string;
+  } | null>(null);
 
   useEffect(() => {
     activeSiteKeyRef.current = activeSiteKey;
   }, [activeSiteKey]);
 
   useEffect(() => {
+    activeRepoUrlRef.current = activeRepoUrl;
+  }, [activeRepoUrl]);
+
+  useEffect(() => {
+    sourceRef.current = source;
+  }, [source]);
+
+  useEffect(() => {
     activeClassIdRef.current = activeClassId;
   }, [activeClassId]);
 
+  const invalidateVodRequests = useCallback(() => {
+    homeRequestRef.current += 1;
+    categoryRequestRef.current += 1;
+    searchRequestRef.current += 1;
+    homeInFlightRef.current = "";
+    categoryInFlightRef.current = "";
+    searchInFlightRef.current = "";
+    prefetchInFlightRef.current = "";
+  }, []);
+
+  const resetVodRuntimeState = useCallback(() => {
+    invalidateVodRequests();
+    clearTvBoxRuntimeCaches();
+    clearVodImageProxyCache();
+    setSiteRuntimeStates({});
+    setSpiderJarStatus("idle");
+    setLoadingVod(false);
+    setLoadingMore(false);
+  }, [invalidateVodRequests]);
+
+  const persistSelection = useCallback((next: {
+    source?: string;
+    repoUrl?: string;
+    siteKey?: string;
+  }) => {
+    const snapshotSource = (next.source ?? sourceRef.current).trim();
+    if (!snapshotSource) return;
+
+    const snapshotRepoUrl = (next.repoUrl ?? activeRepoUrlRef.current).trim();
+    const snapshotSiteKey = (next.siteKey ?? activeSiteKeyRef.current).trim();
+    writeVodSourceSelectionSnapshot({
+      source: snapshotSource,
+      repoUrl: snapshotRepoUrl,
+      siteKey: snapshotSiteKey,
+    });
+    if (snapshotSiteKey) {
+      localStorage.setItem(MEDIA_VOD_SITE_KEY, snapshotSiteKey);
+    }
+  }, []);
+
   const resetVodBrowseState = useCallback(() => {
+    skipInitialCategoryFetchRef.current = null;
     setClassFilterKeyword("");
     setVodSearchKeyword("");
     setActiveSearchKeyword("");
@@ -352,16 +417,25 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
 
   const selectRepo = useCallback(async (repo: TvBoxRepoUrl) => {
     if (!repo.url) return;
+    const storedSelection = readVodSourceSelectionSnapshot();
+
     setLoadingConfig(true);
     setConfig(null);
     setActiveRepoUrl(repo.url);
+    setActiveSiteKey("");
+    resetVodRuntimeState();
     resetVodBrowseState();
 
     try {
       const normalized = await loadVodRepoSource(repo.url);
       setConfig(normalized);
-      setActiveSiteKey(normalized.sites[0]?.key ?? "");
-      setSiteRuntimeStates({});
+      const legacySiteKey = localStorage.getItem(MEDIA_VOD_SITE_KEY) ?? "";
+      const preferredSiteKey = storedSelection?.source === sourceRef.current && storedSelection.repoUrl === repo.url
+        ? storedSelection.siteKey
+        : legacySiteKey;
+      const restoredKey = pickStoredSiteKey(normalized.sites, preferredSiteKey);
+      setActiveSiteKey(restoredKey);
+      persistSelection({ repoUrl: repo.url, siteKey: restoredKey });
       notify({ kind: "success", text: `已加载分仓 [${repo.name}]，共 ${normalized.sites.length} 个站点。` });
     } catch (reason) {
       console.error(reason);
@@ -369,25 +443,39 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     } finally {
       setLoadingConfig(false);
     }
-  }, [notify, resetVodBrowseState]);
+  }, [notify, persistSelection, resetVodBrowseState, resetVodRuntimeState]);
 
   const loadSourceConfig = useCallback(async (url: string) => {
     if (!url) return;
+    const storedSelection = readVodSourceSelectionSnapshot();
+    const preferredRepoUrl = storedSelection?.source === url
+      ? storedSelection.repoUrl
+      : "";
+
     setLoadingConfig(true);
     setRepoUrls([]);
     setActiveRepoUrl("");
+    setActiveSiteKey("");
     setConfig(null);
-    setSiteRuntimeStates({});
-    setSpiderJarStatus("idle");
+    resetVodRuntimeState();
     resetVodBrowseState();
 
     try {
-      const loaded = await loadVodSource(url);
+      const loaded = await loadVodSource(url, preferredRepoUrl);
       setRepoUrls(loaded.repoUrls);
       setActiveRepoUrl(loaded.activeRepoUrl);
       setConfig(loaded.config);
-      setActiveSiteKey(loaded.config.sites[0]?.key ?? "");
-      setSiteRuntimeStates({});
+      const legacySiteKey = localStorage.getItem(MEDIA_VOD_SITE_KEY) ?? "";
+      const preferredSiteKey = storedSelection?.source === url && storedSelection.repoUrl === loaded.activeRepoUrl
+        ? storedSelection.siteKey
+        : legacySiteKey;
+      const restoredKey = pickStoredSiteKey(loaded.config.sites, preferredSiteKey);
+      setActiveSiteKey(restoredKey);
+      persistSelection({
+        source: url,
+        repoUrl: loaded.activeRepoUrl,
+        siteKey: restoredKey,
+      });
 
       if (loaded.repoUrls.length > 0) {
         notify({ kind: "success", text: `检测到多仓配置，共 ${loaded.repoUrls.length} 个分仓。` });
@@ -406,7 +494,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     } finally {
       setLoadingConfig(false);
     }
-  }, [notify, resetVodBrowseState]);
+  }, [notify, persistSelection, resetVodBrowseState, resetVodRuntimeState]);
 
   useEffect(() => {
     if (!source) {
@@ -414,13 +502,12 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       setActiveRepoUrl("");
       setConfig(null);
       setActiveSiteKey("");
-      setSiteRuntimeStates({});
-      setSpiderJarStatus("idle");
+      resetVodRuntimeState();
       resetVodBrowseState();
       return;
     }
     void loadSourceConfig(source);
-  }, [loadSourceConfig, resetVodBrowseState, source]);
+  }, [loadSourceConfig, resetVodBrowseState, resetVodRuntimeState, source]);
 
   useEffect(() => {
     if (!activeVodSite || !config || !activeVodSite.capability.requiresSpider) {
@@ -449,6 +536,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
 
       const presetClasses = buildPresetClasses(site);
       if (!site.capability.canHome) {
+        skipInitialCategoryFetchRef.current = null;
         setVodClasses(presetClasses);
         setActiveClassId(presetClasses[0]?.type_id ?? "");
         setVodList([]);
@@ -488,9 +576,14 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         if (isStale()) return;
 
         const classes = Array.isArray(data.class) && data.class.length > 0 ? data.class : presetClasses;
+        const nextClassId = classes[0]?.type_id ?? "";
+        const homeList = Array.isArray(data.list) ? data.list : [];
+        skipInitialCategoryFetchRef.current = nextClassId && homeList.length > 0 && site.capability.canCategory
+          ? { siteKey: site.key, classId: nextClassId }
+          : null;
         setVodClasses(classes);
-        setActiveClassId(classes[0]?.type_id ?? "");
-        setVodList(Array.isArray(data.list) ? data.list : []);
+        setActiveClassId(nextClassId);
+        setVodList(homeList);
       } catch (reason) {
         if (isStale()) return;
         console.error("Failed to fetch VOD home:", reason);
@@ -530,6 +623,16 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         requestId !== categoryRequestRef.current
         || requestedSiteKey !== activeSiteKeyRef.current
         || requestedClassId !== activeClassIdRef.current;
+      const shouldSkipInitialFetch = !isLoadMore
+        && vodPage === 1
+        && skipInitialCategoryFetchRef.current?.siteKey === site.key
+        && skipInitialCategoryFetchRef.current?.classId === activeClassId;
+      if (shouldSkipInitialFetch) {
+        skipInitialCategoryFetchRef.current = null;
+        setLoadingVod(false);
+        setLoadingMore(false);
+        return;
+      }
       const flightKey = [site.key, activeClassId, String(vodPage), String(siteReloadToken)].join("::");
       if (categoryInFlightRef.current === flightKey) {
         return;
@@ -620,9 +723,25 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       return;
     }
 
+    invalidateVodRequests();
+    skipInitialCategoryFetchRef.current = null;
+    const requestId = ++searchRequestRef.current;
+    const requestedSiteKey = activeVodSite.key;
+    const flightKey = [activeVodSite.key, keyword].join("::");
+    if (searchInFlightRef.current === flightKey) {
+      return;
+    }
+    searchInFlightRef.current = flightKey;
+
+    const isStale = () =>
+      requestId !== searchRequestRef.current
+      || requestedSiteKey !== activeSiteKeyRef.current;
+
+    setActiveSearchKeyword(keyword);
     setLoadingVod(true);
     setHasMore(false);
     setVodPage(1);
+    setVodList([]);
 
     try {
       const spiderUrl = resolveSiteSpiderUrl(activeVodSite, config.spider);
@@ -647,7 +766,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       if (activeVodSite.capability.requiresSpider) {
         await syncSpiderExecutionState(activeVodSite.key);
       }
-      setActiveSearchKeyword(keyword);
+      if (isStale()) return;
       setVodList(Array.isArray(data.list) ? data.list : []);
       notify({
         kind: data.list?.length ? "success" : "warning",
@@ -656,21 +775,39 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
           : "搜索完成，但没有返回结果。",
       });
     } catch (reason) {
+      if (isStale()) return;
       console.error("Failed to search VOD site:", reason);
       const fallbackMessage = humanizeVodError(reason instanceof Error ? reason.message : String(reason));
       const report = activeVodSite.capability.requiresSpider ? await syncSpiderExecutionState(activeVodSite.key) : null;
       const message = buildSpiderFailureNotice(report, fallbackMessage);
       notify({ kind: "error", text: `站点搜索失败: ${message}` });
     } finally {
-      setLoadingVod(false);
+      if (searchInFlightRef.current === flightKey) {
+        searchInFlightRef.current = "";
+      }
+      if (!isStale()) {
+        setLoadingVod(false);
+      }
     }
-  }, [activeSiteAutoLoadBlocked, activeVodSite, config, notify, syncSpiderExecutionState, vodSearchKeyword]);
+  }, [
+    activeSiteAutoLoadBlocked,
+    activeVodSite,
+    config,
+    invalidateVodRequests,
+    notify,
+    syncSpiderExecutionState,
+    vodSearchKeyword,
+  ]);
 
   const handleSearchReset = useCallback(() => {
+    invalidateVodRequests();
+    skipInitialCategoryFetchRef.current = null;
     setVodSearchKeyword("");
     setActiveSearchKeyword("");
+    setVodList([]);
     setVodPage(1);
-  }, []);
+    setHasMore(true);
+  }, [invalidateVodRequests]);
 
   const handleClassClick = useCallback((id: string) => {
     if (activeClassId === id) return;
@@ -681,6 +818,8 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
 
   const handleSiteSelect = useCallback((siteKey: string) => {
     if (activeSiteKey === siteKey) {
+      clearTvBoxRuntimeCaches();
+      invalidateVodRequests();
       setSiteRuntimeStates((current) => {
         const next = resetSpiderRuntimeIsolation(current[siteKey]);
         if (!next) return current;
@@ -689,9 +828,12 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       setSiteReloadToken((current) => current + 1);
       return;
     }
+    clearTvBoxRuntimeCaches();
+    invalidateVodRequests();
     resetVodBrowseState();
     setActiveSiteKey(siteKey);
-  }, [activeSiteKey, resetVodBrowseState]);
+    persistSelection({ siteKey });
+  }, [activeSiteKey, invalidateVodRequests, persistSelection, resetVodBrowseState]);
 
   const saveSource = useCallback(() => {
     const parsed = parseSingleSource(draft);
@@ -708,25 +850,27 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     localStorage.setItem(MEDIA_VOD_SOURCE_KEY, normalizedSource);
     setSource(normalizedSource);
     setDraft(normalizedSource);
+    resetVodRuntimeState();
     notify({
       kind: parsed.warning ? "warning" : "success",
       text: parsed.warning ?? "点播源已保存。",
     });
-  }, [draft, notify]);
+  }, [draft, notify, resetVodRuntimeState]);
 
   const clearSource = useCallback(() => {
     localStorage.removeItem(MEDIA_VOD_SOURCE_KEY);
+    localStorage.removeItem(MEDIA_VOD_SITE_KEY);
+    clearVodSourceSelectionSnapshot();
     setSource("");
     setDraft("");
     setRepoUrls([]);
     setActiveRepoUrl("");
     setConfig(null);
     setActiveSiteKey("");
-    setSiteRuntimeStates({});
-    setSpiderJarStatus("idle");
+    resetVodRuntimeState();
     resetVodBrowseState();
     notify({ kind: "success", text: "点播源已清空。" });
-  }, [notify, resetVodBrowseState]);
+  }, [notify, resetVodBrowseState, resetVodRuntimeState]);
 
   return {
     source,

@@ -1,4 +1,4 @@
-﻿import type { Dispatch, SetStateAction } from "react";
+ import type { Dispatch, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -181,7 +181,7 @@ export function useBackgroundSettings({
         return;
       }
 
-      let selected: string | string[] | null = null;
+      let selected: string | string[] | null;
       try {
         selected = await open({
           multiple: false,

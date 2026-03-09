@@ -1,7 +1,12 @@
-﻿import { cn } from "@/lib/utils";
-import { Card } from "@/components/ui/card";
-import { Switch } from "@/components/ui/switch";
-import type { MigrationCompletePayload, MigrationProgress } from "@/modules/settings/services/settingsService";
+import { HardDrive, RefreshCw, ShieldCheck, FolderOpen } from 'lucide-react';
+import { Separator } from '@/components/ui/separator';
+import { Switch } from '@/components/ui/switch';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
+import type {
+  MigrationCompletePayload,
+  MigrationProgress,
+} from '@/modules/settings/services/settingsService';
 
 export function StorageSettingsSection({
   storageDisplayPath,
@@ -10,7 +15,6 @@ export function StorageSettingsSection({
   legacyRoots,
   migrationProgress,
   migrationComplete,
-  migrationRemoveSource,
   removeSource,
   isMigrating,
   migrationRunning,
@@ -27,7 +31,6 @@ export function StorageSettingsSection({
   legacyRoots: string[];
   migrationProgress: MigrationProgress | null;
   migrationComplete: MigrationCompletePayload | null;
-  migrationRemoveSource: boolean | null;
   removeSource: boolean;
   isMigrating: boolean;
   migrationRunning: boolean;
@@ -38,139 +41,169 @@ export function StorageSettingsSection({
   onCancelMigration: () => void;
   onMigrateNow: () => void;
 }) {
-  return (
-    <Card className="glass-card border-none p-6 relative overflow-hidden group">
-      <div className="z-10 relative">
-        <h2 className="text-lg font-bold text-foreground/90 tracking-tight">存储管理</h2>
-        <p className="mt-1 text-[13px] text-muted-foreground/80 font-medium tracking-wide">
-          设置数据存储位置。会在目标目录下创建 HaloTemp，用于保存音乐记录与封面等数据。
-        </p>
+  const migrationPercent =
+    migrationProgress && migrationProgress.total > 0
+      ? Math.min(100, Math.floor((migrationProgress.done / migrationProgress.total) * 100))
+      : 0;
 
-        <div className="mt-6 space-y-4">
-          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between bg-black/10 dark:bg-black/30 p-4 rounded-[16px] border border-white/5">
-            <div className="flex flex-col min-w-0 flex-1">
-              <span className="text-sm font-bold text-foreground/90 mb-1">当前存储路径</span>
-              <p className="font-mono text-xs text-muted-foreground/80 bg-background/50 px-2 py-1 rounded-[8px] border border-white/5 block w-full break-all" title={storageDisplayPath}>
-                {storageDisplayPath}
+  return (
+    <div className="mx-auto max-w-4xl space-y-10 pb-12 pt-4">
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight text-foreground">数据目录配置</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            管理应用核心数据的存储位置。
+          </p>
+        </div>
+      </section>
+
+      {/* 当前目录配置 */}
+      <section className="space-y-1">
+        <div className="flex flex-col gap-4 py-4">
+          <div className="flex items-start justify-between">
+            <div className="space-y-1 flex-1 pr-8">
+              <div className="flex items-center gap-2">
+                <HardDrive className="size-4 text-primary" />
+                <h3 className="text-sm font-medium leading-none">当前核心数据目录</h3>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                应用会在目标目录下创建专用数据文件夹 (Halo)，用于持久化保存音乐配置、缓存等。
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={onChooseFolder}
-                className="rounded-full bg-primary/90 px-4 py-1.5 text-xs font-bold text-primary-foreground hover:bg-primary hover:scale-105 active:scale-95 transition-all duration-300 shadow-sm"
-              >
-                更改位置
-              </button>
-              <button
-                type="button"
-                onClick={onRestoreDefaultStorage}
-                className="rounded-full border border-white/10 bg-white/5 px-4 py-1.5 text-xs font-bold text-foreground hover:bg-white/10 hover:scale-105 active:scale-95 transition-all duration-300 shadow-sm"
-              >
+          </div>
+          <div className="flex flex-col sm:flex-row gap-4">
+            <div className="flex-1 rounded-lg border bg-muted/50 px-3 py-2 text-sm font-mono text-muted-foreground break-all flex items-center">
+              {storageDisplayPath}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Button variant="secondary" onClick={onChooseFolder}>
+                <FolderOpen className="size-4 mr-2" />
+                更改目录
+              </Button>
+              <Button variant="outline" onClick={onRestoreDefaultStorage}>
+                <RefreshCw className="size-4 mr-2" />
                 恢复默认
-              </button>
+              </Button>
             </div>
           </div>
+          {storageMessage && (
+            <div className="mt-2 text-sm font-medium text-destructive">
+              {storageMessage}
+            </div>
+          )}
+        </div>
+      </section>
 
-          {storageMessage && <p className="text-[13px] font-medium text-amber-500/90 bg-amber-500/10 px-3 py-2 rounded-lg border border-amber-500/20">{storageMessage}</p>}
+      <Separator />
 
-          {hasLegacy && (
-            <div className="mt-4 rounded-[20px] border border-primary/30 bg-primary/5 p-5 relative overflow-hidden group/legacy shadow-inner">
-              <div className="absolute inset-0 bg-gradient-to-r from-primary/10 to-transparent opacity-0 group-hover/legacy:opacity-100 transition-opacity duration-500 pointer-events-none" />
-              <div className="relative z-10">
-                <p className="text-sm font-bold flex items-center gap-2 text-primary">
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/20 text-[10px] animate-pulse">!</span>
-                  检测到旧版数据目录
-                </p>
-                <ul className="mt-3 list-disc space-y-1 pl-6 text-[13px] font-mono text-muted-foreground/80 max-h-[100px] overflow-y-auto no-scrollbar mask-linear-y">
+      {/* 旧版数据迁移 */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight text-foreground">旧版数据迁移</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            检测并迁移历史版本的数据至最新目录结构。
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-6 py-2">
+          {/* 旧目录列表 */}
+          <div className="rounded-xl border bg-card p-4 shadow-sm">
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <ShieldCheck className="size-4 text-primary" />
+              检测结果
+            </h3>
+            {hasLegacy ? (
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground mb-2">发现以下需要迁移的旧版目录：</p>
+                <div className="max-h-32 overflow-y-auto space-y-2 pr-2 custom-scrollbar-minimal">
                   {legacyRoots.map((path) => (
-                    <li key={path} className="break-all">{path}</li>
-                  ))}
-                </ul>
-
-                {migrationProgress && (migrationProgress.running || migrationProgress.done > 0) && (
-                  <div className="mt-5 space-y-2">
-                    <div className="flex items-center justify-between text-[11px] font-bold text-muted-foreground">
-                      <span className="truncate pr-4">{migrationProgress.message ?? "合并中..."} {migrationProgress.current_legacy_base ? `(${migrationProgress.current_legacy_base})` : ""}</span>
-                      <span className="shrink-0">{migrationProgress.done} / {migrationProgress.total}</span>
+                    <div key={path} className="rounded border bg-background/50 px-2 py-1 flex items-center font-mono text-xs text-muted-foreground break-all">
+                      {path}
                     </div>
-                    <div className="h-2 w-full overflow-hidden rounded-full bg-black/20 dark:bg-black/40 shadow-inner">
-                      <div
-                        className="h-full bg-emerald-500 transition-all duration-300 relative"
-                        style={{
-                          width: migrationProgress.total > 0 ? `${Math.min(100, Math.floor((migrationProgress.done / migrationProgress.total) * 100))}%` : "0%",
-                        }}
-                      >
-                        <div className="absolute inset-0 bg-white/20 animate-pulse" />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">未检测到需要迁移的旧版目录。</p>
+            )}
+          </div>
+
+          {/* 迁移设置 */}
+          {hasLegacy && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div className="space-y-1 flex-1 pr-8">
+                  <h3 className="text-sm font-medium leading-none">迁移后清理源文件</h3>
+                  <p className="text-sm text-muted-foreground">
+                    迁移成功后自动删除旧目录，释放磁盘空间。
+                  </p>
+                </div>
+                <Switch
+                  checked={removeSource}
+                  onCheckedChange={onRemoveSourceChange}
+                />
+              </div>
+
+              {/* 迁移进度/状态提示 */}
+              {(migrationProgress || migrationComplete) && (
+                <div className="rounded-xl border bg-accent/30 p-4 space-y-4">
+                  {migrationProgress && (
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm font-medium">
+                        <span>正在迁移...</span>
+                        <span>{migrationPercent}%</span>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+                        <div
+                          className="h-full bg-primary transition-all duration-300"
+                          style={{ width: `${migrationPercent}%` }}
+                        />
+                      </div>
+                      <div className="text-xs text-muted-foreground truncate">
+                        {migrationProgress.message}
                       </div>
                     </div>
-                  </div>
-                )}
-
-                {migrationComplete && (
-                  <p className={cn(
-                    "mt-4 text-[13px] font-medium px-3 py-2 rounded-lg border",
-                    migrationComplete.canceled ? "text-amber-500/90 bg-amber-500/10 border-amber-500/20" :
-                      migrationComplete.success ? "text-emerald-500/90 bg-emerald-500/10 border-emerald-500/20" :
-                        "text-red-500/90 bg-red-500/10 border-red-500/20"
-                  )}>
-                    {migrationComplete.canceled
-                      ? "已取消合并任务。"
-                      : migrationComplete.success
-                        ? (migrationRemoveSource ?? removeSource)
-                          ? "数据合并完成，旧目录已清理。"
-                          : "数据合并完成，旧目录已保留。"
-                        : `合并失败：${migrationComplete.error ?? "未知错误"}`}
-                  </p>
-                )}
-
-                <div className="mt-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-3 rounded-[16px] bg-background/50 border border-white/5">
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs font-bold text-foreground/80">迁移后删除旧目录</span>
-                    <Switch
-                      checked={removeSource}
-                      onCheckedChange={onRemoveSourceChange}
-                    />
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    {migrationRunning ? (
-                      <button
-                        type="button"
-                        onClick={onCancelMigration}
-                        className="rounded-full border border-white/10 bg-white/5 px-4 py-1.5 text-xs font-bold hover:bg-white/10 transition-all shadow-sm"
-                      >
-                        取消后台合并
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={onStartMigration}
-                        disabled={migrationRunning}
-                        className="rounded-full bg-emerald-500/90 px-4 py-1.5 text-xs font-bold text-white hover:bg-emerald-500 hover:scale-105 active:scale-95 transition-all shadow-sm disabled:opacity-50 disabled:hover:scale-100"
-                      >
-                        后台合并旧数据
-                      </button>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={onMigrateNow}
-                      disabled={isMigrating || migrationRunning}
-                      className={cn(
-                        "rounded-full bg-primary/90 px-4 py-1.5 text-xs font-bold text-primary-foreground transition-all shadow-sm",
-                        (isMigrating || migrationRunning) ? "opacity-50 cursor-not-allowed" : "hover:bg-primary hover:scale-105 active:scale-95"
-                      )}
-                    >
-                      {isMigrating ? "迁移中..." : "立即迁移（可能耗时）"}
-                    </button>
-                  </div>
+                  )}
+                  {migrationComplete && (
+                    <div className={cn(
+                      "text-sm font-semibold p-3 rounded-lg border",
+                      migrationComplete.canceled ? "bg-amber-500/10 text-amber-600 border-amber-500/20" :
+                      migrationComplete.success ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20" :
+                      "bg-destructive/10 text-destructive border-destructive/20"
+                    )}>
+                      {migrationComplete.canceled ? '迁移已取消' :
+                       migrationComplete.success ? '迁移已成功完成' :
+                       `迁移失败：${migrationComplete.error ?? '未知错误'}`}
+                    </div>
+                  )}
                 </div>
+              )}
+
+              {/* 迁移操作 */}
+              <div className="flex items-center gap-4">
+                {migrationRunning ? (
+                  <Button variant="destructive" onClick={onCancelMigration} className="flex-1">
+                    取消后台迁移
+                  </Button>
+                ) : (
+                  <Button variant="secondary" onClick={onStartMigration} disabled={isMigrating} className="flex-1">
+                    <ShieldCheck className="size-4 mr-2" />
+                    后台静默迁移
+                  </Button>
+                )}
+                <Button 
+                  onClick={onMigrateNow} 
+                  disabled={isMigrating || migrationRunning} 
+                  className="flex-1"
+                >
+                  <RefreshCw className={cn("size-4 mr-2", isMigrating && "animate-spin")} />
+                  {isMigrating ? "正在迁移..." : "立即迁移"}
+                </Button>
               </div>
             </div>
           )}
         </div>
-      </div>
-    </Card>
+      </section>
+    </div>
   );
 }

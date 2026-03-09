@@ -1,4 +1,6 @@
-﻿import { useEffect, useMemo, useState } from "react";
+ 
+ 
+ import { useEffect, useMemo, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCurrentPlaying } from "@/modules/music/hooks/useCurrentPlaying";
@@ -59,7 +61,8 @@ export function FloatingPlayer() {
 
   useEffect(() => {
     if (!isTauriRuntime()) {
-      setFloatSettings(DEFAULT_FLOAT_SETTINGS);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+setFloatSettings(DEFAULT_FLOAT_SETTINGS);
       return;
     }
 

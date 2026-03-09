@@ -1,15 +1,20 @@
-﻿import { useEffect, useMemo, useState } from "react";
-import { motion } from "framer-motion";
-import { AlertCircle, Film, Loader2, Play, Search } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertCircle, Film, Loader2, X } from "lucide-react";
 
 import { VodProxyImage } from "@/components/VodProxyImage";
-import {
-  Dialog,
-  DialogContent,
-} from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { fetchVodDetail } from "@/modules/media/services/vodDetail";
+import {
+  normalizeVodImageUrl,
+  proxyVodImage,
+  shouldPreferProxyImage,
+} from "@/modules/media/services/vodImageProxy";
 import type { NormalizedTvBoxSite } from "@/modules/media/types/tvbox.types";
 import type { VodDetail, VodRoute } from "@/modules/media/types/vodWindow.types";
 
@@ -40,6 +45,24 @@ function extractMsearchKeyword(url: string): string {
   }
 }
 
+function MetaBlock({
+  label,
+  value,
+}: {
+  label: string;
+  value?: string;
+}) {
+  if (!value?.trim()) return null;
+  return (
+    <div className="rounded-2xl border border-border/60 bg-background/72 p-3.5 shadow-[0_16px_34px_-28px_rgba(var(--primary),0.32)]">
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+        {label}
+      </div>
+      <div className="text-sm leading-6 text-foreground/90 whitespace-pre-wrap break-all">{value}</div>
+    </div>
+  );
+}
+
 export function MediaDetailModal({
   vodId,
   site,
@@ -52,11 +75,11 @@ export function MediaDetailModal({
   const [detail, setDetail] = useState<VodDetail | null>(null);
   const [resolvedExt, setResolvedExt] = useState("");
   const [routes, setRoutes] = useState<VodRoute[]>([]);
-  const [activeRouteIdx, setActiveRouteIdx] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [playWarning, setPlayWarning] = useState<string | null>(null);
   const [searchResolving, setSearchResolving] = useState(false);
+  const [backgroundImageSrc, setBackgroundImageSrc] = useState("");
 
   useEffect(() => {
     let mounted = true;
@@ -71,7 +94,7 @@ export function MediaDetailModal({
         setRoutes(result.routes);
         setResolvedExt(result.extInput);
         if (result.routes.length === 0) {
-          setPlayWarning("当前详情已加载，但还没有可播放线路。");
+          setPlayWarning("当前详情已加载，但没有可播放的线路。");
         }
       })
       .catch((reason: unknown) => {
@@ -88,22 +111,43 @@ export function MediaDetailModal({
     };
   }, [site, spider, vodId]);
 
-  const activeRoute = useMemo(() => routes[activeRouteIdx] ?? null, [activeRouteIdx, routes]);
+  useEffect(() => {
+    let mounted = true;
+    const nextSrc = normalizeVodImageUrl(detail?.vod_pic ?? "");
+    setBackgroundImageSrc(shouldPreferProxyImage(nextSrc) ? "" : nextSrc);
+
+    if (!nextSrc || !shouldPreferProxyImage(nextSrc)) {
+      return () => {
+        mounted = false;
+      };
+    }
+
+    void proxyVodImage(nextSrc).then((resolved) => {
+      if (!mounted || !resolved) return;
+      setBackgroundImageSrc(resolved);
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [detail?.vod_pic]);
 
   const handleEpisodePlay = async (routeName: string, episodeName: string, episodeUrl: string, searchOnly: boolean) => {
     if (searchResolving) return;
+
     if (searchOnly) {
       const keyword = extractMsearchKeyword(episodeUrl) || detail?.vod_name || episodeName;
       if (!onSearchOnlyPlay) {
-        setPlayWarning("该线路仅提供站外搜索入口，当前没有启用跨站搜索播放。");
+        setPlayWarning("这条线路只提供跨站搜索入口，当前没有启用自动搜索播放。");
         return;
       }
+
       setSearchResolving(true);
       setPlayWarning(`正在跨站搜索可播放节点：${keyword}`);
       try {
         await onSearchOnlyPlay(keyword, detail?.vod_name || episodeName);
         setPlayWarning(null);
-      } catch (reason) {
+      } catch (reason: unknown) {
         const message = reason instanceof Error ? reason.message : String(reason);
         setPlayWarning(`跨站搜索失败：${message}`);
       } finally {
@@ -125,162 +169,168 @@ export function MediaDetailModal({
   };
 
   return (
-    <Dialog open={true} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-5xl h-[85vh] p-0 overflow-hidden rounded-[2.5rem] border-white/20 bg-background/90 shadow-2xl backdrop-blur-3xl gap-0">
-        <div className="relative flex h-full w-full flex-col">
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent
+        showCloseButton={false}
+        className="flex h-[min(88vh,900px)] w-[min(1120px,94vw)] max-w-none flex-col gap-0 overflow-hidden rounded-[28px] border-border/55 bg-background/92 p-0 shadow-[0_38px_120px_-56px_rgba(15,23,42,0.72)] backdrop-blur-2xl"
+      >
+        <DialogTitle className="sr-only">{detail?.vod_name || "影视详情"}</DialogTitle>
+
+        <button
+          onClick={onClose}
+          className="absolute right-5 top-5 z-50 flex size-10 items-center justify-center rounded-full border border-border/60 bg-background/80 text-muted-foreground shadow-md backdrop-blur-xl transition-all hover:bg-accent hover:text-foreground hover:scale-110 active:scale-95"
+          title="关闭窗口"
+        >
+          <X className="size-4.5" />
+          <span className="sr-only">关闭</span>
+        </button>
+
+        {backgroundImageSrc && (
+          <div
+            className="pointer-events-none absolute inset-0 z-0 opacity-10 blur-3xl transition-opacity duration-1000"
+            style={{
+              backgroundImage: `url(${backgroundImageSrc})`,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+            }}
+          />
+        )}
+
+        <div className="relative z-10 flex h-full min-h-0 flex-col">
           {loading ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
-              <Loader2 className="size-12 animate-spin text-primary" />
-              <span className="text-sm font-medium">正在解析详情数据...</span>
+              <Loader2 className="size-10 animate-spin text-primary" />
+              <span className="text-sm font-medium">正在加载详情…</span>
             </div>
           ) : error ? (
-            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-              <AlertCircle className="mb-4 size-16 text-red-500/80" />
-              <p className="mb-2 text-lg font-bold tracking-tight text-red-500">详情解析失败</p>
-              <p className="max-w-xl text-sm text-muted-foreground">{error}</p>
+            <div className="flex flex-1 flex-col items-center justify-center p-6 text-center">
+              <AlertCircle className="mb-4 size-16 text-destructive/80" />
+              <p className="mb-2 text-xl font-bold text-foreground">详情解析失败</p>
+              <p className="max-w-md text-sm leading-6 text-muted-foreground break-all">{error}</p>
             </div>
           ) : !detail ? (
-            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-              <Film className="mb-4 size-16 text-white/20" />
-              <p className="text-lg font-bold tracking-tight">未获取到影视详情</p>
+            <div className="flex flex-1 flex-col items-center justify-center p-6 text-center">
+              <Film className="mb-4 size-16 text-muted-foreground/30" />
+              <p className="text-xl font-bold text-muted-foreground">未获取到影视详情</p>
             </div>
           ) : (
-            <div className="grid h-full grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)]">
-              <div className="relative overflow-hidden border-b border-white/10 lg:border-b-0 lg:border-r">
-                <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-transparent to-cyan-500/5" />
-                <ScrollArea className="h-full">
-                  <div className="relative p-6 lg:p-8">
-                    <div className="overflow-hidden rounded-[2rem] border border-white/10 bg-white/5 shadow-2xl">
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="space-y-6 p-5 md:p-7">
+                <div className="rounded-[30px] border border-border/55 bg-[linear-gradient(145deg,rgba(var(--primary),0.08),rgba(var(--background),0.82)_45%,rgba(var(--primary),0.03))] p-5 shadow-[0_24px_56px_-38px_rgba(var(--primary),0.74)]">
+                  <div className="grid gap-5 sm:grid-cols-[130px_minmax(0,1fr)] lg:grid-cols-[150px_minmax(0,1fr)]">
+                    <div className="overflow-hidden rounded-[20px] border border-white/55 bg-background/80 shadow-[0_18px_36px_-26px_rgba(15,23,42,0.52)] self-start">
                       <VodProxyImage
                         src={detail.vod_pic || ""}
                         alt={detail.vod_name}
-                        className="aspect-[3/4] w-full"
+                        className="aspect-[0.72] w-full object-cover"
                       />
                     </div>
 
-                    <div className="mt-6 space-y-3">
-                      <div>
-                        <h2 className="text-2xl font-semibold tracking-tight">{detail.vod_name}</h2>
-                        <p className="mt-1 text-xs uppercase tracking-[0.24em] text-muted-foreground">
-                          {site.name} · {site.capability.sourceKind === "spider" ? "Spider" : "CMS"}
-                        </p>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3 text-sm text-muted-foreground">
-                        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-                          <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">年份</div>
-                          <div className="mt-1 text-foreground">{detail.vod_year || "未知"}</div>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-                          <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">地区</div>
-                          <div className="mt-1 text-foreground">{detail.vod_area || "未知"}</div>
+                    <div className="min-w-0 space-y-4">
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-primary/70">Selected Title</div>
+                        <h2 className="text-[1.5rem] font-semibold leading-tight tracking-tight text-foreground whitespace-pre-wrap break-words md:text-[1.7rem]">
+                          {detail.vod_name}
+                        </h2>
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <Badge variant="outline" className="bg-background/70 shadow-sm">{site.name}</Badge>
+                          <Badge variant="secondary" className="shadow-sm">
+                            {site.capability.sourceKind === "spider" ? "Spider" : "CMS"}
+                          </Badge>
+                          {detail.vod_year && <Badge variant="outline" className="bg-background/40">{detail.vod_year}</Badge>}
+                          {detail.vod_area && <Badge variant="outline" className="bg-background/40">{detail.vod_area}</Badge>}
                         </div>
                       </div>
 
-                      {detail.vod_actor && (
-                        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-muted-foreground">
-                          <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">主演</div>
-                          <div className="mt-1 leading-6 text-foreground/90">{detail.vod_actor}</div>
-                        </div>
-                      )}
-
-                      {detail.vod_director && (
-                        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-muted-foreground">
-                          <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">导演</div>
-                          <div className="mt-1 leading-6 text-foreground/90">{detail.vod_director}</div>
-                        </div>
-                      )}
-
-                      {detail.vod_content && (
-                        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm leading-6 text-muted-foreground">
-                          <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">简介</div>
-                          <p className="mt-2 whitespace-pre-wrap text-foreground/80">{detail.vod_content}</p>
-                        </div>
-                      )}
+                      <div className="grid gap-3 xl:grid-cols-2">
+                        <MetaBlock label="导演" value={detail.vod_director} />
+                        <MetaBlock label="演员" value={detail.vod_actor} />
+                      </div>
                     </div>
-                  </div>
-                </ScrollArea>
-              </div>
-
-              <div className="flex min-h-0 flex-col bg-black/5">
-                <div className="border-b border-white/10 px-6 py-5 lg:px-8">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <h3 className="text-lg font-semibold tracking-tight">播放线路</h3>
-                      <p className="mt-1 text-xs text-muted-foreground">支持 Spider 与 CMS 站点共用详情界面。</p>
-                    </div>
-                    <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-muted-foreground">
-                      共 {routes.length} 条线路
-                    </div>
-                  </div>
-
-                  {playWarning && (
-                    <div className="mt-4 rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
-                      {searchResolving ? (
-                        <span className="inline-flex items-center gap-2"><Loader2 className="size-4 animate-spin" />{playWarning}</span>
-                      ) : playWarning}
-                    </div>
-                  )}
-                </div>
-
-                <div className="border-b border-white/10 px-6 py-4 lg:px-8">
-                  <div className="flex flex-wrap gap-3">
-                    {routes.map((route, index) => (
-                      <button
-                        key={`${route.sourceName}-${index}`}
-                        onClick={() => setActiveRouteIdx(index)}
-                        className={cn(
-                          "rounded-full px-4 py-2 text-sm font-medium transition-all duration-200",
-                          index === activeRouteIdx
-                            ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20"
-                            : "bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-foreground",
-                        )}
-                      >
-                        {route.sourceName}
-                      </button>
-                    ))}
                   </div>
                 </div>
 
-                <ScrollArea className="min-h-0 flex-1 px-6 py-5 lg:px-8">
-                  {!activeRoute ? (
-                    <div className="flex h-full min-h-[220px] flex-col items-center justify-center rounded-[2rem] border border-dashed border-white/15 bg-white/5 text-center text-muted-foreground">
-                      <Film className="mb-3 size-12 text-white/20" />
-                      <p>当前详情没有可用播放线路。</p>
-                    </div>
-                  ) : (
-                    <motion.div
-                      key={activeRoute.sourceName}
-                      initial={{ opacity: 0, y: 12 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.22 }}
-                      className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4"
-                    >
-                      {activeRoute.episodes.map((episode, index) => (
-                        <button
-                          key={`${episode.url}-${index}`}
-                          onClick={() => {
-                            void handleEpisodePlay(activeRoute.sourceName, episode.name, episode.url, episode.searchOnly);
-                          }}
-                          className={cn(
-                            "group flex min-h-24 flex-col items-start justify-between rounded-[1.6rem] border px-4 py-4 text-left transition-all duration-200",
-                            episode.searchOnly
-                              ? "border-amber-500/20 bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300"
-                              : "border-white/10 bg-white/5 hover:-translate-y-0.5 hover:border-primary/30 hover:bg-white/10",
+                <MetaBlock label="剧情简介" value={detail.vod_content?.replace(/<[^>]*>?/gm, '').trim() || "暂无剧情简介"} />
+
+                {playWarning && (
+                  <div className="flex items-start gap-3 rounded-2xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 shadow-sm dark:text-amber-200">
+                    {searchResolving ? <Loader2 className="mt-0.5 size-4 animate-spin" /> : <AlertCircle className="mt-0.5 size-4" />}
+                    <span className="leading-6 break-all">{playWarning}</span>
+                  </div>
+                )}
+
+                <Separator className="bg-border/55" />
+
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-primary/70">Routes</div>
+                    <h3 className="text-base font-semibold text-foreground">播放线路</h3>
+                    <p className="text-[13px] text-muted-foreground">选择线路及剧集进行播放。</p>
+                  </div>
+
+                  {routes.length > 0 ? (
+                    <Tabs defaultValue={routes[0]?.sourceName || ""} className="w-full gap-4">
+                      <ScrollArea className="w-full pb-2">
+                        <TabsList className="mb-1 h-auto min-w-max gap-2 rounded-2xl border border-border/55 bg-background/74 p-1.5">
+                          {routes.map((route) => (
+                            <TabsTrigger
+                              key={route.sourceName}
+                              value={route.sourceName}
+                              className="h-auto min-h-9 rounded-xl px-3 py-2 text-xs data-[state=active]:bg-background"
+                            >
+                              {route.sourceName}
+                            </TabsTrigger>
+                          ))}
+                        </TabsList>
+                        <ScrollBar orientation="horizontal" className="h-1.5" />
+                      </ScrollArea>
+
+                      {routes.map((route) => (
+                        <TabsContent key={route.sourceName} value={route.sourceName} className="mt-0 outline-none">
+                          {route.episodes.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/55 bg-background/56 p-12 text-center">
+                              <Film className="mb-2 size-8 text-muted-foreground/30" />
+                              <p className="text-sm font-medium text-muted-foreground">这条线路暂无可播放剧集</p>
+                            </div>
+                          ) : (
+                            <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                              {route.episodes.map((episode, index) => (
+                                <Button
+                                  key={`${episode.url}-${index}`}
+                                  variant={episode.searchOnly ? "outline" : "secondary"}
+                                  className={cn(
+                                    "h-auto min-h-10 justify-start rounded-xl px-2.5 py-2 text-left whitespace-normal shadow-sm",
+                                    episode.searchOnly && "border-amber-500/25 bg-amber-500/6 text-amber-700 hover:bg-amber-500/10 dark:text-amber-300",
+                                    !episode.searchOnly && "hover:bg-primary hover:text-primary-foreground",
+                                  )}
+                                  onClick={() => handleEpisodePlay(route.sourceName, episode.name, episode.url, episode.searchOnly)}
+                                >
+                                  <div className="flex w-full items-start gap-1.5">
+                                    <div className="min-w-0 flex-1 space-y-0.5">
+                                      <span className="block text-[13px] font-medium leading-tight whitespace-pre-wrap break-all">{episode.name}</span>
+                                      {episode.searchOnly && (
+                                        <span className="block text-[10px] leading-tight text-muted-foreground whitespace-pre-wrap break-all line-clamp-1">
+                                          跨站搜索播放
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </Button>
+                              ))}
+                            </div>
                           )}
-                        >
-                          <div className="line-clamp-2 text-sm font-medium leading-6">{episode.name}</div>
-                          <div className="mt-3 inline-flex items-center gap-2 text-xs text-muted-foreground group-hover:text-foreground">
-                            {episode.searchOnly ? <Search className="size-3.5" /> : <Play className="size-3.5" />}
-                            {episode.searchOnly ? "跨站搜索" : "立即播放"}
-                          </div>
-                        </button>
+                        </TabsContent>
                       ))}
-                    </motion.div>
+                    </Tabs>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/55 bg-background/56 p-12 text-center">
+                      <Film className="mb-2 size-8 text-muted-foreground/30" />
+                      <p className="text-sm font-medium text-muted-foreground">没有任何线路数据</p>
+                    </div>
                   )}
-                </ScrollArea>
+                </div>
               </div>
-            </div>
+            </ScrollArea>
           )}
         </div>
       </DialogContent>

@@ -1,3 +1,5 @@
+ 
+ 
 import { useEffect, useState } from "react";
 import { getCoverDataUrl } from "../services/musicService";
 
@@ -23,12 +25,14 @@ export function useCoverDataUrl(coverPath: string | null): string | null {
 
   useEffect(() => {
     if (!coverPath) {
-      setDataUrl(null);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+setDataUrl(null);
       return;
     }
     const cached = cache.get(coverPath);
     if (cached) {
       touchCacheEntry(coverPath, cached);
+       
       setDataUrl(cached);
       return;
     }

@@ -232,8 +232,9 @@ function inferSiteCapability(site: {
   const sourceKind = requiresSpider ? "spider" : "cms";
   const canSearch = site.searchable || site.quickSearch;
   const hasPresetCategories = site.categories.length > 0;
-  const canCategory = hasPresetCategories || site.filterable || sourceKind === "cms" || requiresSpider;
-  const searchOnly = canSearch && !canCategory && isSearchNameHint(site.name);
+  const searchOnlyHint = isSearchNameHint(site.name) || /(?:^|[_./-])(m?search)(?:$|[_./-])/i.test(site.api);
+  const searchOnly = canSearch && !hasPresetCategories && !site.filterable && searchOnlyHint;
+  const canCategory = !searchOnly && (hasPresetCategories || site.filterable || sourceKind === "cms" || requiresSpider);
   const canHome = !searchOnly && (sourceKind === "cms" || requiresSpider || hasPresetCategories);
   const displayOnly = canHome && !canSearch;
 

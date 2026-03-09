@@ -1,0 +1,467 @@
+﻿{
+    "source":  "http://fty.xxooo.cf/tv",
+    "siteCount":  86,
+    "repoCount":  0,
+    "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8",
+    "uniqueApiClassCount":  60,
+    "jarOverrideCount":  12,
+    "runtimeBridgeJar":  "bridge.jar",
+    "profileBridgeJar":  "bridge.new.jar",
+    "profileBridgeDiffers":  true,
+    "apiClassDistribution":  [
+                                 {
+                                     "apiClass":  "csp_BddjAmns",
+                                     "count":  1,
+                                     "sampleIndex":  48,
+                                     "sampleKey":  "拜拜短剧",
+                                     "spider":  "custom_spider.jar"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Bili",
+                                     "count":  7,
+                                     "sampleIndex":  80,
+                                     "sampleKey":  "哔哩",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_BLSGod",
+                                     "count":  1,
+                                     "sampleIndex":  38,
+                                     "sampleKey":  "csp_BLSGod",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_ConfigCenter",
+                                     "count":  1,
+                                     "sampleIndex":  4,
+                                     "sampleKey":  "ConfigCenter",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_CzzyAmns",
+                                     "count":  1,
+                                     "sampleIndex":  20,
+                                     "sampleKey":  "厂长",
+                                     "spider":  "custom_spider.jar"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Dm84",
+                                     "count":  1,
+                                     "sampleIndex":  40,
+                                     "sampleKey":  "csp_Dm84",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_DouBan",
+                                     "count":  1,
+                                     "sampleIndex":  2,
+                                     "sampleKey":  "csp_DouBan",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Dygang",
+                                     "count":  1,
+                                     "sampleIndex":  32,
+                                     "sampleKey":  "csp_Dygang",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_DyGod",
+                                     "count":  1,
+                                     "sampleIndex":  35,
+                                     "sampleKey":  "csp_DyGod",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Emby",
+                                     "count":  2,
+                                     "sampleIndex":  74,
+                                     "sampleKey":  "Emby",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_FirstAid",
+                                     "count":  1,
+                                     "sampleIndex":  56,
+                                     "sampleKey":  "csp_FirstAid",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_FourKZN",
+                                     "count":  1,
+                                     "sampleIndex":  69,
+                                     "sampleKey":  "FourKZN",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_GoConfigAmnsr",
+                                     "count":  1,
+                                     "sampleIndex":  3,
+                                     "sampleKey":  "弹幕",
+                                     "spider":  "custom_spider.jar"
+                                 },
+                                 {
+                                     "apiClass":  "csp_GuaZi",
+                                     "count":  1,
+                                     "sampleIndex":  5,
+                                     "sampleKey":  "csp_GuaZi",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_HemaAmns",
+                                     "count":  1,
+                                     "sampleIndex":  47,
+                                     "sampleKey":  "盒马短剧",
+                                     "spider":  "custom_spider.jar"
+                                 },
+                                 {
+                                     "apiClass":  "csp_HgggAmns",
+                                     "count":  1,
+                                     "sampleIndex":  44,
+                                     "sampleKey":  "找短剧",
+                                     "spider":  "custom_spider.jar"
+                                 },
+                                 {
+                                     "apiClass":  "csp_HHkkAmns",
+                                     "count":  1,
+                                     "sampleIndex":  46,
+                                     "sampleKey":  "豪堪短剧",
+                                     "spider":  "custom_spider.jar"
+                                 },
+                                 {
+                                     "apiClass":  "csp_HxqAmns",
+                                     "count":  1,
+                                     "sampleIndex":  42,
+                                     "sampleKey":  "Hxq",
+                                     "spider":  "custom_spider.jar"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Ikanbot",
+                                     "count":  1,
+                                     "sampleIndex":  30,
+                                     "sampleKey":  "csp_Ikanbot",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Jianpian",
+                                     "count":  1,
+                                     "sampleIndex":  31,
+                                     "sampleKey":  "csp_Jianpian",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_JLdjAmns",
+                                     "count":  1,
+                                     "sampleIndex":  49,
+                                     "sampleKey":  "锦鲤短剧",
+                                     "spider":  "custom_spider.jar"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Jpys",
+                                     "count":  1,
+                                     "sampleIndex":  7,
+                                     "sampleKey":  "金牌",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_JuheShortDrama",
+                                     "count":  1,
+                                     "sampleIndex":  43,
+                                     "sampleKey":  "聚合短剧",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Kanqiu",
+                                     "count":  1,
+                                     "sampleIndex":  54,
+                                     "sampleKey":  "csp_Kanqiu",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_kongbai",
+                                     "count":  8,
+                                     "sampleIndex":  60,
+                                     "sampleKey":  "二小",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Kugou",
+                                     "count":  1,
+                                     "sampleIndex":  55,
+                                     "sampleKey":  "csp_Kugou",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Lkdy",
+                                     "count":  1,
+                                     "sampleIndex":  23,
+                                     "sampleKey":  "csp_Lkdy",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_MeijuMi",
+                                     "count":  1,
+                                     "sampleIndex":  37,
+                                     "sampleKey":  "csp_MeijuMi",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_New6v",
+                                     "count":  1,
+                                     "sampleIndex":  34,
+                                     "sampleKey":  "csp_New6v",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Nox",
+                                     "count":  3,
+                                     "sampleIndex":  11,
+                                     "sampleKey":  "巧记三",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_PanSearch",
+                                     "count":  1,
+                                     "sampleIndex":  70,
+                                     "sampleKey":  "csp_PanSearch",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_PanSouFish",
+                                     "count":  1,
+                                     "sampleIndex":  59,
+                                     "sampleKey":  "pansou|fish",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_PanTa",
+                                     "count":  1,
+                                     "sampleIndex":  71,
+                                     "sampleKey":  "盘Ta",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Push",
+                                     "count":  1,
+                                     "sampleIndex":  77,
+                                     "sampleKey":  "push_agent",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_qiao2",
+                                     "count":  2,
+                                     "sampleIndex":  9,
+                                     "sampleKey":  "巧技二",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Qiji",
+                                     "count":  3,
+                                     "sampleIndex":  8,
+                                     "sampleKey":  "橘子",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Qiwei",
+                                     "count":  1,
+                                     "sampleIndex":  58,
+                                     "sampleKey":  "片库",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Qiyou",
+                                     "count":  1,
+                                     "sampleIndex":  22,
+                                     "sampleKey":  "csp_Qiyou",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_QmdjAmns",
+                                     "count":  1,
+                                     "sampleIndex":  50,
+                                     "sampleKey":  "喵喵短剧",
+                                     "spider":  "custom_spider.jar"
+                                 },
+                                 {
+                                     "apiClass":  "csp_QnMp4",
+                                     "count":  1,
+                                     "sampleIndex":  36,
+                                     "sampleKey":  "csp_QnMp4",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_SaoHuo",
+                                     "count":  1,
+                                     "sampleIndex":  21,
+                                     "sampleKey":  "csp_SaoHuo",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_SP360",
+                                     "count":  1,
+                                     "sampleIndex":  39,
+                                     "sampleKey":  "csp_SP360",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_SpdjAmns",
+                                     "count":  1,
+                                     "sampleIndex":  52,
+                                     "sampleKey":  "岁岁短剧",
+                                     "spider":  "custom_spider.jar"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Star2",
+                                     "count":  1,
+                                     "sampleIndex":  67,
+                                     "sampleKey":  "星剧社",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_TgYunDouBanPan",
+                                     "count":  1,
+                                     "sampleIndex":  1,
+                                     "sampleKey":  "Tg|豆瓣",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_TgYunPanLocal",
+                                     "count":  1,
+                                     "sampleIndex":  76,
+                                     "sampleKey":  "TgYunPan|本地",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_TQdjAmns",
+                                     "count":  1,
+                                     "sampleIndex":  45,
+                                     "sampleKey":  "甜圈短剧",
+                                     "spider":  "custom_spider.jar"
+                                 },
+                                 {
+                                     "apiClass":  "csp_TTian",
+                                     "count":  1,
+                                     "sampleIndex":  6,
+                                     "sampleKey":  "天天",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Wogg",
+                                     "count":  1,
+                                     "sampleIndex":  57,
+                                     "sampleKey":  "玩偶gg",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_XBPQ",
+                                     "count":  2,
+                                     "sampleIndex":  26,
+                                     "sampleKey":  "永乐",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Xdai",
+                                     "count":  4,
+                                     "sampleIndex":  12,
+                                     "sampleKey":  "驿站",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_xlys",
+                                     "count":  1,
+                                     "sampleIndex":  33,
+                                     "sampleKey":  "csp_xlys",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_XydjAmns",
+                                     "count":  1,
+                                     "sampleIndex":  51,
+                                     "sampleKey":  "星星短剧",
+                                     "spider":  "custom_spider.jar"
+                                 },
+                                 {
+                                     "apiClass":  "csp_XYQHiker",
+                                     "count":  4,
+                                     "sampleIndex":  24,
+                                     "sampleKey":  "剧圈圈",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_YGP",
+                                     "count":  1,
+                                     "sampleIndex":  53,
+                                     "sampleKey":  "豆瓣",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Youtube",
+                                     "count":  1,
+                                     "sampleIndex":  73,
+                                     "sampleKey":  "Youtube",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_Zxzj",
+                                     "count":  1,
+                                     "sampleIndex":  28,
+                                     "sampleKey":  "ZXZJ",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "csp_网盘集合",
+                                     "count":  1,
+                                     "sampleIndex":  72,
+                                     "sampleKey":  "网盘集合",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "https://git.yylx.win/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/drpy2.js",
+                                     "count":  1,
+                                     "sampleIndex":  78,
+                                     "sampleKey":  "虎牙",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 },
+                                 {
+                                     "apiClass":  "https://git.yylx.win/raw.githubusercontent.com/yoursmile66/TVBox/main/js/lib/drpy2.min.js",
+                                     "count":  1,
+                                     "sampleIndex":  79,
+                                     "sampleKey":  "斗鱼",
+                                     "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8"
+                                 }
+                             ],
+    "spiderDistribution":  [
+                               {
+                                   "spider":  "Yoursmile.jar;md5;c6aaf6a9498e1e1d07126779c687bdd8",
+                                   "siteCount":  74,
+                                   "sampleApiClasses":  [
+                                                            "csp_TgYunDouBanPan",
+                                                            "csp_DouBan",
+                                                            "csp_ConfigCenter",
+                                                            "csp_GuaZi",
+                                                            "csp_TTian",
+                                                            "csp_Jpys",
+                                                            "csp_Qiji",
+                                                            "csp_qiao2",
+                                                            "csp_Nox",
+                                                            "csp_Xdai"
+                                                        ]
+                               },
+                               {
+                                   "spider":  "custom_spider.jar",
+                                   "siteCount":  12,
+                                   "sampleApiClasses":  [
+                                                            "csp_GoConfigAmnsr",
+                                                            "csp_CzzyAmns",
+                                                            "csp_HxqAmns",
+                                                            "csp_HgggAmns",
+                                                            "csp_TQdjAmns",
+                                                            "csp_HHkkAmns",
+                                                            "csp_HemaAmns",
+                                                            "csp_BddjAmns",
+                                                            "csp_JLdjAmns",
+                                                            "csp_QmdjAmns"
+                                                        ]
+                               }
+                           ]
+}

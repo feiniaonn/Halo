@@ -1,6 +1,6 @@
 [package]
 name = "halo"
-version = "0.3.100"
+version = "0.3.109"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"

@@ -1,6 +1,7 @@
 mod compat_helper;
 mod db;
 mod icon_extractor;
+mod java_runtime;
 pub mod media_cmds;
 mod music;
 mod music_control;
@@ -14,6 +15,7 @@ mod spider_cmds_exec;
 mod spider_cmds_profile;
 mod spider_cmds_runtime;
 mod spider_compat;
+pub mod spider_diag;
 mod system_overview;
 mod updater;
 mod vod_hls_relay;
@@ -45,6 +47,57 @@ use url::Url;
 const COVER_DATA_URL_MAX_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) const MPV_TEST_LOG_FILE: &str = "mpv_log.txt";
 static MPV_TEST_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[cfg(target_os = "windows")]
+const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\Halo.SingleInstance.com.tauri-app.halo";
+#[cfg(target_os = "windows")]
+const MAIN_WINDOW_TITLE: &str = "halo";
+
+#[cfg(target_os = "windows")]
+fn to_wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+fn focus_existing_main_window() {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+    };
+
+    let title = to_wide_null(MAIN_WINDOW_TITLE);
+    unsafe {
+        let hwnd = FindWindowW(None, PCWSTR(title.as_ptr())).unwrap_or_default();
+        if !hwnd.0.is_null() {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_single_instance() -> Result<bool, String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    let mutex_name = to_wide_null(SINGLE_INSTANCE_MUTEX_NAME);
+    let handle = unsafe { CreateMutexW(None, false, PCWSTR(mutex_name.as_ptr())) }
+        .map_err(|e| format!("create single instance mutex failed: {e}"))?;
+
+    let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    if already_exists {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(handle);
+        }
+        focus_existing_main_window();
+        return Ok(false);
+    }
+
+    let _keep_mutex_handle_open_for_process_lifetime = handle;
+    Ok(true)
+}
 
 fn dev_workspace_root() -> std::path::PathBuf {
     if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
@@ -384,6 +437,15 @@ fn get_cover_data_url(path: String) -> Option<String> {
 pub fn run() {
     let current_playing: Arc<Mutex<Option<CurrentPlayingInfo>>> = Arc::new(Mutex::new(None));
 
+    #[cfg(target_os = "windows")]
+    match ensure_single_instance() {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(err) => {
+            eprintln!("[app] single instance guard failed: {err}");
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -462,6 +524,7 @@ pub fn run() {
             spider_cmds::spider_player,
             spider_cmds::prefetch_spider_jar,
             spider_cmds_profile::profile_spider_site,
+            spider_diag::spider_diagnose_source,
             spider_cmds::get_builtin_spider_jar_path,
             spider_cmds::get_bridge_diagnostics,
             spider_cmds_runtime::get_spider_execution_report,

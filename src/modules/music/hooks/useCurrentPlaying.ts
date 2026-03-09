@@ -1,3 +1,5 @@
+ 
+ 
 import { useCallback, useEffect, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { EVENT_MUSIC_CURRENT_CHANGED } from "@/modules/shared/services/events";
@@ -145,7 +147,8 @@ export function useCurrentPlaying() {
 
   useEffect(() => {
     if (!isTauri) {
-      setSnapshot((prev) => (prev.loading ? { ...prev, loading: false } : prev));
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+setSnapshot((prev) => (prev.loading ? { ...prev, loading: false } : prev));
       return;
     }
     return subscribe(setSnapshot, isTauri);

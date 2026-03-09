@@ -1,8 +1,7 @@
-import { AlertCircle, Play, Tv } from "lucide-react";
+import { AlertCircle, Play, Tv } from 'lucide-react';
 
-import { Card } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
-import type { LiveChannel, LiveGroup } from "@/modules/live/types/live.types";
+import { cn } from '@/lib/utils';
+import type { LiveChannel, LiveGroup } from '@/modules/live/types/live.types';
 
 interface LiveChannelPanelProps {
   groups: LiveGroup[];
@@ -24,68 +23,92 @@ export function LiveChannelPanel({
   onOpenChannel,
 }: LiveChannelPanelProps) {
   return (
-    <div className="flex h-full flex-1 animate-in fade-in duration-500 overflow-hidden">
-      <div className="custom-scrollbar mr-6 flex w-56 flex-shrink-0 flex-col overflow-y-auto border-r border-white/10 pr-4">
-        {groups.map((group) => (
-          <button
-            key={group.groupName}
-            onClick={() => onSelectGroup(group.groupName)}
-            className={cn(
-              "mb-2 w-full rounded-xl px-4 py-3 text-left font-medium transition-all",
-              activeGroup === group.groupName
-                ? "scale-105 bg-primary text-primary-foreground shadow-md"
-                : "bg-transparent text-zinc-400 hover:bg-white/5 hover:text-white",
-            )}
-          >
-            <span className="block w-full truncate">{group.groupName}</span>
-          </button>
-        ))}
+    <div className="flex w-full animate-in fade-in duration-300" style={{ height: '100%', overflow: 'hidden' }}>
 
-        {groups.length === 0 && !loading && (
-          <div className="mt-4 px-4 text-sm text-zinc-500">暂无分组</div>
-        )}
-        {loading && (
-          <div className="mt-4 flex items-center gap-2 px-4 text-sm text-zinc-500">
-            <span className="size-4 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
-            加载中...
-          </div>
-        )}
+      {/* ── Left Sidebar ── */}
+      <div
+        className="flex shrink-0 flex-col border-r bg-muted/20"
+        style={{ width: '176px', height: '100%', overflowY: 'auto', overflowX: 'hidden' }}
+      >
+        <div className="py-2 pr-1">
+          {loading && (
+            <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+              <span className="size-3 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+              加载中...
+            </div>
+          )}
+          {!loading && groups.length === 0 && (
+            <div className="px-3 py-2 text-xs text-muted-foreground">暂无分组</div>
+          )}
+          {groups.map((group) => {
+            const isActive = activeGroup === group.groupName;
+            return (
+              <button
+                key={group.groupName}
+                onClick={() => onSelectGroup(group.groupName)}
+                className={cn(
+                  'flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors',
+                  isActive
+                    ? 'bg-primary text-primary-foreground font-semibold'
+                    : 'text-foreground/70 hover:bg-muted hover:text-foreground',
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate leading-tight">{group.groupName}</span>
+              </button>
+            );
+          })}
+          {/* Breathing room at the bottom */}
+          <div style={{ height: '32px' }} />
+        </div>
       </div>
 
-      <div className="custom-scrollbar flex-1 overflow-y-auto pb-10">
-        {error ? (
-          <div className="flex h-full flex-col items-center justify-center rounded-2xl border border-red-500/20 bg-red-500/10 p-12 text-center animate-in zoom-in-95 duration-300">
-            <AlertCircle className="mb-4 size-12 text-red-400" />
-            <p className="font-medium text-red-400">{error}</p>
-            <p className="mt-2 text-xs text-red-400/70">请尝试重新配置直播源地址。</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {currentGroup?.channels.map((channel, index) => (
-              <Card
-                key={`${channel.name}-${index}`}
-                onClick={() => onOpenChannel(channel)}
-                className="glass-card group relative flex cursor-pointer items-center justify-between overflow-hidden border-none p-4 transition-transform duration-400 hover:-translate-y-1"
-              >
-                <div className="flex items-center gap-3 overflow-hidden">
-                  <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-white/10 text-foreground/70 transition-colors group-hover:bg-primary/20 group-hover:text-primary">
-                    <Tv className="size-5" />
+      {/* ── Right Content ── */}
+      <div
+        className="flex-1"
+        style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', minWidth: 0 }}
+      >
+        <div className="p-4">
+          {error ? (
+            <div className="flex flex-col items-center justify-center gap-4 py-20 text-center text-destructive">
+              <AlertCircle className="size-10 opacity-60" />
+              <p className="text-base font-semibold">{error}</p>
+              <p className="text-sm text-muted-foreground">请尝试重新配置直播源地址。</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              {currentGroup?.channels.map((channel, index) => (
+                <button
+                  key={`${channel.name}-${index}`}
+                  onClick={() => onOpenChannel(channel)}
+                  className="group flex items-center gap-3 rounded-xl border border-border/60 bg-background/80 px-3 py-2.5 text-left transition-all hover:border-primary/30 hover:bg-muted hover:shadow-sm active:scale-95"
+                >
+                  <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors group-hover:bg-primary/10 group-hover:text-primary">
+                    <Tv className="size-4" />
                   </div>
-                  <div className="overflow-hidden text-left">
-                    <div className="truncate text-sm font-semibold text-white/90 transition-colors group-hover:text-white">
+                  <div className="min-w-0 flex-1 overflow-hidden">
+                    <div className="truncate text-[13px] font-medium leading-tight text-foreground">
                       {channel.name}
                     </div>
-                    <div className="mt-0.5 truncate text-[10px] uppercase text-muted-foreground">
-                      {channel.urls.length > 1 ? `已含 ${channel.urls.length} 条备用线路` : "直播流"}
+                    <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                      {channel.urls.length > 1 ? `${channel.urls.length} 条线路` : '直播流'}
                     </div>
                   </div>
+                  <Play className="size-3 shrink-0 text-primary opacity-0 transition-all group-hover:opacity-100" />
+                </button>
+              ))}
+              {!loading && !error && !currentGroup?.channels.length && (
+                <div className="col-span-full flex flex-col items-center justify-center py-20 text-muted-foreground">
+                  <Tv className="mb-3 size-10 opacity-30" />
+                  <p className="text-sm font-medium">当前分组暂无频道</p>
                 </div>
-                <Play className="ml-2 size-5 shrink-0 -translate-x-2 opacity-0 drop-shadow-[0_0_8px_rgba(255,255,255,0.3)] transition-all group-hover:translate-x-0 group-hover:opacity-100 group-hover:text-primary" />
-              </Card>
-            ))}
-          </div>
-        )}
+              )}
+            </div>
+          )}
+          {/* Bottom padding */}
+          <div style={{ height: '24px' }} />
+        </div>
       </div>
+
     </div>
   );
 }

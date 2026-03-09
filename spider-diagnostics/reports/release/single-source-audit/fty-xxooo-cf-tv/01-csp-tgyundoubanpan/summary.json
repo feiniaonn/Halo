@@ -1,0 +1,13 @@
+﻿{
+    "source":  "http://fty.xxooo.cf/tv",
+    "siteIndex":  1,
+    "siteKey":  "Tg|豆瓣",
+    "apiClass":  "csp_TgYunDouBanPan",
+    "className":  "csp_TgYunDouBanPan",
+    "jar":  "a8774196dcf36524134fe2eea1c949c71eca4e0284d23be486b2c58bf8d796fe.desktop.v3.jar",
+    "homeOk":  false,
+    "categoryOk":  false,
+    "classCount":  0,
+    "listCount":  0,
+    "failureKind":  "NeedsLocalHelper"
+}

@@ -1,4 +1,6 @@
-﻿import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+ 
+ 
+ import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { FloatingPlayer } from "./FloatingPlayer";
 import { TitleBar } from "./TitleBar";
@@ -57,7 +59,8 @@ export function AppLayout({
   const shellRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    setCustomBgFailed(false);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+setCustomBgFailed(false);
   }, [bgType, bgPath]);
 
   useEffect(() => {

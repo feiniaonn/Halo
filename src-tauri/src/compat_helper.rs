@@ -195,11 +195,17 @@ fn bind_child_to_job_object(child: &Child) -> Result<WindowsJobObject, String> {
     Ok(WindowsJobObject(job.0 as isize))
 }
 
-fn spawn_helper_process(helper_jar_path: &PathBuf, ports: &[u16]) -> Result<Child, String> {
+fn spawn_helper_process(
+    app: &AppHandle,
+    helper_jar_path: &PathBuf,
+    ports: &[u16],
+) -> Result<Child, String> {
     #[cfg(target_os = "windows")]
     use std::os::windows::process::CommandExt;
 
-    let mut command = Command::new("java");
+    let java_bin = crate::java_runtime::resolve_java_binary(app)?;
+    let java_home = crate::java_runtime::resolve_java_home(app)?;
+    let mut command = Command::new(&java_bin);
     #[cfg(target_os = "windows")]
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -222,6 +228,7 @@ fn spawn_helper_process(helper_jar_path: &PathBuf, ports: &[u16]) -> Result<Chil
                 .collect::<Vec<_>>()
                 .join(","),
         )
+        .env("JAVA_HOME", java_home)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
@@ -293,7 +300,7 @@ pub(crate) async fn ensure_compat_helper_started(
         helper_jar_path.display()
     ));
 
-    let child = spawn_helper_process(&helper_jar_path, &normalized_ports)?;
+    let child = spawn_helper_process(app, &helper_jar_path, &normalized_ports)?;
     #[cfg(target_os = "windows")]
     let job = bind_child_to_job_object(&child)?;
 

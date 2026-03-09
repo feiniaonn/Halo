@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/formatters";
@@ -382,13 +382,13 @@ export function MusicPage() {
     setShowSettings(false);
   };
 
-  const requestCloseSettings = () => {
+  const requestCloseSettings = useCallback(() => {
     if (settingsDirty) {
       setShowUnsavedPrompt(true);
       return;
     }
     closeSettingsModal();
-  };
+  }, [settingsDirty]);
 
   const discardAndCloseSettings = () => {
     setSettings(savedSettingsSnapshot);
@@ -481,6 +481,7 @@ export function MusicPage() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+     
   }, [hotkeyCapture, requestCloseSettings, showSettings, showUnsavedPrompt]);
 
   useEffect(() => {

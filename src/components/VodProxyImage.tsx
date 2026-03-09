@@ -1,7 +1,11 @@
-﻿import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useState } from "react";
 
 import { cn } from "@/lib/utils";
+import {
+  normalizeVodImageUrl,
+  proxyVodImage,
+  shouldPreferProxyImage,
+} from "@/modules/media/services/vodImageProxy";
 
 interface VodProxyImageProps {
   src: string;
@@ -10,38 +14,108 @@ interface VodProxyImageProps {
   emptyLabel?: string;
 }
 
-export function VodProxyImage({ src, alt, className, emptyLabel = "无图" }: VodProxyImageProps) {
-  const [proxySrc, setProxySrc] = useState("");
+interface ResolvedVodProxyImageProps extends Omit<VodProxyImageProps, "src"> {
+  normalizedSrc: string;
+}
+
+function ResolvedVodProxyImage({
+  normalizedSrc,
+  alt,
+  className,
+  emptyLabel,
+}: ResolvedVodProxyImageProps) {
+  const prefersProxy = shouldPreferProxyImage(normalizedSrc);
   const [error, setError] = useState(false);
+  const [displaySrc, setDisplaySrc] = useState(() => (prefersProxy ? "" : normalizedSrc));
+  const [proxyAttempted, setProxyAttempted] = useState(false);
 
   useEffect(() => {
-    if (!src) return;
-    if (src.startsWith("data:") || src.startsWith("blob:")) {
-      setProxySrc(src);
+    let cancelled = false;
+    if (!normalizedSrc) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (!prefersProxy) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    void proxyVodImage(normalizedSrc).then((resolved) => {
+      if (cancelled || !resolved) return;
+      setDisplaySrc(resolved);
+      setProxyAttempted(true);
       setError(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [normalizedSrc, prefersProxy]);
+
+  const handleImageError = useCallback(() => {
+    const normalized = normalizedSrc;
+    if (!normalized) {
+      setError(true);
       return;
     }
 
-    invoke<string>("proxy_media", { url: src })
-      .then((result) => {
-        setProxySrc(result);
-        setError(false);
-      })
-      .catch(() => {
-        setError(true);
-      });
-  }, [src]);
+    if (proxyAttempted || displaySrc.startsWith("data:")) {
+      setError(true);
+      return;
+    }
 
-  if (error || !src) {
-    return <div className={cn("bg-white/10 flex items-center justify-center", className)}>{emptyLabel}</div>;
+    setProxyAttempted(true);
+    void proxyVodImage(normalized).then((resolved) => {
+      if (!resolved) {
+        setError(true);
+        return;
+      }
+      setDisplaySrc(resolved);
+      setError(false);
+    });
+  }, [displaySrc, normalizedSrc, proxyAttempted]);
+
+  if (error || !displaySrc) {
+    return (
+      <div
+        className={cn(
+          "flex items-center justify-center bg-white/10 text-xs text-muted-foreground/50",
+          className,
+        )}
+      >
+        {emptyLabel}
+      </div>
+    );
   }
 
   return (
     <img
-      src={proxySrc || "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"}
+      src={displaySrc}
       alt={alt}
-      className={cn(proxySrc ? "opacity-100" : "opacity-0", className, "transition-opacity duration-300 object-cover")}
+      onError={handleImageError}
+      className={cn("object-cover", className)}
       loading="lazy"
+    />
+  );
+}
+
+export function VodProxyImage({
+  src,
+  alt,
+  className,
+  emptyLabel = "无图",
+}: VodProxyImageProps) {
+  const normalizedSrc = normalizeVodImageUrl(src);
+
+  return (
+    <ResolvedVodProxyImage
+      key={normalizedSrc || "__empty__"}
+      normalizedSrc={normalizedSrc}
+      alt={alt}
+      className={className}
+      emptyLabel={emptyLabel}
     />
   );
 }

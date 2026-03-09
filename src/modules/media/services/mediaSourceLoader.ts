@@ -78,11 +78,11 @@ export async function hydrateTvBoxConfig(raw: unknown): Promise<NormalizedTvBoxC
   return normalized;
 }
 
-export async function loadVodSource(url: string): Promise<LoadedVodSource> {
+export async function loadVodSource(url: string, preferredRepoUrl = ""): Promise<LoadedVodSource> {
   const payload = await fetchTvboxPayload(url);
   const repoUrls = normalizeRepoUrls(payload);
   if (repoUrls.length > 0) {
-    const activeRepoUrl = repoUrls[0].url;
+    const activeRepoUrl = repoUrls.find((repo) => repo.url === preferredRepoUrl)?.url ?? repoUrls[0].url;
     const subPayload = await fetchTvboxPayload(activeRepoUrl);
     return {
       config: await hydrateTvBoxConfig(subPayload),

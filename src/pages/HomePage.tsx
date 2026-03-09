@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence, type Variants } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { clampPercent, formatBytes, formatUptime } from "@/lib/formatters";
@@ -557,6 +557,7 @@ export function HomePage({ onNavigate }: { onNavigate?: (page: Page) => void }) 
                             animate={{ scale: 1, opacity: 1 }}
                             exit={{ scale: 0.8, opacity: 0 }}
                             draggable
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
                             onDragStart={(e: any) => {
                               setDraggingShortcutId(app.id);
                               e.dataTransfer.setData("text/shortcut-id", app.id);
@@ -566,10 +567,12 @@ export function HomePage({ onNavigate }: { onNavigate?: (page: Page) => void }) 
                               setDraggingShortcutId(null);
                               setDragOverShortcutId(null);
                             }}
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
                             onDragOver={(e: any) => {
                               e.preventDefault();
                               setDragOverShortcutId(app.id);
                             }}
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
                             onDrop={(e: any) => {
                               e.preventDefault();
                               const dragId =
@@ -642,6 +645,7 @@ export function HomePage({ onNavigate }: { onNavigate?: (page: Page) => void }) 
                           <ContextMenuItem onSelect={() => openShortcutLocation(app.id)}>
                             {"\u6253\u5f00\u6587\u4ef6\u4f4d\u7f6e"}
                           </ContextMenuItem>
+                          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                           <ContextMenuItem onSelect={(e) => handleRefreshIcon(app.id, e as any)}>
                             {"\u5237\u65b0\u56fe\u6807"}
                           </ContextMenuItem>

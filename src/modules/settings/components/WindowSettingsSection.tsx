@@ -1,8 +1,8 @@
-﻿import { cn } from "@/lib/utils";
-import { motion } from "framer-motion";
-import type { CloseBehavior, MiniRestoreMode } from "@/modules/settings/types/settings.types";
-import { Card } from "@/components/ui/card";
-import { Switch } from "@/components/ui/switch";
+import { AppWindow, MonitorSmartphone, Power } from 'lucide-react';
+import { Separator } from '@/components/ui/separator';
+import { Switch } from '@/components/ui/switch';
+import { cn } from '@/lib/utils';
+import type { CloseBehavior, MiniRestoreMode } from '@/modules/settings/types/settings.types';
 
 export function WindowSettingsSection({
   launchAtLogin,
@@ -19,99 +19,131 @@ export function WindowSettingsSection({
   onCloseBehaviorChange: (behavior: CloseBehavior) => void;
   onMiniRestoreModeChange: (mode: MiniRestoreMode) => void;
 }) {
-  const closeOptions = [
-    { id: "exit", label: "退出程序" },
-    { id: "tray", label: "最小化到托盘" },
-    { id: "tray_mini", label: "托盘与迷你模式" },
-  ] as const;
+  const closeOptions: Array<{
+    id: CloseBehavior;
+    label: string;
+    description: string;
+  }> = [
+    { id: 'exit', label: '退出程序', description: '关闭直接退出 Halo' },
+    { id: 'tray', label: '最小化到托盘', description: '保留后台运行能力' },
+    { id: 'tray_mini', label: '托盘与迷你模式', description: '进入迷你模式驻留' },
+  ];
 
-  const restoreOptions = [
-    { id: "button", label: "仅按钮" },
-    { id: "double_click", label: "仅双击" },
-    { id: "both", label: "双击或按钮" },
-  ] as const;
+  const restoreOptions: Array<{
+    id: MiniRestoreMode;
+    label: string;
+    description: string;
+  }> = [
+    { id: 'button', label: '仅按钮', description: '通过点击按钮恢复' },
+    { id: 'double_click', label: '仅双击', description: '双击窗口空白处恢复' },
+    { id: 'both', label: '双击或按钮', description: '同时支持按钮与双击' },
+  ];
 
   return (
-    <div className="flex flex-col gap-6">
-      <Card className="glass-card border-none p-6 relative overflow-hidden group">
-        <div className="flex items-center justify-between z-10 relative">
-          <div>
-            <h2 className="text-lg font-bold text-foreground/90 tracking-tight">开机自启</h2>
-            <p className="mt-1 text-[13px] text-muted-foreground/80 font-medium tracking-wide">系统登录后自动在后台启动 Halo 服务</p>
-          </div>
-          <Switch
-            checked={launchAtLogin}
-            onCheckedChange={onLaunchAtLoginChange}
-          />
+    <div className="mx-auto max-w-4xl space-y-10 pb-12 pt-4">
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight text-foreground">窗口与常驻行为</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            统一控制自启动、关闭逻辑和迷你窗口恢复方式。
+          </p>
         </div>
-      </Card>
+      </section>
 
-      <Card className="glass-card border-none p-6 relative overflow-hidden group">
-        <div className="z-10 relative">
-          <h2 className="text-lg font-bold text-foreground/90 tracking-tight">关闭窗口行为</h2>
-          <p className="mt-1 text-[13px] text-muted-foreground/80 font-medium tracking-wide">当主界面的关闭按钮被点击时，应用的表现</p>
-
-          <div className="mt-6 flex bg-black/10 dark:bg-black/30 p-1.5 rounded-[16px] shadow-inner gap-1 relative z-20 overflow-x-auto no-scrollbar mask-linear-x">
-            {closeOptions.map((opt) => {
-              const isActive = closeBehavior === opt.id;
-              return (
-                <button
-                  key={opt.id}
-                  onClick={() => onCloseBehaviorChange(opt.id as CloseBehavior)}
-                  className={cn(
-                    "relative flex-1 px-4 py-2.5 text-xs sm:text-sm font-bold rounded-[12px] transition-all duration-300 z-10 whitespace-nowrap outline-none",
-                    isActive ? "text-primary-foreground shadow-sm" : "text-muted-foreground/70 hover:text-foreground hover:bg-white/5"
-                  )}
-                >
-                  {isActive && (
-                    <motion.div
-                      layoutId="closeBehaviorIndicator"
-                      className="absolute inset-0 bg-primary/90 rounded-[12px] shadow-md border border-white/20"
-                      transition={{ type: "spring", stiffness: 400, damping: 30 }}
-                      style={{ zIndex: -1 }}
-                    />
-                  )}
-                  {opt.label}
-                </button>
-              );
-            })}
+      {/* 启动与常驻 */}
+      <section className="space-y-1">
+        <div className="flex items-center justify-between py-4">
+          <div className="space-y-1 flex-1 pr-8">
+            <div className="flex items-center gap-2">
+              <Power className="size-4 text-primary" />
+              <h3 className="text-sm font-medium leading-none">开机自动启动</h3>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              系统登录后 Halo 自动在后台启动，适合需要常驻托盘的使用方式。
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center">
+            <Switch
+              checked={launchAtLogin}
+              onCheckedChange={onLaunchAtLoginChange}
+            />
           </div>
         </div>
-      </Card>
+        
+        <Separator />
 
-      <Card className="glass-card border-none p-6 relative overflow-hidden group">
-        <div className="z-10 relative">
-          <h2 className="text-lg font-bold text-foreground/90 tracking-tight">迷你窗口恢复方式</h2>
-          <p className="mt-1 text-[13px] text-muted-foreground/80 font-medium tracking-wide">控制迷你播放器如何恢复为完整主界面</p>
-
-          <div className="mt-6 flex bg-black/10 dark:bg-black/30 p-1.5 rounded-[16px] shadow-inner gap-1 relative z-20 overflow-x-auto no-scrollbar mask-linear-x">
-            {restoreOptions.map((opt) => {
-              const isActive = miniRestoreMode === opt.id;
-              return (
-                <button
-                  key={opt.id}
-                  onClick={() => onMiniRestoreModeChange(opt.id as MiniRestoreMode)}
-                  className={cn(
-                    "relative flex-1 px-4 py-2.5 text-xs sm:text-sm font-bold rounded-[12px] transition-all duration-300 z-10 whitespace-nowrap outline-none",
-                    isActive ? "text-primary-foreground shadow-sm" : "text-muted-foreground/70 hover:text-foreground hover:bg-white/5"
+        {/* 关闭行为 */}
+        <div className="flex flex-col gap-4 py-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <AppWindow className="size-4 text-primary" />
+              <h3 className="text-sm font-medium leading-none">关闭主窗口行为</h3>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              配置点击主窗口关闭按钮 (×) 时的默认动作。
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {closeOptions.map((option) => (
+              <div
+                key={option.id}
+                onClick={() => onCloseBehaviorChange(option.id)}
+                className={cn(
+                  "flex cursor-pointer flex-col gap-1 rounded-xl border p-4 shadow-sm transition-all hover:bg-accent",
+                  closeBehavior === option.id
+                    ? "border-primary bg-primary/5 ring-1 ring-primary"
+                    : "border-border/60 bg-card"
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold">{option.label}</span>
+                  {closeBehavior === option.id && (
+                    <div className="h-2 w-2 rounded-full bg-primary" />
                   )}
-                >
-                  {isActive && (
-                    <motion.div
-                      layoutId="miniRestoreIndicator"
-                      className="absolute inset-0 bg-primary/90 rounded-[12px] shadow-md border border-white/20"
-                      transition={{ type: "spring", stiffness: 400, damping: 30 }}
-                      style={{ zIndex: -1 }}
-                    />
-                  )}
-                  {opt.label}
-                </button>
-              );
-            })}
+                </div>
+                <span className="text-xs text-muted-foreground">{option.description}</span>
+              </div>
+            ))}
           </div>
         </div>
-      </Card>
+
+        <Separator />
+
+        {/* 迷你模式 */}
+        <div className="flex flex-col gap-4 py-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <MonitorSmartphone className="size-4 text-primary" />
+              <h3 className="text-sm font-medium leading-none">迷你窗口恢复方式</h3>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              配置从迷你模式（桌面歌词/悬浮播放器）恢复到主界面的交互手势。
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {restoreOptions.map((option) => (
+              <div
+                key={option.id}
+                onClick={() => onMiniRestoreModeChange(option.id)}
+                className={cn(
+                  "flex cursor-pointer flex-col gap-1 rounded-xl border p-4 shadow-sm transition-all hover:bg-accent",
+                  miniRestoreMode === option.id
+                    ? "border-primary bg-primary/5 ring-1 ring-primary"
+                    : "border-border/60 bg-card"
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold">{option.label}</span>
+                  {miniRestoreMode === option.id && (
+                    <div className="h-2 w-2 rounded-full bg-primary" />
+                  )}
+                </div>
+                <span className="text-xs text-muted-foreground">{option.description}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
-

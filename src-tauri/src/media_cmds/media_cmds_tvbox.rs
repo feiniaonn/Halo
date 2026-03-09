@@ -1,10 +1,10 @@
 use regex::Regex;
 use reqwest::Client;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::LazyLock;
 use url::Url;
 
-use super::{apply_request_headers, build_client, resolve_media_request};
+use super::{apply_request_headers, build_client, build_rescue_client, resolve_media_request};
 
 const TVBOX_RESOLVE_MAX_DEPTH: usize = 2;
 const TVBOX_RESOLVE_MAX_FETCHES: usize = 24;
@@ -441,32 +441,73 @@ fn extract_html_candidate_urls(html: &str, page_url: &str) -> Vec<String> {
 }
 
 fn try_decode_tvbox_base64_payload(text: &str) -> Option<String> {
-    let trimmed = text.trim();
-    if trimmed.len() < 80 || trimmed.starts_with('{') || trimmed.starts_with('[') {
-        return None;
-    }
-    let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
-    if compact.len() < 80
-        || !compact
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '-' | '_'))
-    {
-        return None;
-    }
+    fn decode_candidate_base64(compact: &str) -> Option<String> {
+        if compact.len() < 80
+            || compact.starts_with('{')
+            || compact.starts_with('[')
+            || !compact
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '-' | '_'))
+        {
+            return None;
+        }
 
-    let engines = [
-        &base64::engine::general_purpose::STANDARD,
-        &base64::engine::general_purpose::URL_SAFE,
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-    ];
-    for engine in engines {
-        if let Ok(bytes) = base64::Engine::decode(engine, compact.as_bytes()) {
-            let decoded = decode_text_bytes(&bytes);
-            if let Some(normalized) = extract_tvbox_config_json(&decoded) {
-                return Some(normalized);
+        let mut variants = vec![compact.to_string()];
+        if !compact.ends_with('=') {
+            let padding = (4 - (compact.len() % 4)) % 4;
+            if padding > 0 {
+                variants.push(format!("{compact}{}", "=".repeat(padding)));
             }
         }
+
+        let engines = [
+            &base64::engine::general_purpose::STANDARD,
+            &base64::engine::general_purpose::URL_SAFE,
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        ];
+        for variant in variants {
+            for engine in engines {
+                if let Ok(bytes) = base64::Engine::decode(engine, variant.as_bytes()) {
+                    let decoded = decode_text_bytes(&bytes);
+                    if let Some(normalized) = extract_tvbox_config_json(&decoded) {
+                        return Some(normalized);
+                    }
+                }
+            }
+        }
+
+        None
     }
+
+    let compact: String = text.trim().chars().filter(|c| !c.is_whitespace()).collect();
+    if let Some(decoded) = decode_candidate_base64(&compact) {
+        return Some(decoded);
+    }
+
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '-' | '_') {
+            current.push(ch);
+            continue;
+        }
+        if current.len() >= 80 {
+            segments.push(std::mem::take(&mut current));
+        } else {
+            current.clear();
+        }
+    }
+    if current.len() >= 80 {
+        segments.push(current);
+    }
+    segments.sort_by_key(|segment| std::cmp::Reverse(segment.len()));
+
+    for segment in segments {
+        if let Some(decoded) = decode_candidate_base64(&segment) {
+            return Some(decoded);
+        }
+    }
+
     None
 }
 
@@ -661,12 +702,89 @@ async fn resolve_tvbox_config_from_html(
     None
 }
 
+async fn resolve_tvbox_config_from_known_candidates(
+    client: &Client,
+    source: &str,
+    candidates: &[&str],
+) -> Option<String> {
+    for candidate in candidates {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        println!(
+            "[tvbox][resolver] try known remote candidate for {} -> {}",
+            source, trimmed
+        );
+
+        let text = match fetch_remote_text(client, trimmed).await {
+            Ok(value) => value,
+            Err(err) => {
+                println!(
+                    "[tvbox][resolver] known candidate failed for {} -> {} ({})",
+                    source, trimmed, err
+                );
+                continue;
+            }
+        };
+
+        if let Some(normalized) = extract_tvbox_config_json(&text) {
+            println!(
+                "[tvbox][resolver] known candidate produced tvbox json for {} -> {}",
+                source, trimmed
+            );
+            return Some(normalized);
+        }
+
+        if let Some(decoded) = try_decode_tvbox_base64_payload(&text) {
+            println!(
+                "[tvbox][resolver] known candidate produced base64 tvbox payload for {} -> {}",
+                source, trimmed
+            );
+            return Some(decoded);
+        }
+
+        if looks_like_html_document(&text) {
+            if let Some(resolved) = resolve_tvbox_config_from_html(client, trimmed, &text).await {
+                println!(
+                    "[tvbox][resolver] known candidate resolved nested html tvbox config for {} -> {}",
+                    source, trimmed
+                );
+                return Some(resolved);
+            }
+        }
+    }
+
+    None
+}
+
 pub async fn fetch_tvbox_config(url: String) -> Result<String, String> {
-    let source = url.trim().to_string();
-    if source.is_empty() {
+    let raw_source = url.trim().to_string();
+    if raw_source.is_empty() {
         return Err("source url is empty".to_string());
     }
+    let source = crate::media_cmds::media_cmds_source_fallbacks::resolve_known_source_redirect(
+        &raw_source,
+    )
+    .map(str::to_string)
+    .unwrap_or(raw_source.clone());
+    if source != raw_source {
+        println!(
+            "[tvbox][resolver] redirected known source alias: {} -> {}",
+            raw_source, source
+        );
+    }
     println!("[media_cmds] Fetching config from: {}", source);
+    let known_source_fallback =
+        crate::media_cmds::media_cmds_source_fallbacks::resolve_known_source_fallback(&source)
+            .or_else(|| {
+                crate::media_cmds::media_cmds_source_fallbacks::resolve_known_source_fallback(
+                    &raw_source,
+                )
+            });
+    let known_remote_candidates =
+        crate::media_cmds::media_cmds_source_fallbacks::resolve_known_source_candidates(&source);
 
     if source.starts_with("file://") {
         let mut path = source.trim_start_matches("file:///").to_string();
@@ -685,7 +803,29 @@ pub async fn fetch_tvbox_config(url: String) -> Result<String, String> {
     }
 
     let client = build_client()?;
-    let text = fetch_remote_text(&client, &source).await?;
+    let text = match fetch_remote_text(&client, &source).await {
+        Ok(text) => text,
+        Err(err) => {
+            if let Some(resolved) =
+                resolve_tvbox_config_from_known_candidates(&client, &source, known_remote_candidates)
+                    .await
+            {
+                println!(
+                    "[tvbox][resolver] stabilized source via known remote candidate after root fetch failure: {}",
+                    source
+                );
+                return Ok(resolved);
+            }
+            if let Some(fallback) = known_source_fallback {
+                println!(
+                    "[tvbox][resolver] root fetch failed, using bundled source fallback: {}",
+                    source
+                );
+                return Ok(fallback.to_string());
+            }
+            return Err(err);
+        }
+    };
     println!(
         "[media_cmds] Received {} chars (remote)",
         text.chars().count()
@@ -702,6 +842,15 @@ pub async fn fetch_tvbox_config(url: String) -> Result<String, String> {
 
     if looks_like_html_document(&text) {
         println!("[tvbox][resolver] html wrapper detected: {}", source);
+        if let Some(resolved) =
+            resolve_tvbox_config_from_known_candidates(&client, &source, known_remote_candidates).await
+        {
+            println!(
+                "[tvbox][resolver] stabilized source via known remote candidate before html wrapper parse: {}",
+                source
+            );
+            return Ok(resolved);
+        }
         if let Some(resolved) = resolve_tvbox_config_from_html(&client, &source, &text).await {
             println!("[tvbox][resolver] resolved tvbox config from html wrapper");
             return Ok(resolved);
@@ -713,13 +862,31 @@ pub async fn fetch_tvbox_config(url: String) -> Result<String, String> {
         }
         println!("[tvbox][resolver] all resolution strategies failed, fallback raw body");
     } else {
-        // Not HTML, not JSON, not base64 — could be a custom-encrypted payload.
+        // Not HTML, not JSON, not base64 鈥?could be a custom-encrypted payload.
         // Try known decrypt proxies as a last resort.
         println!("[tvbox][resolver] unrecognized payload, trying decrypt proxies");
         if let Some(proxy_result) = try_tvbox_decrypt_proxies(&client, &source).await {
             println!("[tvbox][resolver] resolved unrecognized payload via decrypt proxy");
             return Ok(proxy_result);
         }
+    }
+
+    if let Some(resolved) =
+        resolve_tvbox_config_from_known_candidates(&client, &source, known_remote_candidates).await
+    {
+        println!(
+            "[tvbox][resolver] stabilized source via known remote candidate after resolution miss: {}",
+            source
+        );
+        return Ok(resolved);
+    }
+
+    if let Some(fallback) = known_source_fallback {
+        println!(
+            "[tvbox][resolver] using bundled source fallback after resolution miss: {}",
+            source
+        );
+        return Ok(fallback.to_string());
     }
 
     Ok(text)
@@ -833,20 +1000,62 @@ pub async fn fetch_vod_detail(api_url: String, ids: String) -> Result<String, St
     Err("detail response empty".to_string())
 }
 
-pub async fn proxy_media(
-    url: String,
-    headers: Option<std::collections::HashMap<String, String>>,
-) -> Result<String, String> {
-    let client = build_client()?;
-    let resolved = resolve_media_request(&url, headers);
-    let mut builder = client.get(&resolved.url)
+fn build_image_origin_headers(url: &str) -> HashMap<String, String> {
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Accept-Language".to_string(),
+        "zh-CN,zh;q=0.9,en;q=0.8".to_string(),
+    );
+
+    if let Ok(parsed) = Url::parse(url) {
+        if let Some(host) = parsed.host_str() {
+            let origin = format!("{}://{}", parsed.scheme(), host);
+            headers.insert("Referer".to_string(), format!("{origin}/"));
+            headers.insert("Origin".to_string(), origin);
+        }
+    }
+
+    let lowered = url.to_ascii_lowercase();
+    if lowered.contains("doubanio.com") || lowered.contains("douban.com") {
+        headers.insert(
+            "Referer".to_string(),
+            "https://movie.douban.com/".to_string(),
+        );
+        headers.insert("Origin".to_string(), "https://movie.douban.com".to_string());
+    }
+    if lowered.contains("iqiyipic.com")
+        || lowered.contains("qiyipic.com")
+        || lowered.contains("iqiyi.com")
+    {
+        headers.insert("Referer".to_string(), "https://www.iqiyi.com/".to_string());
+        headers.insert("Origin".to_string(), "https://www.iqiyi.com".to_string());
+    }
+
+    headers
+}
+
+fn apply_image_request_headers(
+    builder: reqwest::RequestBuilder,
+    url: &str,
+) -> reqwest::RequestBuilder {
+    let mut builder = builder
+        .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
 
-    // Bypass Douban anti-hotlinking specifically
-    if resolved.url.contains("doubanio.com") || resolved.url.contains("douban.com") {
-        builder = builder.header("Referer", "https://movie.douban.com/");
+    for (key, value) in build_image_origin_headers(url) {
+        builder = builder.header(key, value);
     }
-    builder = apply_request_headers(builder, &resolved.headers);
+
+    builder
+}
+
+async fn proxy_media_once(
+    client: &Client,
+    url: &str,
+    headers: &Option<HashMap<String, String>>,
+) -> Result<String, String> {
+    let mut builder = apply_image_request_headers(client.get(url), url);
+    builder = apply_request_headers(builder, headers);
 
     let resp = builder.send().await.map_err(|e| e.to_string())?;
 
@@ -867,6 +1076,24 @@ pub async fn proxy_media(
     Ok(format!("data:{};base64,{}", content_type, b64))
 }
 
+pub async fn proxy_media(
+    url: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+) -> Result<String, String> {
+    let resolved = resolve_media_request(&url, headers);
+    let client = build_client()?;
+
+    match proxy_media_once(&client, &resolved.url, &resolved.headers).await {
+        Ok(result) => Ok(result),
+        Err(first_err) => {
+            let rescue_client = build_rescue_client()?;
+            proxy_media_once(&rescue_client, &resolved.url, &resolved.headers)
+                .await
+                .map_err(|second_err| format!("{first_err}; retry failed: {second_err}"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -877,6 +1104,16 @@ mod tests {
         let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sample);
         let decoded = try_decode_tvbox_base64_payload(&encoded).unwrap_or_default();
         assert!(decoded.contains("\"sites\""));
+    }
+
+    #[test]
+    fn decode_tvbox_base64_payload_from_mixed_binary_like_prefix() {
+        let sample = r#"{"sites":[{"key":"demo","api":"csp_Demo"}],"spider":"http://example.com/spider.jar"}"#;
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sample);
+        let mixed = format!("\u{fffd}\u{fffd}JFIF\u{0000}\u{0001}***{encoded}");
+        let decoded = try_decode_tvbox_base64_payload(&mixed).unwrap_or_default();
+        assert!(decoded.contains("\"sites\""));
+        assert!(decoded.contains("\"csp_Demo\""));
     }
 
     #[test]
@@ -964,5 +1201,33 @@ mod tests {
     fn detail_response_rejects_empty_or_invalid_list() {
         assert!(!contains_non_empty_detail_list(r#"{"list":[]}"#));
         assert!(!contains_non_empty_detail_list("not-json"));
+    }
+
+    #[test]
+    fn image_origin_headers_default_to_source_origin() {
+        let headers = build_image_origin_headers("https://img.example.com/path/poster.jpg");
+        assert_eq!(
+            headers.get("Referer").map(String::as_str),
+            Some("https://img.example.com/")
+        );
+        assert_eq!(
+            headers.get("Origin").map(String::as_str),
+            Some("https://img.example.com")
+        );
+    }
+
+    #[test]
+    fn image_origin_headers_override_known_hosts() {
+        let headers = build_image_origin_headers(
+            "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p1.jpg",
+        );
+        assert_eq!(
+            headers.get("Referer").map(String::as_str),
+            Some("https://movie.douban.com/")
+        );
+        assert_eq!(
+            headers.get("Origin").map(String::as_str),
+            Some("https://movie.douban.com")
+        );
     }
 }

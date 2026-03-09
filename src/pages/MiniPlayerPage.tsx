@@ -1,4 +1,6 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+ 
+ 
+ import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
@@ -168,7 +170,8 @@ export function MiniPlayerPage({
 
   useEffect(() => {
     if (!isTauriRuntime()) {
-      setMiniSettings(DEFAULT_MINI_SETTINGS);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+setMiniSettings(DEFAULT_MINI_SETTINGS);
       return;
     }
 

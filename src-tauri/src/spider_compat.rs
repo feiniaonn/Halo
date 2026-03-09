@@ -199,10 +199,7 @@ fn extract_native_libs(jar_path: &Path, native_libs: &[String]) -> Result<PathBu
         let dest_path = lib_dir.join(entry_file_name);
 
         if !dest_path.exists()
-            || std::fs::metadata(&dest_path)
-                .map(|m| m.len())
-                .unwrap_or(0)
-                != entry.size()
+            || std::fs::metadata(&dest_path).map(|m| m.len()).unwrap_or(0) != entry.size()
         {
             let mut out = std::fs::File::create(&dest_path).map_err(|err| err.to_string())?;
             std::io::copy(&mut entry, &mut out).map_err(|err| err.to_string())?;
@@ -214,7 +211,8 @@ fn extract_native_libs(jar_path: &Path, native_libs: &[String]) -> Result<PathBu
 
 async fn prepare_single_compat_jar(app: &AppHandle, raw_jar: &Path) -> Result<PathBuf, String> {
     let cached_input = ensure_cached_compat_input(raw_jar)?;
-    let prepared_jar = crate::spider_cmds_dex::ensure_desktop_spider_jar(app, &cached_input).await?;
+    let prepared_jar =
+        crate::spider_cmds_dex::ensure_desktop_spider_jar(app, &cached_input).await?;
 
     // Analyze to find native libs
     let artifact = crate::spider_cmds_runtime::analyze_spider_artifact(raw_jar, &prepared_jar)?;
@@ -359,6 +357,14 @@ fn derive_pack_ids_from_tokens(tokens: &[String], packs: &mut BTreeSet<String>) 
         packs.insert("legacy-custom-spider".to_string());
         packs.insert("legacy-jsapi".to_string());
     }
+    if joined.contains("hxq") {
+        packs.insert("legacy-core".to_string());
+    }
+    if joined.contains("douban") {
+        packs.insert("legacy-core".to_string());
+        packs.insert("legacy-custom-spider".to_string());
+        packs.insert("legacy-jsapi".to_string());
+    }
 }
 
 pub fn build_compat_plan(
@@ -454,4 +460,42 @@ pub fn augment_site_profile(
         }
     });
     site_profile
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_pack_ids_from_tokens;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn adds_legacy_core_for_douban_tokens() {
+        let mut packs = BTreeSet::new();
+        derive_pack_ids_from_tokens(
+            &[
+                "csp_Douban".to_string(),
+                "com.github.catvod.spider.Douban".to_string(),
+            ],
+            &mut packs,
+        );
+
+        assert!(packs.contains("legacy-core"));
+        assert!(packs.contains("legacy-custom-spider"));
+        assert!(packs.contains("legacy-jsapi"));
+    }
+
+    #[test]
+    fn adds_legacy_core_for_hxq_tokens() {
+        let mut packs = BTreeSet::new();
+        derive_pack_ids_from_tokens(
+            &[
+                "csp_Hxq".to_string(),
+                "com.github.catvod.spider.Hxq".to_string(),
+            ],
+            &mut packs,
+        );
+
+        assert!(packs.contains("legacy-core"));
+        assert!(packs.contains("legacy-custom-spider"));
+        assert!(packs.contains("legacy-jsapi"));
+    }
 }

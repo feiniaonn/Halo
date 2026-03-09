@@ -4,6 +4,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tauri::AppHandle;
 use tokio::process::Command;
+use zip::ZipArchive;
 
 use crate::spider_cmds_runtime::{
     failure_report, store_execution_report, success_report, PreparedSpiderJar,
@@ -19,10 +20,59 @@ fn clean_path(path: &Path) -> String {
     }
 }
 
+fn jar_contains_entry(path: &Path, entry_name: &str) -> bool {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut archive = match ZipArchive::new(file) {
+        Ok(archive) => archive,
+        Err(_) => return false,
+    };
+    let exists = archive.by_name(entry_name).is_ok();
+    exists
+}
+
+pub(crate) fn resolve_profile_runner_bridge_jar(app: &AppHandle) -> Result<PathBuf, String> {
+    const PROFILE_RUNNER_CLASS: &str = "com/halo/spider/SpiderProfileRunner.class";
+
+    let mut candidates = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(
+            cwd.join("src-tauri")
+                .join("spider-bridge")
+                .join("bridge.new.jar"),
+        );
+        candidates.push(
+            cwd.join("src-tauri")
+                .join("spider-bridge")
+                .join("bridge.jar"),
+        );
+    }
+
+    if let Ok(resource_bridge) = crate::spider_cmds::resolve_bridge_jar(app) {
+        candidates.push(resource_bridge);
+    }
+
+    for candidate in candidates {
+        if candidate.is_file() && jar_contains_entry(&candidate, PROFILE_RUNNER_CLASS) {
+            return Ok(candidate);
+        }
+    }
+
+    Err("Profile runner bridge jar not found or missing SpiderProfileRunner".to_string())
+}
+
 fn resolve_profile_classpath(app: &AppHandle, compat_jars: &[PathBuf]) -> Result<String, String> {
-    let bridge_jar = crate::spider_cmds::resolve_bridge_jar(app)?;
+    let bridge_jar = resolve_profile_runner_bridge_jar(app)?;
     let cp_separator = if cfg!(windows) { ";" } else { ":" };
     let mut classpath_parts = vec![clean_path(&bridge_jar)];
+
+    if let Ok(runtime_bridge_jar) = crate::spider_cmds::resolve_bridge_jar(app) {
+        if runtime_bridge_jar != bridge_jar {
+            classpath_parts.push(clean_path(&runtime_bridge_jar));
+        }
+    }
 
     let mut libs_root: Option<PathBuf> = None;
     for base_path in crate::spider_cmds::resolve_resource_jar_dirs(app) {
@@ -110,7 +160,9 @@ pub(crate) async fn profile_prepared_spider_site(
     let classpath = resolve_profile_classpath(app, &compat_jars)?;
     let jar_path = clean_path(&prepared.prepared_jar_path);
 
-    let mut cmd = Command::new("java");
+    let java_bin = crate::java_runtime::resolve_java_binary(app)?;
+    let java_home = crate::java_runtime::resolve_java_home(app)?;
+    let mut cmd = Command::new(&java_bin);
     #[cfg(target_os = "windows")]
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -124,6 +176,7 @@ pub(crate) async fn profile_prepared_spider_site(
         .arg("-cp")
         .arg(&classpath)
         .arg("com.halo.spider.SpiderProfileRunner")
+        .env("JAVA_HOME", java_home)
         .env("HALO_JAR_PATH", &jar_path)
         .env("HALO_SITE_KEY", site_key)
         .env("HALO_CLASS_HINT", class_hint)
@@ -262,8 +315,21 @@ pub async fn profile_spider_site(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_profile_payload;
+    use super::{jar_contains_entry, parse_profile_payload};
     use crate::spider_cmds_runtime::SpiderExecutionTarget;
+    use std::io::Write;
+    use std::path::Path;
+
+    fn build_test_jar(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in entries {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
 
     #[test]
     fn parses_success_profile_payload() {
@@ -294,5 +360,27 @@ mod tests {
             profile.recommended_target,
             SpiderExecutionTarget::DesktopDirect
         );
+    }
+
+    #[test]
+    fn detects_profile_runner_class_in_jar() {
+        let mut jar_path = std::env::temp_dir();
+        jar_path.push(format!(
+            "halo-profile-runner-{}.jar",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        build_test_jar(
+            &jar_path,
+            &[("com/halo/spider/SpiderProfileRunner.class", b"classdata")],
+        );
+
+        assert!(jar_contains_entry(
+            &jar_path,
+            "com/halo/spider/SpiderProfileRunner.class"
+        ));
+        let _ = std::fs::remove_file(&jar_path);
     }
 }

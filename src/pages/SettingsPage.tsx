@@ -1,25 +1,27 @@
-﻿import { cn } from "@/lib/utils";
-import { BackgroundSettingsSection } from "@/modules/settings/components/BackgroundSettingsSection";
-import { StorageSettingsSection } from "@/modules/settings/components/StorageSettingsSection";
-import { UpdateSettingsSection } from "@/modules/settings/components/UpdateSettingsSection";
-import { WindowSettingsSection } from "@/modules/settings/components/WindowSettingsSection";
-import { useSettingsPageController } from "@/modules/settings/hooks/useSettingsPageController";
-import type { MiniRestoreMode } from "@/modules/settings/types/settings.types";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Palette, AppWindow, RefreshCw, HardDrive } from "lucide-react";
+import { useEffect } from 'react';
+import { AppWindow, HardDrive, Palette, RefreshCw } from 'lucide-react';
+
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { cn } from '@/lib/utils';
+import { BackgroundSettingsSection } from '@/modules/settings/components/BackgroundSettingsSection';
+import { StorageSettingsSection } from '@/modules/settings/components/StorageSettingsSection';
+import { UpdateSettingsSection } from '@/modules/settings/components/UpdateSettingsSection';
+import { WindowSettingsSection } from '@/modules/settings/components/WindowSettingsSection';
+import { useSettingsPageController } from '@/modules/settings/hooks/useSettingsPageController';
+import type { MiniRestoreMode } from '@/modules/settings/types/settings.types';
 
 export function SettingsPage({
-  bgType = "none",
+  bgType = 'none',
   bgFsPath,
   bgBlur = 12,
   onBgChange,
   onBgBlurChange,
   onMiniRestoreModeChange,
 }: {
-  bgType?: "none" | "image" | "video";
+  bgType?: 'none' | 'image' | 'video';
   bgFsPath?: string | null;
   bgBlur?: number;
-  onBgChange?: (type: "none" | "image" | "video", path: string | null) => void;
+  onBgChange?: (type: 'none' | 'image' | 'video', path: string | null) => void;
   onBgBlurChange?: (blur: number) => void;
   onMiniRestoreModeChange?: (mode: MiniRestoreMode) => void;
 }) {
@@ -40,7 +42,6 @@ export function SettingsPage({
     videoPreviewSrc,
     migrationProgress,
     migrationComplete,
-    migrationRemoveSource,
     removeSource,
     setRemoveSource,
     isMigrating,
@@ -67,98 +68,112 @@ export function SettingsPage({
     onMiniRestoreModeChange,
   });
 
+  // Auto-dismiss success notices after 3 s (must be before any early returns – Rules of Hooks)
+  useEffect(() => {
+    if (!bgNotice || bgNotice.kind !== 'success') return;
+    const timer = window.setTimeout(() => setBgNotice(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [bgNotice, setBgNotice]);
+
   if (loading || !settings) {
     return (
       <div className="flex flex-col gap-6 pl-4 pt-4">
-        <h1 className="text-3xl font-black tracking-tight bg-gradient-to-r from-foreground to-foreground/50 bg-clip-text text-transparent">
+        <h1 className="bg-gradient-to-r from-foreground to-foreground/50 bg-clip-text text-3xl font-black tracking-tight text-transparent">
           设置
         </h1>
         <div className="flex items-center gap-3">
           <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <p className="text-sm font-medium text-muted-foreground/80 tracking-wide">加载配置中...</p>
+          <p className="text-sm font-medium tracking-wide text-muted-foreground/80">
+            加载配置中...
+          </p>
         </div>
       </div>
     );
   }
 
+  const tabs = [
+    { value: 'appearance', label: '个性预览', icon: Palette, desc: '背景与外观' },
+    { value: 'window', label: '窗口行为', icon: AppWindow, desc: '启动与关闭逻辑' },
+    { value: 'updates', label: '检查更新', icon: RefreshCw, desc: '版本与更新源' },
+    { value: 'storage', label: '存储管理', icon: HardDrive, desc: '数据目录与迁移' },
+  ] as const;
+
   return (
-    <div className="flex flex-col h-full max-h-full overflow-hidden">
+    <div className="flex h-full max-h-full flex-col overflow-hidden">
       {bgNotice && (
         <div className="pointer-events-none fixed right-6 top-16 z-[60] w-[min(480px,calc(100vw-3rem))] animate-in slide-in-from-top-4 slide-in-from-right-4 fade-in duration-500">
           <div
             className={cn(
-              "pointer-events-auto rounded-[24px] border p-5 shadow-2xl backdrop-blur-xl relative overflow-hidden group",
-              "glass-card",
-              bgNotice.kind === "success" ? "border-emerald-500/30 bg-emerald-500/10 shadow-emerald-500/10" : "border-red-500/30 bg-red-500/10 shadow-red-500/10",
+              'glass-card pointer-events-auto relative overflow-hidden rounded-[24px] border p-5 shadow-2xl backdrop-blur-xl',
+              bgNotice.kind === 'success'
+                ? 'border-emerald-500/30 bg-emerald-500/10 shadow-emerald-500/10'
+                : 'border-red-500/30 bg-red-500/10 shadow-red-500/10',
             )}
             role="status"
             aria-live="polite"
           >
             <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent opacity-50" />
-            <div className="flex items-start gap-4 relative z-10">
+            <div className="relative z-10 flex items-start gap-4">
               <div
                 className={cn(
-                  "mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold shadow-inner border border-white/20",
-                  bgNotice.kind === "success" ? "bg-gradient-to-br from-emerald-400 to-emerald-600 text-white" : "bg-gradient-to-br from-red-400 to-red-600 text-white",
+                  'mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/20 text-sm font-bold shadow-inner',
+                  bgNotice.kind === 'success'
+                    ? 'bg-gradient-to-br from-emerald-400 to-emerald-600 text-white'
+                    : 'bg-gradient-to-br from-red-400 to-red-600 text-white',
                 )}
               >
-                {bgNotice.kind === "success" ? "✓" : "!"}
+                {bgNotice.kind === 'success' ? '✓' : '!'}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-[15px] font-bold tracking-tight text-foreground/90 drop-shadow-sm">{bgNotice.title}</div>
-                <div className="mt-1 text-[13px] font-medium text-muted-foreground/90 break-all leading-relaxed">{bgNotice.detail}</div>
-                {bgNotice.fileName && <div className="mt-3 inline-block rounded-md bg-black/10 dark:bg-black/30 px-2 py-1 text-[11px] font-mono text-muted-foreground/80 border border-white/5">文件: {bgNotice.fileName}</div>}
-                {bgNotice.path && <div className="mt-2 text-[10px] font-mono text-muted-foreground/60 break-all line-clamp-2 hover:line-clamp-none transition-all">路径: {bgNotice.path}</div>}
+                <div className="text-[15px] font-bold tracking-tight text-foreground/90">
+                  {bgNotice.title}
+                </div>
+                <div className="mt-1 text-[13px] leading-relaxed text-muted-foreground/90 break-all">
+                  {bgNotice.detail}
+                </div>
+                {bgNotice.fileName && (
+                  <div className="mt-3 inline-block rounded-md border border-white/5 bg-black/10 px-2 py-1 text-[11px] font-mono text-muted-foreground/80 dark:bg-black/30">
+                    文件: {bgNotice.fileName}
+                  </div>
+                )}
               </div>
-              <button
-                type="button"
-                onClick={() => setBgNotice(null)}
-                className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-bold transition-all hover:bg-white/20 hover:scale-105 active:scale-95 shadow-sm"
-              >
-                关闭
-              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Header - Fixed */}
-      <div className="px-1 mt-2 mb-6 shrink-0">
-        <h1 className="text-[32px] sm:text-[40px] font-black tracking-tight bg-gradient-to-br from-foreground via-foreground/90 to-foreground/50 bg-clip-text text-transparent drop-shadow-sm">
-          设置
-        </h1>
-        <p className="mt-2 text-[14px] font-medium tracking-wide text-muted-foreground/80 bg-muted/30 inline-block px-3 py-1 rounded-full border border-white/5 backdrop-blur-sm">
-          系统配置与外观管理
+      <div className="shrink-0 px-8 pt-8 pb-4">
+        <h1 className="text-3xl font-semibold tracking-tight">设置</h1>
+        <p className="text-sm text-muted-foreground mt-2">
+          管理应用外观、运行行为、版本更新及本地存储。
         </p>
       </div>
 
-      <Tabs defaultValue="appearance" className="flex-1 flex flex-col min-h-0 overflow-hidden">
-        {/* Tabs List - Fixed at Top */}
-        <div className="px-1 pb-6 shrink-0">
-          <TabsList className="bg-white/5 dark:bg-black/10 border border-white/10 p-1 rounded-2xl h-auto w-fit flex gap-1">
-            <TabsTrigger value="appearance" className="gap-2 px-6 py-2.5 rounded-xl data-[state=active]:bg-primary/20 data-[state=active]:text-primary data-[state=active]:shadow-none transition-all">
-              <Palette className="size-4" />
-              个性预览
-            </TabsTrigger>
-            <TabsTrigger value="window" className="gap-2 px-6 py-2.5 rounded-xl data-[state=active]:bg-primary/20 data-[state=active]:text-primary data-[state=active]:shadow-none transition-all">
-              <AppWindow className="size-4" />
-              窗口行为
-            </TabsTrigger>
-            <TabsTrigger value="updates" className="gap-2 px-6 py-2.5 rounded-xl data-[state=active]:bg-primary/20 data-[state=active]:text-primary data-[state=active]:shadow-none transition-all">
-              <RefreshCw className="size-4" />
-              检查更新
-            </TabsTrigger>
-            <TabsTrigger value="storage" className="gap-2 px-6 py-2.5 rounded-xl data-[state=active]:bg-primary/20 data-[state=active]:text-primary data-[state=active]:shadow-none transition-all">
-              <HardDrive className="size-4" />
-              存储管理
-            </TabsTrigger>
+      <Tabs defaultValue="appearance" className="flex h-full min-h-0 flex-col">
+        <div className="shrink-0 px-8 border-b border-border/40">
+          <TabsList className="flex h-12 w-full justify-start gap-8 rounded-none bg-transparent p-0">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <TabsTrigger
+                  key={tab.value}
+                  value={tab.value}
+                  className="relative flex items-center justify-center gap-2 rounded-none border-b-2 border-transparent px-1 pb-3 pt-3 font-medium text-muted-foreground transition-none data-[state=active]:border-primary data-[state=active]:text-foreground data-[state=active]:shadow-none hover:text-foreground"
+                >
+                  <Icon className="size-4 shrink-0" />
+                  <span>{tab.label}</span>
+                </TabsTrigger>
+              );
+            })}
           </TabsList>
         </div>
 
-        {/* Content Area - Independent Scroll */}
-        <div className="flex-1 min-h-0 min-w-0 relative group/content">
-          <div className="absolute inset-0 overflow-y-auto custom-scrollbar-minimal pr-4 pb-[30vh]">
-            <TabsContent value="appearance" className="m-0 focus-visible:outline-none animate-in fade-in slide-in-from-bottom-2 duration-500">
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <div className="h-full min-h-0 overflow-y-auto px-8 py-6 custom-scrollbar-minimal">
+            <TabsContent
+              value="appearance"
+              className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500"
+            >
               <BackgroundSettingsSection
                 allowComponentDownload={settings.allow_component_download}
                 bgOptimizeHint={bgOptimizeHint}
@@ -168,22 +183,27 @@ export function SettingsPage({
                 imagePreviewSrc={imagePreviewSrc}
                 videoPreviewSrc={videoPreviewSrc}
                 onBackgroundBlurChange={handleBackgroundBlurChange}
-                onAllowComponentDownloadChange={(enabled) => void handleAllowComponentDownload(enabled)}
+                onAllowComponentDownloadChange={(enabled) =>
+                  void handleAllowComponentDownload(enabled)
+                }
                 onPrepareVideoOptimizer={() => void handlePrepareVideoOptimizer()}
                 onClearBackground={handleClearBackground}
                 onApplyStoredBackground={(type) => void handleApplyStoredBackground(type)}
                 onChooseBackground={(type) => void handleChooseBackground(type)}
                 onPreviewError={(type) => {
                   setStorageMessage(
-                    type === "image"
-                      ? "背景图片预览失败，可重新选择新图片。"
-                      : "背景视频预览失败，可重新选择新视频。",
+                    type === 'image'
+                      ? '背景图片预览失败，可重新选择新图片。'
+                      : '背景视频预览失败，可重新选择新视频。',
                   );
                 }}
               />
             </TabsContent>
 
-            <TabsContent value="window" className="m-0 focus-visible:outline-none animate-in fade-in slide-in-from-bottom-2 duration-500">
+            <TabsContent
+              value="window"
+              className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500"
+            >
               <WindowSettingsSection
                 launchAtLogin={settings.launch_at_login}
                 closeBehavior={settings.close_behavior}
@@ -194,11 +214,17 @@ export function SettingsPage({
               />
             </TabsContent>
 
-            <TabsContent value="updates" className="m-0 focus-visible:outline-none animate-in fade-in slide-in-from-bottom-2 duration-500">
+            <TabsContent
+              value="updates"
+              className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500"
+            >
               <UpdateSettingsSection updater={updater} />
             </TabsContent>
 
-            <TabsContent value="storage" className="m-0 focus-visible:outline-none animate-in fade-in slide-in-from-bottom-2 duration-500">
+            <TabsContent
+              value="storage"
+              className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500"
+            >
               <StorageSettingsSection
                 storageDisplayPath={settings.storage_display_path}
                 storageMessage={storageMessage}
@@ -206,7 +232,6 @@ export function SettingsPage({
                 legacyRoots={legacyRoots}
                 migrationProgress={migrationProgress}
                 migrationComplete={migrationComplete}
-                migrationRemoveSource={migrationRemoveSource}
                 removeSource={removeSource}
                 isMigrating={isMigrating}
                 migrationRunning={migrationRunning}
@@ -219,9 +244,6 @@ export function SettingsPage({
               />
             </TabsContent>
           </div>
-
-          {/* Smooth mask at the bottom to indicate more content */}
-          <div className="absolute bottom-0 left-0 right-0 h-24 bg-gradient-to-t from-background/40 to-transparent pointer-events-none z-10" />
         </div>
       </Tabs>
     </div>

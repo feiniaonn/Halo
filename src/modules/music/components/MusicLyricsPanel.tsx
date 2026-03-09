@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { MarqueeText } from "@/components/ui/MarqueeText";
@@ -144,11 +144,12 @@ export function MusicLyricsPanel({
   showTranslation,
   showRomanized,
   offsetMs,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   devMode: _devMode,
   activeCandidateId,
   onSelectCandidate,
 }: MusicLyricsPanelProps) {
-  const lines = response?.lines ?? [];
+  const lines = useMemo(() => response?.lines ?? [], [response?.lines]);
   const playbackMs = resolvePlaybackMs(playbackPositionSecs ?? current.position_secs, offsetMs);
   const providerLabel = resolveLyricsProviderLabel(response?.provider);
   const providerHint = response?.from_cache ? `${providerLabel}（缓存）` : providerLabel;

@@ -8,6 +8,41 @@ $LibsDir = Join-Path (Split-Path $ProjectRoot) "resources\jar\libs"
 $ClassesDir = Join-Path $ProjectRoot "classes"
 $OutputJar = Join-Path $ProjectRoot "bridge.jar"
 
+function Resolve-BundledJavaTool {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$ToolName
+    )
+
+    $Candidates = @(
+        (Join-Path (Split-Path $ProjectRoot) "resources\java\windows-x64\runtime\bin\$ToolName"),
+        (Join-Path (Split-Path $ProjectRoot) "target\release\resources\java\windows-x64\runtime\bin\$ToolName"),
+        (Join-Path (Split-Path $ProjectRoot) "target\debug\resources\java\windows-x64\runtime\bin\$ToolName")
+    )
+
+    foreach ($Candidate in $Candidates) {
+        if (Test-Path $Candidate) {
+            return $Candidate
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:HALO_JAVA_HOME)) {
+        $FromEnv = Join-Path $env:HALO_JAVA_HOME "bin\$ToolName"
+        if (Test-Path $FromEnv) {
+            return $FromEnv
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME)) {
+        $FromEnv = Join-Path $env:JAVA_HOME "bin\$ToolName"
+        if (Test-Path $FromEnv) {
+            return $FromEnv
+        }
+    }
+
+    throw "Bundled Java tool not found: $ToolName. Sync the project runtime first via src-tauri\\scripts\\sync_java_runtime.ps1."
+}
+
 Write-Host "Rebuilding Spider Bridge..." -ForegroundColor Cyan
 
 # 1. Clean previous build
@@ -48,11 +83,12 @@ $ClassPath = $Jars -join ";"
 Write-Host "-> Compiling $($JavaFiles.Count) Java files..."
 $PreviousErrorAction = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
+$JavacExe = Resolve-BundledJavaTool -ToolName "javac.exe"
 
 if ($VerboseOutput) {
-    javac -cp $ClassPath -d $ClassesDir -encoding UTF-8 "@$SourcesFile" -verbose > javac_log.txt 2>&1
+    & $JavacExe -cp $ClassPath -d $ClassesDir -encoding UTF-8 "@$SourcesFile" -verbose > javac_log.txt 2>&1
 } else {
-    javac -cp $ClassPath -d $ClassesDir -encoding UTF-8 "@$SourcesFile" > javac_log.txt 2>&1
+    & $JavacExe -cp $ClassPath -d $ClassesDir -encoding UTF-8 "@$SourcesFile" > javac_log.txt 2>&1
 }
 
 $ErrorActionPreference = $PreviousErrorAction
@@ -65,11 +101,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # 5. Package JAR
 Write-Host "-> Packaging bridge.jar..."
-$JavaHome = (java -XshowSettings:properties 2>&1 | Select-String "java.home").ToString().Trim().Split("=")[1].Trim()
-$JarExe = Join-Path $JavaHome "bin\jar.exe"
-if (!(Test-Path $JarExe)) {
-    $JarExe = "jar"
-}
+$JarExe = Resolve-BundledJavaTool -ToolName "jar.exe"
 Set-Location $ClassesDir
 & $JarExe cvf $OutputJar . > $null
 Set-Location $ProjectRoot
@@ -82,7 +114,9 @@ Write-Host "-> Deploying to resources..."
 $Targets = @(
     (Join-Path (Split-Path $ProjectRoot) "resources\jar"),
     (Join-Path (Split-Path $ProjectRoot) "target\debug\resources\jar"),
-    (Join-Path (Split-Path $ProjectRoot) "target\debug\jar")
+    (Join-Path (Split-Path $ProjectRoot) "target\debug\jar"),
+    (Join-Path (Split-Path $ProjectRoot) "target\release\resources\jar"),
+    (Join-Path (Split-Path $ProjectRoot) "target\release\jar")
 )
 
 foreach ($Target in $Targets) {
@@ -94,4 +128,3 @@ foreach ($Target in $Targets) {
 
 Write-Host "Build Successful! Output: $OutputJar" -ForegroundColor Green
 exit 0
-

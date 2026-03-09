@@ -136,7 +136,9 @@ async fn transform_dex_jar(
     ]
     .join(cp_separator);
 
-    let mut cmd = Command::new("java");
+    let java_bin = crate::java_runtime::resolve_java_binary(app)?;
+    let java_home = crate::java_runtime::resolve_java_home(app)?;
+    let mut cmd = Command::new(&java_bin);
     #[cfg(target_os = "windows")]
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -150,6 +152,7 @@ async fn transform_dex_jar(
         .arg("com.halo.spider.DexSpiderTransformer")
         .arg(clean_path(input_jar))
         .arg(clean_path(output_jar))
+        .env("JAVA_HOME", java_home)
         .kill_on_drop(true);
 
     let log = format!(
@@ -262,7 +265,10 @@ mod tests {
     #[test]
     fn rejects_classless_transformed_archive() {
         let jar = temp_jar_path("classless-output");
-        build_test_jar(&jar, &[("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\n")]);
+        build_test_jar(
+            &jar,
+            &[("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\n")],
+        );
         let err = validate_transformed_jar(&jar).unwrap_err();
         assert!(err.contains("no class entries"));
         assert!(!jar.exists());

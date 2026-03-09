@@ -1,0 +1,24 @@
+﻿{
+    "source":  "http://fty.xxooo.cf/tv",
+    "siteIndex":  21,
+    "siteKey":  "csp_SaoHuo",
+    "apiClass":  "csp_SaoHuo",
+    "className":  "com.github.catvod.spider.SaoHuo",
+    "jar":  "a8774196dcf36524134fe2eea1c949c71eca4e0284d23be486b2c58bf8d796fe.desktop.v3.jar",
+    "artifactKind":  "DexNative",
+    "requiredRuntime":  "desktop-compat-pack",
+    "homeOk":  false,
+    "categoryOk":  false,
+    "executionTarget":  "desktop-direct",
+    "missingDependency":  null,
+    "requiredCompatPacks":  {
+
+                            },
+    "helperPorts":  {
+
+                    },
+    "routingReason":  "artifact is ready for direct desktop execution",
+    "classCount":  0,
+    "listCount":  0,
+    "failureKind":  "Timeout"
+}

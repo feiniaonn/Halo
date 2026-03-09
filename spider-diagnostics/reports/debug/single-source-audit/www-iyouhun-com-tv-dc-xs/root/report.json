@@ -1,0 +1,50 @@
+﻿{
+  "sourceUrl": "https://www.iyouhun.com/tv/dc-xs",
+  "selectedRepoUrl": null,
+  "spiderUrl": "",
+  "siteCount": 0,
+  "repoCount": 6,
+  "bridge": {
+    "runtimeBridgeJar": "\\\\?\\D:\\Development\\Projects\\Halo\\src-tauri\\target\\debug\\resources\\jar\\bridge.jar",
+    "runtimeBridgeHasProfileRunner": false,
+    "profileBridgeJar": "D:\\Development\\Projects\\Halo\\src-tauri\\spider-bridge\\bridge.new.jar",
+    "profileBridgeHasProfileRunner": true,
+    "profileJarDiffersFromRuntime": true,
+    "anotherdsFallbackJar": "\\\\?\\D:\\Development\\Projects\\Halo\\src-tauri\\target\\debug\\resources\\jar\\fallbacks\\anotherds_spider.jar",
+    "haloSpiderJar": "\\\\?\\D:\\Development\\Projects\\Halo\\src-tauri\\target\\debug\\resources\\jar\\halo_spider.jar"
+  },
+  "repos": [
+    {
+      "index": 1,
+      "name": "影视",
+      "url": "https://9877.kstore.space/AnotherDS/movie.json"
+    },
+    {
+      "index": 2,
+      "name": "动漫",
+      "url": "https://9877.kstore.space/AnotherDS/anime.json"
+    },
+    {
+      "index": 3,
+      "name": "文艺",
+      "url": "https://9877.kstore.space/AnotherDS/other.json"
+    },
+    {
+      "index": 4,
+      "name": "教育",
+      "url": "https://9877.kstore.space/AnotherDS/education.json"
+    },
+    {
+      "index": 5,
+      "name": "磁力",
+      "url": "https://9877.kstore.space/AnotherDS/magnet.json"
+    },
+    {
+      "index": 6,
+      "name": "云盘",
+      "url": "https://9877.kstore.space/AnotherDS/cloud.json"
+    }
+  ],
+  "sites": [],
+  "selectedSite": null
+}

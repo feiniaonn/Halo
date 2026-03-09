@@ -1,4 +1,4 @@
-﻿import { useState, useRef, useEffect, useCallback, useMemo, type CSSProperties } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, type CSSProperties } from "react";
 import { TvIcon, PlayIcon, AlertCircleIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Hls, { type HlsConfig } from "hls.js";
@@ -844,7 +844,7 @@ export function LivePlayer({
         }
         setActiveKernelDisplay("idle");
         setLatency(null);
-    }, [clearManifestWatchdog, clearStartupWaitTimer]);
+    }, [clearManifestWatchdog, clearStartupWaitTimer, setActiveKernelDisplay]);
 
     const playLine = useCallback(async (
         index: number,

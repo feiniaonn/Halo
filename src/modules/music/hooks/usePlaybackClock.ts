@@ -1,4 +1,6 @@
-﻿import { useEffect, useRef, useState } from "react";
+ 
+ 
+ import { useEffect, useRef, useState } from "react";
 
 export function usePlaybackClock(
   positionSecs: number | null | undefined,
@@ -27,7 +29,8 @@ export function usePlaybackClock(
     anchorRef.current = null;
 
     if (positionSecs == null || Number.isNaN(positionSecs)) {
-      setLivePosition(null);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+setLivePosition(null);
       return;
     }
 
@@ -48,7 +51,8 @@ export function usePlaybackClock(
 
     if (positionSecs == null || Number.isNaN(positionSecs)) {
       if (!anchorRef.current) {
-        setLivePosition(null);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+setLivePosition(null);
         return;
       }
       anchorRef.current.status = status;

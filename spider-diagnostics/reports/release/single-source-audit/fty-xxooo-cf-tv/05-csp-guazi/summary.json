@@ -1,0 +1,26 @@
+﻿{
+    "source":  "http://fty.xxooo.cf/tv",
+    "siteIndex":  5,
+    "siteKey":  "csp_GuaZi",
+    "apiClass":  "csp_GuaZi",
+    "className":  "csp_GuaZi",
+    "jar":  "a8774196dcf36524134fe2eea1c949c71eca4e0284d23be486b2c58bf8d796fe.desktop.v3.jar",
+    "artifactKind":  "DexNative",
+    "requiredRuntime":  "desktop-compat-pack",
+    "homeOk":  false,
+    "categoryOk":  false,
+    "executionTarget":  "desktop-helper",
+    "missingDependency":  null,
+    "requiredCompatPacks":  [
+                                "legacy-custom-spider",
+                                "legacy-jsapi"
+                            ],
+    "helperPorts":  [
+                        1072,
+                        9966
+                    ],
+    "routingReason":  "profile stage failed before a class was resolved",
+    "classCount":  0,
+    "listCount":  0,
+    "failureKind":  "NeedsLocalHelper"
+}
