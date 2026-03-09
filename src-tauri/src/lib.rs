@@ -99,6 +99,11 @@ fn ensure_single_instance() -> Result<bool, String> {
     Ok(true)
 }
 
+#[cfg(target_os = "windows")]
+fn should_enforce_single_instance() -> bool {
+    !cfg!(debug_assertions)
+}
+
 fn dev_workspace_root() -> std::path::PathBuf {
     if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
         let manifest_path = std::path::PathBuf::from(manifest_dir);
@@ -438,11 +443,13 @@ pub fn run() {
     let current_playing: Arc<Mutex<Option<CurrentPlayingInfo>>> = Arc::new(Mutex::new(None));
 
     #[cfg(target_os = "windows")]
-    match ensure_single_instance() {
-        Ok(true) => {}
-        Ok(false) => return,
-        Err(err) => {
-            eprintln!("[app] single instance guard failed: {err}");
+    if should_enforce_single_instance() {
+        match ensure_single_instance() {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(err) => {
+                eprintln!("[app] single instance guard failed: {err}");
+            }
         }
     }
 
