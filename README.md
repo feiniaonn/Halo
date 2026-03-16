@@ -54,6 +54,7 @@ Halo 是一个基于 Tauri 2、React 19、TypeScript 与 Rust 构建的 Windows 
 
 - [音乐模块说明](./docs/音乐模块说明.md)
 - [点播模块说明](./docs/点播模块说明.md)
+- [CHANGELOG](./CHANGELOG.md)
 
 ## 技术栈
 
