@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -10,6 +13,13 @@ use crate::spider_cmds_runtime::{
     failure_report, store_execution_report, success_report, PreparedSpiderJar,
     SpiderExecutionReport, SpiderExecutionTarget, SpiderSiteProfile,
 };
+
+static SPIDER_SITE_PROFILE_CACHE: OnceLock<Mutex<HashMap<String, SpiderSiteProfile>>> =
+    OnceLock::new();
+
+fn spider_site_profile_cache() -> &'static Mutex<HashMap<String, SpiderSiteProfile>> {
+    SPIDER_SITE_PROFILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 fn clean_path(path: &Path) -> String {
     let value = path.to_string_lossy().to_string();
@@ -31,6 +41,51 @@ fn jar_contains_entry(path: &Path, entry_name: &str) -> bool {
     };
     let exists = archive.by_name(entry_name).is_ok();
     exists
+}
+
+fn hash_profile_ext(ext: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    ext.trim().hash(&mut hasher);
+    hasher.finish()
+}
+
+fn profile_cache_key(
+    prepared: &PreparedSpiderJar,
+    site_key: &str,
+    class_hint: &str,
+    ext: &str,
+) -> String {
+    format!(
+        "{}::{}::{}::{:016x}",
+        clean_path(&prepared.prepared_jar_path),
+        site_key.trim().to_ascii_lowercase(),
+        class_hint.trim().to_ascii_lowercase(),
+        hash_profile_ext(ext),
+    )
+}
+
+fn cached_site_profile(cache_key: &str) -> Option<SpiderSiteProfile> {
+    let guard = match spider_site_profile_cache().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.get(cache_key).cloned()
+}
+
+fn store_site_profile(cache_key: &str, profile: &SpiderSiteProfile) {
+    let mut guard = match spider_site_profile_cache().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.insert(cache_key.to_string(), profile.clone());
+}
+
+pub(crate) fn clear_spider_site_profile_cache() {
+    let mut guard = match spider_site_profile_cache().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.clear();
 }
 
 pub(crate) fn resolve_profile_runner_bridge_jar(app: &AppHandle) -> Result<PathBuf, String> {
@@ -156,6 +211,17 @@ pub(crate) async fn profile_prepared_spider_site(
     class_hint: &str,
     ext: &str,
 ) -> Result<SpiderSiteProfile, String> {
+    let cache_key = profile_cache_key(prepared, site_key, class_hint, ext);
+    if let Some(cached) = cached_site_profile(&cache_key) {
+        let cache_log = format!(
+            "[SpiderBridge] Reusing site profile from session cache for {} ({})",
+            site_key, cached.class_name
+        );
+        println!("{}", cache_log);
+        crate::spider_cmds::append_spider_debug_log(&cache_log);
+        return Ok(cached);
+    }
+
     let compat_jars = crate::spider_compat::prepare_profile_compat_jars(app).await;
     let classpath = resolve_profile_classpath(app, &compat_jars)?;
     let jar_path = clean_path(&prepared.prepared_jar_path);
@@ -236,7 +302,9 @@ pub(crate) async fn profile_prepared_spider_site(
         Some(&parsed),
         &helper_ports,
     );
-    Ok(crate::spider_compat::augment_site_profile(parsed, &plan))
+    let profile = crate::spider_compat::augment_site_profile(parsed, &plan);
+    store_site_profile(&cache_key, &profile);
+    Ok(profile)
 }
 
 #[tauri::command]
@@ -248,16 +316,21 @@ pub async fn profile_spider_site(
     ext: String,
 ) -> SpiderExecutionReport {
     let method = "profile";
-    let prepared =
-        match crate::spider_cmds::resolve_spider_jar_with_fallback(&app, &spider_url, method).await
-        {
-            Ok(prepared) => prepared,
-            Err(err) => {
-                let report = failure_report(&site_key, method, &err, None, None, None);
-                store_execution_report(report.clone());
-                return report;
-            }
-        };
+    let prepared = match crate::spider_cmds::resolve_spider_jar_with_fallback(
+        &app,
+        &spider_url,
+        method,
+        Some(&api_class),
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            let report = failure_report(&site_key, method, &err, None, None, None);
+            store_execution_report(report.clone());
+            return report;
+        }
+    };
 
     let helper_ports = crate::spider_compat::detect_helper_ports(&ext).await;
 

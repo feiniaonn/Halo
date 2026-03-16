@@ -1,4 +1,4 @@
-﻿import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { HomePage as HomePageStatic } from "@/pages/HomePage";
@@ -142,6 +142,8 @@ function App() {
   const [bgBlur, setBgBlur] = useState<number>(12);
   const [bgRev, setBgRev] = useState(0);
   const [miniRestoreMode, setMiniRestoreMode] = useState<MiniRestoreMode>("both");
+  const [miniModeWidth, setMiniModeWidth] = useState(700);
+  const [miniModeHeight, setMiniModeHeight] = useState(50);
   const [updateCheckHint, setUpdateCheckHint] = useState<string | null>(null);
   const [miniTransitioning, setMiniTransitioning] = useState(false);
   const [miniAnimDirection, setMiniAnimDirection] = useState<"enter" | "exit" | null>(null);
@@ -149,6 +151,13 @@ function App() {
   const isMiniModeRef = useRef(isMiniMode);
   const restoreStateRef = useRef(restoreState);
   const miniToggleLockRef = useRef(false);
+  const miniModeWidthRef = useRef(miniModeWidth);
+  const miniModeHeightRef = useRef(miniModeHeight);
+
+  useEffect(() => {
+    miniModeWidthRef.current = miniModeWidth;
+    miniModeHeightRef.current = miniModeHeight;
+  }, [miniModeWidth, miniModeHeight]);
 
   const bgSrc = useMemo(() => {
     if (!isTauri) return null;
@@ -237,6 +246,8 @@ function App() {
         setBgBlur(cfgBlur);
         setBgRev((prev) => prev + 1);
         setMiniRestoreMode(cfgMiniRestoreMode);
+        setMiniModeWidth(cfg.mini_mode_width ?? 700);
+        setMiniModeHeight(cfg.mini_mode_height ?? 50);
 
         await setBackground(t, p);
 
@@ -345,12 +356,17 @@ function App() {
         const monitor = await currentMonitor();
         const mSize = monitor?.size;
         const mPos = monitor?.position;
-        const width = mSize
-          ? Math.round(Math.min(Math.max(mSize.width * 0.32, 520), 720))
-          : Math.round(Math.min(Math.max(from.width * 0.42, 520), 720));
-        const height = mSize
-          ? Math.round(Math.min(Math.max(mSize.height * 0.055, 64), 80))
-          : Math.round(Math.min(Math.max(from.height * 0.09, 64), 80));
+        const scaleFactor = monitor?.scaleFactor ?? await win.scaleFactor();
+        const logicalWidth =
+          typeof miniModeWidthRef.current === "number" && miniModeWidthRef.current > 0
+            ? miniModeWidthRef.current
+            : 700;
+        const logicalHeight =
+          typeof miniModeHeightRef.current === "number" && miniModeHeightRef.current > 0
+            ? miniModeHeightRef.current
+            : 50;
+        const width = Math.max(1, Math.round(logicalWidth * scaleFactor));
+        const height = Math.max(1, Math.round(logicalHeight * scaleFactor));
         const x = mSize
           ? (mPos?.x ?? 0) + Math.round((mSize.width - width) / 2)
           : from.x;
@@ -671,6 +687,9 @@ function App() {
               onToggleMini={toggleMiniMode}
               isTransitioning={miniTransitioning}
               miniRestoreMode={miniRestoreMode}
+              bgType={bgType}
+              bgPath={bgSrcWithRev}
+              bgBlur={bgBlur}
             />
           ) : (
             <>
@@ -683,9 +702,14 @@ function App() {
                   bgType={bgType}
                   bgFsPath={bgFsPath}
                   bgBlur={bgBlur}
+                  miniRestoreMode={miniRestoreMode}
+                  miniModeWidth={miniModeWidth}
+                  miniModeHeight={miniModeHeight}
                   onBgChange={updateBackground}
                   onBgBlurChange={updateBackgroundBlur}
                   onMiniRestoreModeChange={setMiniRestoreMode}
+                  onMiniModeWidthChange={setMiniModeWidth}
+                  onMiniModeHeightChange={setMiniModeHeight}
                 />
               ) : page === "dashboard" ? (
                 <HomePage onNavigate={setPage} />

@@ -14,6 +14,8 @@ export interface AppSettingsResponse {
   background_blur?: number;
   allow_component_download: boolean;
   mini_restore_mode: MiniRestoreMode;
+  mini_mode_width: number;
+  mini_mode_height: number;
 }
 
 export interface MigrationProgress {

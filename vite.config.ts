@@ -10,4 +10,21 @@ export default defineConfig({
       "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
+  server: {
+    watch: {
+      // Keep HMR focused on app files instead of workspace notes/logs.
+      ignored: [
+        "**/.codex/**",
+        "**/apk/**",
+        "**/docs/**",
+        "**/spider-diagnostics/**",
+        "**/app-data/**",
+        "**/temp/**",
+        "**/tmp/**",
+        "**/*.md",
+        "**/*.txt",
+        "**/*.log",
+      ],
+    },
+  },
 });

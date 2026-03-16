@@ -45,7 +45,7 @@ if ($env:HALO_DEPLOY_FORCE_BUILD -match '^(0|false|False)$') {
 
 $installer = $null
 if ($forceBuild) {
-  Write-Host '[Step 1] Build installer package...' -ForegroundColor Yellow
+  Write-Host '[Step 1] Build NSIS installer package...' -ForegroundColor Yellow
   & powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $buildScript
   if ($LASTEXITCODE -ne 0) { throw "Build failed. ExitCode=$LASTEXITCODE" }
 
@@ -59,7 +59,7 @@ if ($forceBuild) {
   }
   $installer = Get-Item -LiteralPath (Join-Path $updateDir $built.Name)
 } else {
-  Write-Host '[Step 1] Skip build (forceBuild=false), use existing installer...' -ForegroundColor Yellow
+  Write-Host '[Step 1] Skip build (forceBuild=false), use existing NSIS installer...' -ForegroundColor Yellow
   $installer = Get-ChildItem -Path $updateDir -Filter 'halo_*_x64-setup.exe' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
   if (-not $installer) {
     throw "No installer found in $updateDir while forceBuild=false"

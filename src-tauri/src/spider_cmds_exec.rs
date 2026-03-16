@@ -5,6 +5,7 @@ use tauri::{AppHandle, Manager};
 use tokio::process::Command;
 
 use crate::compat_helper::fetch_last_trace;
+use crate::spider_bridge_payload::recover_payload_from_stderr;
 use crate::spider_cmds_profile::profile_prepared_spider_site;
 use crate::spider_cmds_runtime::{
     failure_report, store_execution_report, success_report, PreparedSpiderJar,
@@ -67,6 +68,138 @@ fn site_requires_anotherds_fallback(class_hint: &str) -> bool {
 fn site_prefers_compat_runtime(class_hint: &str) -> bool {
     let normalized = class_hint.to_ascii_lowercase();
     normalized.contains("hxq") || normalized.contains("douban")
+}
+
+fn is_remote_ext_url(ext: &str) -> bool {
+    ext.starts_with("http://") || ext.starts_with("https://")
+}
+
+fn is_file_ext_url(ext: &str) -> bool {
+    ext.starts_with("file://")
+}
+
+fn rule_config_key_score(map: &serde_json::Map<String, serde_json::Value>) -> usize {
+    const STRONG_KEYS: [&str; 10] = [
+        "homeUrl",
+        "class_url",
+        "searchUrl",
+        "detailUrl",
+        "playUrl",
+        "class_name",
+        "\u{5206}\u{7c7b}url",
+        "\u{9996}\u{9875}url",
+        "\u{5206}\u{7c7b}\u{540d}\u{79f0}",
+        "\u{5206}\u{7c7b}\u{94fe}\u{63a5}",
+    ];
+    const AUX_KEYS: [&str; 14] = [
+        "title",
+        "pic_url",
+        "url",
+        "desc",
+        "headers",
+        "class_url_filter",
+        "cate_exclude",
+        "tab_exclude",
+        "\u{5206}\u{7c7b}",
+        "\u{56fe}\u{7247}",
+        "\u{6807}\u{9898}",
+        "\u{526f}\u{6807}\u{9898}",
+        "\u{641c}\u{7d22}\u{6a21}\u{5f0f}",
+        "searchable",
+    ];
+
+    let strong = STRONG_KEYS
+        .iter()
+        .filter(|key| map.contains_key(**key))
+        .count();
+    let aux = AUX_KEYS
+        .iter()
+        .filter(|key| map.contains_key(**key))
+        .count();
+
+    strong * 3 + aux
+}
+
+fn value_looks_like_rule_config(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            let score = rule_config_key_score(map);
+            score >= 4
+                || (score >= 3
+                    && (map.contains_key("homeUrl")
+                        || map.contains_key("class_url")
+                        || map.contains_key("鍒嗙被url")
+                        || map.contains_key("棣栭〉url")))
+        }
+        serde_json::Value::Array(items) => items.iter().take(3).any(value_looks_like_rule_config),
+        _ => false,
+    }
+}
+
+fn looks_like_rule_config_payload(payload: &str) -> bool {
+    let trimmed = payload.trim();
+    if trimmed.is_empty() || !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return false;
+    }
+
+    serde_json::from_str::<serde_json::Value>(trimmed)
+        .map(|value| value_looks_like_rule_config(&value))
+        .unwrap_or(false)
+}
+
+fn ext_prefers_remote_url(ext: &str, fetched_inline_ext: Option<&str>) -> bool {
+    is_remote_ext_url(ext)
+        && fetched_inline_ext
+            .map(looks_like_rule_config_payload)
+            .unwrap_or(false)
+}
+
+fn site_prefers_inline_rule_config(class_hint: &str) -> bool {
+    let normalized = class_hint.trim().to_ascii_lowercase();
+    normalized.contains("xbpq") || normalized.contains("xyqhiker")
+}
+
+fn ext_bootstraps_home_before_category(
+    method: &str,
+    ext: &str,
+    fetched_inline_ext: Option<&str>,
+) -> bool {
+    method == "categoryContent"
+        && fetched_inline_ext
+            .map(looks_like_rule_config_payload)
+            .unwrap_or_else(|| looks_like_rule_config_payload(ext))
+}
+
+fn site_uses_douban_home_fallback(class_hint: &str, method: &str) -> bool {
+    method == "homeContent" && class_hint.to_ascii_lowercase().contains("douban")
+}
+
+fn douban_home_categories() -> serde_json::Value {
+    serde_json::json!([
+        { "type_id": "hot_gaia", "type_name": "\u{70ed}\u{95e8}\u{63a8}\u{8350}" },
+        { "type_id": "tv_hot", "type_name": "\u{70ed}\u{64ad}\u{5267}\u{96c6}" },
+        { "type_id": "anime_hot", "type_name": "\u{70ed}\u{95e8}\u{52a8}\u{6f2b}" },
+        { "type_id": "show_hot", "type_name": "\u{70ed}\u{95e8}\u{7efc}\u{827a}" },
+        { "type_id": "movie", "type_name": "\u{7535}\u{5f71}" },
+        { "type_id": "tv", "type_name": "\u{7535}\u{89c6}\u{5267}" },
+        { "type_id": "rank_list_movie", "type_name": "\u{7535}\u{5f71}\u{699c}\u{5355}" },
+        { "type_id": "rank_list_tv", "type_name": "\u{5267}\u{96c6}\u{699c}\u{5355}" }
+    ])
+}
+
+fn build_douban_home_fallback_payload(category_payload: Option<&str>) -> String {
+    let list = category_payload
+        .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+        .and_then(|value| value.get("list").cloned())
+        .filter(|value| value.is_array())
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+
+    serde_json::json!({
+        "class": douban_home_categories(),
+        "filters": {},
+        "list": list
+    })
+    .to_string()
 }
 
 fn build_minimal_site_profile(
@@ -210,6 +343,24 @@ fn validate_semantic_payload(method: &str, payload: &str) -> Result<(), String> 
         .and_then(|value| value.as_array())
         .map(|items| items.len())
         .unwrap_or(0);
+    let class_is_placeholder_array = obj
+        .get("class")
+        .and_then(|value| value.as_array())
+        .is_some_and(|items| {
+            !items.is_empty()
+                && items
+                    .iter()
+                    .all(|item| item.as_object().is_some_and(|object| object.is_empty()))
+        });
+    let list_is_placeholder_array = obj
+        .get("list")
+        .and_then(|value| value.as_array())
+        .is_some_and(|items| {
+            !items.is_empty()
+                && items
+                    .iter()
+                    .all(|item| item.as_object().is_some_and(|object| object.is_empty()))
+        });
 
     if method == "homeContent" {
         const DEFAULT_CLASS_NAMES: [&str; 6] = [
@@ -224,6 +375,13 @@ fn validate_semantic_payload(method: &str, payload: &str) -> Result<(), String> 
         if class_names == DEFAULT_CLASS_NAMES && list_len == 0 {
             return Err(
                 "Invalid response structure: spider returned fallback default categories without real content"
+                    .to_string(),
+            );
+        }
+
+        if class_is_placeholder_array || list_is_placeholder_array {
+            return Err(
+                "Invalid response structure: homeContent returned stripped placeholder objects"
                     .to_string(),
             );
         }
@@ -326,6 +484,23 @@ fn summarize_input_for_log(value: &str) -> String {
     summarize_text_payload_for_log(trimmed)
 }
 
+fn rewrite_local_spider_service_urls(payload: &str, proxy_base_url: &str) -> String {
+    if payload.trim().is_empty() || proxy_base_url.trim().is_empty() {
+        return payload.to_string();
+    }
+
+    [
+        "http://127.0.0.1:9978",
+        "https://127.0.0.1:9978",
+        "http://localhost:9978",
+        "https://localhost:9978",
+    ]
+    .iter()
+    .fold(payload.to_string(), |next, target| {
+        next.replace(target, proxy_base_url)
+    })
+}
+
 fn sanitize_bridge_stderr(stderr: &str) -> String {
     let mut sanitized = Vec::new();
     let mut lines = stderr.lines().peekable();
@@ -373,6 +548,126 @@ fn looks_like_compat_linkage_error(message: &str) -> bool {
         || normalized.contains("linkageerror")
 }
 
+async fn try_site_home_fallback(
+    app: &AppHandle,
+    prepared: &PreparedSpiderJar,
+    site_key: &str,
+    api_class: &str,
+    ext: &str,
+    method: &str,
+    compat_jars: &[PathBuf],
+    site_profile: &mut Option<SpiderSiteProfile>,
+    reason: &str,
+) -> Option<String> {
+    if !site_uses_douban_home_fallback(api_class, method) {
+        return None;
+    }
+
+    crate::spider_cmds::append_spider_debug_log(&format!(
+        "[SpiderBridge] using Douban home fallback for {} because {}",
+        site_key, reason
+    ));
+
+    let category_payload = match execute_bridge(
+        app,
+        &prepared.prepared_jar_path,
+        site_key,
+        api_class,
+        ext,
+        "categoryContent",
+        vec![
+            ("string", "hot_gaia".to_string()),
+            ("string", "1".to_string()),
+            ("bool", "false".to_string()),
+            ("map", "".to_string()),
+        ],
+        compat_jars,
+    )
+    .await
+    {
+        Ok(output) => Some(output.payload),
+        Err(err) => {
+            crate::spider_cmds::append_spider_debug_log(&format!(
+                "[SpiderBridge] Douban category fallback prefetch failed for {}: {}",
+                site_key, err
+            ));
+            None
+        }
+    };
+
+    if let Some(profile) = site_profile.as_mut() {
+        profile.routing_reason =
+            Some("douban legacy home endpoint failed; used static category fallback".to_string());
+    }
+
+    Some(build_douban_home_fallback_payload(
+        category_payload.as_deref(),
+    ))
+}
+
+async fn fetch_inline_ext_payload(ext: &str) -> Option<String> {
+    if !(ext.starts_with("http://") || ext.starts_with("https://")) {
+        return None;
+    }
+    let client = crate::media_cmds::build_client().ok()?;
+    let response = client.get(ext).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let bytes = response.bytes().await.ok()?;
+    Some(
+        String::from_utf8(bytes.to_vec())
+            .unwrap_or_else(|_| String::from_utf8_lossy(&bytes).into_owned()),
+    )
+}
+
+async fn retry_bridge_with_inline_ext_if_needed(
+    app: &AppHandle,
+    prepared: &PreparedSpiderJar,
+    site_key: &str,
+    api_class: &str,
+    ext: &str,
+    method: &str,
+    args: Vec<(&str, String)>,
+    compat_jars: &[PathBuf],
+    site_profile: &mut Option<SpiderSiteProfile>,
+    reason: &str,
+) -> Option<Result<BridgeExecutionResult, String>> {
+    if !is_remote_ext_url(ext) {
+        return None;
+    }
+
+    let inline_ext = fetch_inline_ext_payload(ext).await?;
+    if inline_ext.trim().is_empty() || !looks_like_rule_config_payload(&inline_ext) {
+        return None;
+    }
+
+    crate::spider_cmds::append_spider_debug_log(&format!(
+        "[SpiderBridge] retrying {} with inline rule-config ext for {} because {}",
+        method, site_key, reason
+    ));
+
+    if let Some(profile) = site_profile.as_mut() {
+        profile.routing_reason = Some(format!(
+            "remote rule-config ext failed during {method}; retried with fetched inline ext payload"
+        ));
+    }
+
+    Some(
+        execute_bridge(
+            app,
+            &prepared.prepared_jar_path,
+            site_key,
+            api_class,
+            &inline_ext,
+            method,
+            args,
+            compat_jars,
+        )
+        .await,
+    )
+}
+
 pub(crate) async fn execute_spider_method(
     app: &AppHandle,
     spider_url: &str,
@@ -382,14 +677,36 @@ pub(crate) async fn execute_spider_method(
     method: &str,
     args: Vec<(&str, String)>,
 ) -> Result<String, String> {
-    let prepared =
-        match crate::spider_cmds::resolve_spider_jar_with_fallback(app, spider_url, method).await {
-            Ok(prepared) => prepared,
-            Err(err) => {
-                store_execution_report(failure_report(site_key, method, &err, None, None, None));
-                return Err(err);
-            }
-        };
+    match crate::spider_fast_paths::try_execute_fast_path(site_key, api_class, ext, method, &args)
+        .await
+    {
+        Ok(Some(payload)) => {
+            let class_name = Some(api_class.trim().to_string()).filter(|value| !value.is_empty());
+            store_execution_report(success_report(site_key, method, class_name, None, None));
+            return Ok(payload);
+        }
+        Ok(None) => {}
+        Err(err) => {
+            crate::spider_cmds::append_spider_debug_log(&format!(
+                "[SpiderFastPath] {} {} failed, falling back to JVM spider: {}",
+                site_key, method, err
+            ));
+        }
+    }
+    let prepared = match crate::spider_cmds::resolve_spider_jar_with_fallback(
+        app,
+        spider_url,
+        method,
+        Some(api_class),
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            store_execution_report(failure_report(site_key, method, &err, None, None, None));
+            return Err(err);
+        }
+    };
 
     let (site_profile, compat_jars) =
         match resolve_desktop_execution_context(app, &prepared, site_key, api_class, ext).await {
@@ -450,7 +767,7 @@ pub(crate) async fn execute_spider_method(
                 api_class,
                 ext,
                 method,
-                args,
+                args.clone(),
                 &[],
             )
             .await
@@ -481,6 +798,84 @@ pub(crate) async fn execute_spider_method(
     match execution_result {
         Ok(output) => {
             if let Err(err) = validate_semantic_payload(method, &output.payload) {
+                if let Some(retry_result) = retry_bridge_with_inline_ext_if_needed(
+                    app,
+                    &prepared,
+                    site_key,
+                    api_class,
+                    ext,
+                    method,
+                    args.clone(),
+                    &compat_jars,
+                    &mut site_profile,
+                    &err,
+                )
+                .await
+                {
+                    match retry_result {
+                        Ok(retry_output) => {
+                            if validate_semantic_payload(method, &retry_output.payload).is_ok() {
+                                store_execution_report(success_report(
+                                    site_key,
+                                    method,
+                                    retry_output
+                                        .class_name
+                                        .clone()
+                                        .or_else(|| profile_class_name(&site_profile)),
+                                    Some(prepared.artifact.clone()),
+                                    site_profile.clone(),
+                                ));
+                                return Ok(retry_output.payload);
+                            }
+                        }
+                        Err(retry_err) => {
+                            crate::spider_cmds::append_spider_debug_log(&format!(
+                                "[SpiderBridge] inline ext retry failed for {}: {}",
+                                site_key, retry_err
+                            ));
+                        }
+                    }
+                }
+
+                if let Some(payload) = try_site_home_fallback(
+                    app,
+                    &prepared,
+                    site_key,
+                    api_class,
+                    ext,
+                    method,
+                    &compat_jars,
+                    &mut site_profile,
+                    &err,
+                )
+                .await
+                {
+                    if let Err(fallback_err) = validate_semantic_payload(method, &payload) {
+                        store_execution_report(failure_report(
+                            site_key,
+                            method,
+                            &fallback_err,
+                            Some(prepared.artifact),
+                            output
+                                .class_name
+                                .or_else(|| profile_class_name(&site_profile)),
+                            site_profile,
+                        ));
+                        return Err(fallback_err);
+                    }
+
+                    store_execution_report(success_report(
+                        site_key,
+                        method,
+                        output
+                            .class_name
+                            .or_else(|| profile_class_name(&site_profile)),
+                        Some(prepared.artifact),
+                        site_profile,
+                    ));
+                    return Ok(payload);
+                }
+
                 store_execution_report(failure_report(
                     site_key,
                     method,
@@ -504,6 +899,80 @@ pub(crate) async fn execute_spider_method(
             Ok(output.payload)
         }
         Err(err) => {
+            if let Some(retry_result) = retry_bridge_with_inline_ext_if_needed(
+                app,
+                &prepared,
+                site_key,
+                api_class,
+                ext,
+                method,
+                args,
+                &compat_jars,
+                &mut site_profile,
+                &err,
+            )
+            .await
+            {
+                match retry_result {
+                    Ok(retry_output) => {
+                        if validate_semantic_payload(method, &retry_output.payload).is_ok() {
+                            store_execution_report(success_report(
+                                site_key,
+                                method,
+                                retry_output
+                                    .class_name
+                                    .clone()
+                                    .or_else(|| profile_class_name(&site_profile)),
+                                Some(prepared.artifact.clone()),
+                                site_profile.clone(),
+                            ));
+                            return Ok(retry_output.payload);
+                        }
+                    }
+                    Err(retry_err) => {
+                        crate::spider_cmds::append_spider_debug_log(&format!(
+                            "[SpiderBridge] inline ext retry failed for {}: {}",
+                            site_key, retry_err
+                        ));
+                    }
+                }
+            }
+
+            if let Some(payload) = try_site_home_fallback(
+                app,
+                &prepared,
+                site_key,
+                api_class,
+                ext,
+                method,
+                &compat_jars,
+                &mut site_profile,
+                &err,
+            )
+            .await
+            {
+                if let Err(fallback_err) = validate_semantic_payload(method, &payload) {
+                    store_execution_report(failure_report(
+                        site_key,
+                        method,
+                        &fallback_err,
+                        Some(prepared.artifact),
+                        profile_class_name(&site_profile),
+                        site_profile,
+                    ));
+                    return Err(fallback_err);
+                }
+
+                store_execution_report(success_report(
+                    site_key,
+                    method,
+                    profile_class_name(&site_profile),
+                    Some(prepared.artifact),
+                    site_profile,
+                ));
+                return Ok(payload);
+            }
+
             let err = append_helper_trace_if_needed(err, site_profile.as_ref()).await;
             store_execution_report(failure_report(
                 site_key,
@@ -609,22 +1078,19 @@ async fn execute_bridge(
     }
     let classpath = classpath_parts.join(cp_separator);
 
+    let fetched_inline_ext = if is_remote_ext_url(ext) {
+        fetch_inline_ext_payload(ext).await
+    } else {
+        None
+    };
+    let preserve_remote_ext_url = !site_prefers_inline_rule_config(class_hint)
+        && ext_prefers_remote_url(ext, fetched_inline_ext.as_deref());
     let mut resolved_ext = ext.to_string();
-    if ext.starts_with("http://") || ext.starts_with("https://") {
-        if let Ok(client) = crate::media_cmds::build_client() {
-            if let Ok(resp) = client.get(ext).send().await {
-                if resp.status().is_success() {
-                    if let Ok(bytes) = resp.bytes().await {
-                        if let Ok(text) = String::from_utf8(bytes.to_vec()) {
-                            resolved_ext = text;
-                        } else {
-                            resolved_ext = String::from_utf8_lossy(&bytes).into_owned();
-                        }
-                    }
-                }
-            }
+    if is_remote_ext_url(ext) && !preserve_remote_ext_url {
+        if let Some(inline_ext) = fetched_inline_ext.as_ref() {
+            resolved_ext = inline_ext.clone();
         }
-    } else if ext.starts_with("file://") {
+    } else if is_file_ext_url(ext) {
         let mut path = ext.trim_start_matches("file:///").to_string();
         #[cfg(target_os = "windows")]
         {
@@ -641,6 +1107,40 @@ async fn execute_bridge(
 
     let java_bin = crate::java_runtime::resolve_java_binary(app)?;
     let java_home = crate::java_runtime::resolve_java_home(app)?;
+    let proxy_base_url: String =
+        crate::spider_local_service::ensure_spider_local_service_started().await?;
+    let rewritten_ext = rewrite_local_spider_service_urls(&resolved_ext, &proxy_base_url);
+    if rewritten_ext != resolved_ext {
+        crate::spider_cmds::append_spider_debug_log(&format!(
+            "[SpiderBridge Rust] rewrote localhost spider service urls to {}",
+            proxy_base_url
+        ));
+        resolved_ext = rewritten_ext;
+    }
+
+    crate::spider_local_service::register_spider_proxy_context(
+        crate::spider_proxy_bridge::SpiderProxyBridgeContext {
+            java_bin: java_bin.clone(),
+            java_home: java_home.clone(),
+            bridge_jar: bridge_jar.clone(),
+            libs_root: libs_root.clone(),
+            spider_jar: spider_jar_path.to_path_buf(),
+            site_key: site_key.to_string(),
+            class_hint: class_hint.to_string(),
+            resolved_ext: resolved_ext.clone(),
+            compat_jars: compat_jars.to_vec(),
+            fallback_jar: fallback_jar.clone(),
+            prefer_compat_runtime,
+            proxy_base_url: proxy_base_url.clone(),
+        },
+    )
+    .await;
+    let precall_methods =
+        if ext_bootstraps_home_before_category(method, ext, fetched_inline_ext.as_deref()) {
+            "homeContent".to_string()
+        } else {
+            String::new()
+        };
     let mut cmd = Command::new(&java_bin);
     #[cfg(target_os = "windows")]
     {
@@ -649,18 +1149,75 @@ async fn execute_bridge(
     }
 
     crate::spider_cmds::append_spider_debug_log(&format!(
-        "[SpiderBridge Rust] method={} ext={} resolved_ext={}",
+        "[SpiderBridge Rust] method={} ext={} resolved_ext={} ext_strategy={}",
         method,
         summarize_input_for_log(ext),
-        summarize_input_for_log(&resolved_ext)
+        summarize_input_for_log(&resolved_ext),
+        if preserve_remote_ext_url {
+            "remote-rule-config-first"
+        } else if is_remote_ext_url(ext) {
+            "inline-remote-ext"
+        } else if looks_like_rule_config_payload(ext) {
+            "inline-rule-config"
+        } else {
+            "direct"
+        }
     ));
 
     let lib_dir = crate::spider_compat::get_native_lib_dir(spider_jar_path);
+    let js_runtime_root = crate::spider_cmds::resolve_tvbox_runtime_root(app)
+        .map(|path| clean_path(&path))
+        .unwrap_or_default();
+    let lib_dir_cleaned = clean_path(&lib_dir);
+    let timeout_secs = bridge_timeout_secs(method);
+
+    let daemon_request = crate::spider_daemon::DaemonCallRequest {
+        jar_path: spider_jar_cleaned.clone(),
+        site_key: site_key.to_string(),
+        class_hint: class_hint.to_string(),
+        ext: resolved_ext.clone(),
+        spider_method: method.to_string(),
+        args: args
+            .iter()
+            .map(|(arg_type, value)| crate::spider_daemon::DaemonArg {
+                arg_type: (*arg_type).to_string(),
+                value: value.clone(),
+            })
+            .collect(),
+        compat_jars: compat_classpath.clone(),
+        fallback_jar: fallback_jar_cleaned.clone(),
+        prefer_compat_runtime,
+        precall_methods: precall_methods.clone(),
+        proxy_base_url: proxy_base_url.clone(),
+        js_runtime_root: js_runtime_root.clone(),
+        lib_dir: lib_dir_cleaned.clone(),
+    };
+
+    match crate::spider_daemon::daemon_call(app, daemon_request, Duration::from_secs(timeout_secs))
+        .await
+    {
+        Ok(result) => {
+            crate::spider_cmds::append_spider_debug_log(&format!(
+                "[SpiderDaemon] served {} via daemon for {}",
+                method, site_key
+            ));
+            return Ok(BridgeExecutionResult {
+                class_name: result.class_name,
+                payload: result.payload,
+            });
+        }
+        Err(err) => {
+            crate::spider_cmds::append_spider_debug_log(&format!(
+                "[SpiderDaemon] falling back to per-call bridge for {} {}: {}",
+                site_key, method, err
+            ));
+        }
+    }
 
     cmd.arg("-Dfile.encoding=UTF-8")
         .arg("-Dsun.stdout.encoding=UTF-8")
         .arg("-Dsun.stderr.encoding=UTF-8")
-        .arg(format!("-Dspider.lib.dir={}", clean_path(&lib_dir)))
+        .arg(format!("-Dspider.lib.dir={lib_dir_cleaned}"))
         .arg("-Xmx256m")
         .arg("-cp")
         .arg(&classpath)
@@ -671,7 +1228,48 @@ async fn execute_bridge(
         .env("HALO_CLASS_HINT", class_hint)
         .env("HALO_EXT", &resolved_ext)
         .env("HALO_METHOD", method)
+        .env("HALO_PROXY_BASE_URL", &proxy_base_url)
+        .env("HALO_PRECALL_METHODS", &precall_methods)
         .env("HALO_COMPAT_JARS", &compat_classpath)
+        .env("HALO_JS_RUNTIME_ROOT", &js_runtime_root)
+        .env(
+            "HALO_UNIFIED_REQUEST_POLICY_V1",
+            if crate::spider_runtime_contract::current_spider_feature_flags()
+                .unified_request_policy_v1
+            {
+                "1"
+            } else {
+                "0"
+            },
+        )
+        .env(
+            "HALO_SPIDER_EXECUTION_ENVELOPE_V1",
+            if crate::spider_runtime_contract::current_spider_feature_flags()
+                .spider_execution_envelope_v1
+            {
+                "1"
+            } else {
+                "0"
+            },
+        )
+        .env(
+            "HALO_NORMALIZED_PAYLOAD_V1",
+            if crate::spider_runtime_contract::current_spider_feature_flags().normalized_payload_v1
+            {
+                "1"
+            } else {
+                "0"
+            },
+        )
+        .env(
+            "HALO_SPIDER_TASK_MANAGER_V1",
+            if crate::spider_runtime_contract::current_spider_feature_flags().spider_task_manager_v1
+            {
+                "1"
+            } else {
+                "0"
+            },
+        )
         .env(
             "HALO_PREFER_COMPAT_RUNTIME",
             if prefer_compat_runtime { "1" } else { "0" },
@@ -686,6 +1284,19 @@ async fn execute_bridge(
         "[SpiderBridge] Invoking {} -> {} (Site: {}, Hint: {})",
         method, class_hint, site_key, spider_jar_cleaned
     );
+    crate::spider_cmds::append_spider_debug_log(&format!(
+        "[SpiderBridge Rust] local proxy base url={proxy_base_url}"
+    ));
+    if !js_runtime_root.is_empty() {
+        crate::spider_cmds::append_spider_debug_log(&format!(
+            "[SpiderBridge Rust] js runtime root={js_runtime_root}"
+        ));
+    }
+    if !precall_methods.is_empty() {
+        crate::spider_cmds::append_spider_debug_log(&format!(
+            "[SpiderBridge Rust] precall methods={precall_methods}"
+        ));
+    }
 
     for (index, (arg_type, arg_val)) in args.iter().enumerate() {
         cmd.env(format!("HALO_ARG_{}_TYPE", index), arg_type);
@@ -693,7 +1304,6 @@ async fn execute_bridge(
     }
 
     cmd.kill_on_drop(true);
-    let timeout_secs = bridge_timeout_secs(method);
     let execution = tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output());
 
     match execution.await {
@@ -746,7 +1356,7 @@ async fn execute_bridge(
                                         .filter(|value| !value.is_empty())
                                         .map(ToOwned::to_owned);
                                     if let Some(result_value) = parsed.get("result") {
-                                        match result_value {
+                                        let result = match result_value {
                                             serde_json::Value::Null => Ok(BridgeExecutionResult {
                                                 class_name: class_name.clone(),
                                                 payload: "{}".to_string(),
@@ -808,7 +1418,17 @@ async fn execute_bridge(
                                                 class_name: class_name.clone(),
                                                 payload: other.to_string(),
                                             }),
-                                        }
+                                        };
+
+                                        result.map(|mut execution| {
+                                            if let Some(recovered) = recover_payload_from_stderr(
+                                                &stderr,
+                                                &execution.payload,
+                                            ) {
+                                                execution.payload = recovered;
+                                            }
+                                            execution
+                                        })
                                     } else {
                                         Ok(BridgeExecutionResult {
                                             class_name,
@@ -872,11 +1492,11 @@ async fn execute_bridge(
 
 fn bridge_timeout_secs(method: &str) -> u64 {
     match method {
-        "homeContent" => 90,
-        "categoryContent" => 120,
-        "searchContent" => 120,
+        "homeContent" => 5,
+        "categoryContent" => 5,
+        "searchContent" => 5,
         "detailContent" => 75,
-        "playerContent" => 60,
+        "playerContent" => 20,
         _ => 30,
     }
 }
@@ -884,8 +1504,8 @@ fn bridge_timeout_secs(method: &str) -> u64 {
 #[cfg(test)]
 mod log_summary_tests {
     use super::{
-        looks_like_compat_linkage_error, sanitize_bridge_stderr, summarize_input_for_log,
-        summarize_text_payload_for_log,
+        build_douban_home_fallback_payload, looks_like_compat_linkage_error,
+        sanitize_bridge_stderr, summarize_input_for_log, summarize_text_payload_for_log,
     };
 
     #[test]
@@ -929,23 +1549,35 @@ mod log_summary_tests {
             "java.lang.NoSuchMethodError: 'android.app.Application com.github.catvod.spider.Init.context()'"
         ));
     }
+
+    #[test]
+    fn douban_home_fallback_uses_category_list_when_available() {
+        let payload = build_douban_home_fallback_payload(Some(
+            r#"{"list":[{"vod_id":"1","vod_name":"绀轰緥褰辩墖"}],"page":1}"#,
+        ));
+        assert!(payload.contains("\"hot_gaia\""));
+        assert!(payload.contains("\"vod_name\":\"绀轰緥褰辩墖\""));
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::{
-        site_prefers_compat_runtime, site_requires_anotherds_fallback, validate_semantic_payload,
+        ext_bootstraps_home_before_category, ext_prefers_remote_url,
+        looks_like_rule_config_payload, rewrite_local_spider_service_urls,
+        site_prefers_compat_runtime, site_prefers_inline_rule_config,
+        site_requires_anotherds_fallback, validate_semantic_payload,
     };
 
     #[test]
     fn rejects_fallback_default_categories() {
         let payload = r#"{
             "class":[
-                {"type_name":"\u7535\u5f71"},
-                {"type_name":"\u8fde\u7eed\u5267"},
-                {"type_name":"\u7efc\u827a"},
-                {"type_name":"\u52a8\u6f2b"},
+                {"type_name":"鐢靛奖"},
+                {"type_name":"杩炵画鍓?},
+                {"type_name":"缁艰壓"},
+                {"type_name":"鍔ㄦ极"},
                 {"type_name":"4K"},
-                {"type_name":"\u4f53\u80b2"}
+                {"type_name":"浣撹偛"}
             ],
             "list":[]
         }"#;
@@ -955,10 +1587,20 @@ mod tests {
     #[test]
     fn accepts_regular_home_payload() {
         let payload = r#"{
-            "class":[{"type_name":"\u7535\u5f71"}],
+            "class":[{"type_name":"鐢靛奖"}],
             "list":[{"vod_id":"1","vod_name":"demo"}]
         }"#;
         assert!(validate_semantic_payload("homeContent", payload).is_ok());
+    }
+
+    #[test]
+    fn rejects_placeholder_home_payloads() {
+        let payload = r#"{
+            "class":[{},{}],
+            "list":[{},{}],
+            "filters":{"anime_hot":[{"name":"鐑棬鍔ㄦ极"}]}
+        }"#;
+        assert!(validate_semantic_payload("homeContent", payload).is_err());
     }
 
     #[test]
@@ -977,5 +1619,71 @@ mod tests {
         assert!(site_prefers_compat_runtime("csp_Douban"));
         assert!(site_prefers_compat_runtime("csp_Hxq"));
         assert!(!site_prefers_compat_runtime("csp_AppRJ"));
+    }
+
+    #[test]
+    fn detects_rule_config_payload_variants() {
+        assert!(looks_like_rule_config_payload(
+            r#"{"鍒嗙被url":"https://example.com/list/{cateId}","鍒嗙被":"鍒嗙被1","鏍囬":"a&&Text","鍓爣棰?:"span&&Text","鍥剧墖":"img&&src"}"#
+        ));
+        assert!(looks_like_rule_config_payload(
+            r#"{"homeUrl":"https://example.com","class_url":"/show/{cateId}","searchUrl":"/search","title":"a&&Text","pic_url":"img&&src"}"#
+        ));
+        assert!(!looks_like_rule_config_payload(
+            r#"{"commonConfig":"https://example.com/config.json"}"#
+        ));
+    }
+
+    #[test]
+    fn preserves_remote_url_for_rule_config_payloads() {
+        let payload = r#"{"鍒嗙被url":"https://example.com/list/{cateId}","鍒嗙被":"鍒嗙被1","鏍囬":"a&&Text","鍥剧墖":"img&&src"}"#;
+        assert!(ext_prefers_remote_url(
+            "https://example.com/rule.json",
+            Some(payload)
+        ));
+        assert!(!ext_prefers_remote_url(
+            "https://example.com/config.json",
+            Some(r#"{"commonConfig":"https://example.com/peizhi.json"}"#)
+        ));
+    }
+
+    #[test]
+    fn bootstraps_home_before_rule_config_category() {
+        let payload = r#"{"鍒嗙被url":"https://example.com/list/{cateId}","鍒嗙被":"鍒嗙被1","鏍囬":"a&&Text","鍥剧墖":"img&&src"}"#;
+        assert!(ext_bootstraps_home_before_category(
+            "categoryContent",
+            "https://example.com/rule.json",
+            Some(payload)
+        ));
+        assert!(ext_bootstraps_home_before_category(
+            "categoryContent",
+            payload,
+            None
+        ));
+        assert!(!ext_bootstraps_home_before_category(
+            "homeContent",
+            payload,
+            None
+        ));
+        assert!(!ext_bootstraps_home_before_category(
+            "categoryContent",
+            r#"{"commonConfig":"https://example.com/peizhi.json"}"#,
+            None
+        ));
+    }
+
+    #[test]
+    fn xbpq_family_prefers_inline_rule_config() {
+        assert!(site_prefers_inline_rule_config("csp_XBPQ"));
+        assert!(site_prefers_inline_rule_config("csp_XYQHiker"));
+        assert!(!site_prefers_inline_rule_config("csp_Douban"));
+    }
+
+    #[test]
+    fn rewrites_legacy_local_service_urls() {
+        let payload = r#"{"cookie":"http://127.0.0.1:9978/file/TVBox/bili_cookie.txt","proxy":"http://localhost:9978/proxy"}"#;
+        let rewritten = rewrite_local_spider_service_urls(payload, "http://127.0.0.1:61234");
+        assert!(rewritten.contains("http://127.0.0.1:61234/file/TVBox/bili_cookie.txt"));
+        assert!(rewritten.contains("http://127.0.0.1:61234/proxy"));
     }
 }

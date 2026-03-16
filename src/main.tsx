@@ -69,6 +69,21 @@ function StartupBlank() {
   return <div style={{ height: "100%", width: "100%", background: "transparent" }} />;
 }
 
+type WindowRole = "main" | typeof LIVE_PLAYER_WINDOW_LABEL | typeof VOD_PLAYER_WINDOW_LABEL;
+
+function resolveWindowRoleFromUrl(): WindowRole {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const value = params.get("window");
+    if (value === LIVE_PLAYER_WINDOW_LABEL || value === VOD_PLAYER_WINDOW_LABEL) {
+      return value;
+    }
+  } catch {
+    // Ignore malformed URLs and fall back to Tauri label detection.
+  }
+  return "main";
+}
+
 type RootErrorBoundaryState = {
   error: Error | null;
 };
@@ -97,13 +112,10 @@ class RootErrorBoundary extends React.Component<React.PropsWithChildren, RootErr
 
 function RuntimeGuardedApp() {
   const [runtimeError, setRuntimeError] = React.useState<string | null>(null);
-  const [windowLabel] = React.useState(() => {
-    if (!isTauriRuntime()) return "main";
-    try {
-      return getCurrentWindow().label;
-    } catch {
-      return "main";
-    }
+  const [windowRole, setWindowRole] = React.useState<WindowRole>(() => {
+    const role = resolveWindowRoleFromUrl();
+    console.log(`[Runtime] Initial windowRole set to: ${role} (URL: ${window.location.search})`);
+    return role;
   });
 
   React.useEffect(() => {
@@ -160,6 +172,31 @@ function RuntimeGuardedApp() {
     };
   }, []);
 
+  React.useEffect(() => {
+    if (!isTauriRuntime()) return;
+    
+    // Check URL first as it's the most reliable for our custom navigation
+    const fromUrl = resolveWindowRoleFromUrl();
+    console.log(`[Runtime] useEffect checking windowRole. URL role: ${fromUrl}`);
+    if (fromUrl !== "main") {
+      console.log(`[Runtime] Switching role to ${fromUrl} based on URL`);
+      setWindowRole(fromUrl);
+      return;
+    }
+
+    // Fallback to window label
+    try {
+      const label = getCurrentWindow().label;
+      console.log(`[Runtime] window label is: ${label}`);
+      if (label === LIVE_PLAYER_WINDOW_LABEL || label === VOD_PLAYER_WINDOW_LABEL) {
+        console.log(`[Runtime] Switching role to ${label} based on label`);
+        setWindowRole(label);
+      }
+    } catch (error) {
+      console.error("[Runtime] Failed to read window label:", error);
+    }
+  }, []);
+
   if (runtimeError) {
     return <StartupFallback title="应用启动失败（运行时异常）" detail={runtimeError} />;
   }
@@ -167,9 +204,9 @@ function RuntimeGuardedApp() {
   return (
     <RootErrorBoundary>
       <Suspense fallback={<StartupBlank />}>
-        {windowLabel === LIVE_PLAYER_WINDOW_LABEL ? (
+        {windowRole === LIVE_PLAYER_WINDOW_LABEL ? (
           <LivePlayerWindowPage />
-        ) : windowLabel === VOD_PLAYER_WINDOW_LABEL ? (
+        ) : windowRole === VOD_PLAYER_WINDOW_LABEL ? (
           <VodPlayerWindowPage />
         ) : (
           <MainApp />
@@ -187,4 +224,4 @@ const startupNode = import.meta.env.DEV ? (
   </React.StrictMode>
 );
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(startupNode);
+ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(startupNode);

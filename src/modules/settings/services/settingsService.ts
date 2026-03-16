@@ -42,6 +42,10 @@ export async function setMiniRestoreMode(mode: MiniRestoreMode): Promise<void> {
   return invoke("set_mini_restore_mode", { mode });
 }
 
+export async function setMiniModeSize(width: number, height: number): Promise<void> {
+  return invoke("set_mini_mode_size", { width, height });
+}
+
 export async function setAllowComponentDownload(enabled: boolean): Promise<void> {
   return invoke("set_allow_component_download", { enabled });
 }

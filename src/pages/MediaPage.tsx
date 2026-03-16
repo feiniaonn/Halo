@@ -11,12 +11,14 @@ import { MediaSourceSettingsDialog } from '@/modules/media/components/MediaSourc
 import { VodWorkbenchPanel } from '@/modules/media/components/VodWorkbenchPanel';
 import { useLiveSourceController } from '@/modules/media/hooks/useLiveSourceController';
 import { useVodSourceController } from '@/modules/media/hooks/useVodSourceController';
+import { ensureMediaBootstrap } from '@/modules/media/services/mediaBootstrap';
 import type { MediaMode, MediaNotice } from '@/modules/media/types/mediaPage.types';
 
 export function MediaPage() {
   const [mode, setMode] = useState<MediaMode>('vod');
   const [notice, setNotice] = useState<MediaNotice | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [bootstrapReady, setBootstrapReady] = useState(false);
 
   const showNotice = useCallback((next: MediaNotice) => {
     setNotice(next);
@@ -29,17 +31,30 @@ export function MediaPage() {
   const live = useLiveSourceController({ notify: showNotice });
 
   useEffect(() => {
-    if (!showSettings) return;
+    let cancelled = false;
+    void ensureMediaBootstrap().finally(() => {
+      if (!cancelled) {
+        setBootstrapReady(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleSettingsOpenChange = useCallback((open: boolean) => {
+    setShowSettings(open);
+    if (!open) return;
     vod.syncDraft();
     live.syncDraft();
-  }, [live, showSettings, vod]);
+  }, [live, vod]);
 
   const isConfigured = mode === 'vod' ? Boolean(vod.source) : Boolean(live.source);
 
   return (
     <div className="relative mx-auto flex h-full w-full max-w-[1520px] flex-col">
       {notice && (
-        <div className="absolute right-0 top-0 z-50 animate-in fade-in slide-in-from-top-4 duration-300">
+        <div className="pointer-events-none fixed left-1/2 top-20 z-[70] w-[min(680px,calc(100vw-2rem))] -translate-x-1/2 animate-in fade-in slide-in-from-top-4 duration-300">
           <div
             className={cn(
               'flex items-center gap-2 rounded-xl border px-4 py-3 text-sm font-medium shadow-2xl backdrop-blur-xl',
@@ -122,8 +137,15 @@ export function MediaPage() {
       </header>
 
       <main className="relative z-10 flex flex-1 flex-col gap-2 overflow-hidden">
+        {!bootstrapReady ? (
+          <div className="flex flex-1 items-center justify-center">
+            <div className="rounded-2xl border border-border/60 bg-background/70 px-5 py-3 text-sm text-muted-foreground shadow-sm backdrop-blur">
+              正在初始化媒体运行时...
+            </div>
+          </div>
+        ) : (
 
-        {!isConfigured ? (
+        !isConfigured ? (
           <div className="flex flex-1 flex-col items-center justify-center text-center animate-in zoom-in-95 fade-in duration-500">
             <div className="relative mb-8 flex h-32 w-32 items-center justify-center rounded-[32px] border border-white/20 bg-gradient-to-br from-white/20 to-transparent shadow-[0_24px_54px_-16px_rgba(0,0,0,0.2)] backdrop-blur-xl">
               <div className="absolute inset-0 rounded-[32px] bg-primary/10 blur-xl pointer-events-none animate-pulse duration-3000"></div>
@@ -173,7 +195,7 @@ export function MediaPage() {
                     }}
                     onSearchReset={vod.handleSearchReset}
                     onLoadMore={vod.loadMore}
-                    onSelectVod={vod.setSelectedVodId}
+                    onSelectVod={vod.selectVodItem}
                     renderVodImage={(item) => (
                       <VodProxyImage
                         src={item.vod_pic}
@@ -212,6 +234,7 @@ export function MediaPage() {
               </div>
             )}
           </div>
+        )
         )}
       </main>
 
@@ -219,7 +242,7 @@ export function MediaPage() {
         open={showSettings}
         vodDraft={vod.draft}
         liveDraft={live.draft}
-        onOpenChange={setShowSettings}
+        onOpenChange={handleSettingsOpenChange}
         onDraftChange={(target, value) => {
           if (target === 'vod') {
             vod.setDraft(value);
@@ -243,22 +266,26 @@ export function MediaPage() {
         }}
       />
 
-      {vod.selectedVodId && vod.activeSiteKey && vod.activeVodSite && vod.detailEnabled && (
+      {vod.selectedVodId && vod.activeSiteKey && vod.activeVodSite && (
         <MediaDetailModal
           vodId={vod.selectedVodId}
           site={vod.activeVodSite}
           spider={vod.config?.spider ?? ''}
-          onClose={() => vod.setSelectedVodId(null)}
-          onPlay={() => vod.setSelectedVodId(null)}
+          fallbackTitle={vod.selectedVodTitle ?? ''}
+          onClose={vod.clearSelectedVod}
+          onPlay={() => vod.clearSelectedVod()}
           onPlayWithDetail={(detail, routes, routeIdx, episodeIdx, extInput) => {
             const site = vod.activeVodSite;
             if (!site) return;
-            vod.setSelectedVodId(null);
+            vod.clearSelectedVod();
             void vod.openVodFromDetail(site, extInput, detail, routes, routeIdx, episodeIdx);
             showNotice({ kind: 'success', text: '正在启动内核播放...' });
           }}
-          onSearchOnlyPlay={async (keyword) => {
-            await vod.resolveMsearchAndPlay(keyword);
+          onSearchOnlyPlay={async (keyword, fallbackTitle) => {
+            await vod.resolveMsearchAndPlay(keyword, fallbackTitle);
+          }}
+          onResolveSearchDispatch={async (keyword, fallbackTitle) => {
+            return vod.resolveMsearchMatches(keyword, fallbackTitle);
           }}
         />
       )}

@@ -1,5 +1,6 @@
 package com.github.catvod.net;
 
+import com.halo.spider.RustTransportBridge;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -50,6 +51,21 @@ public class OkHttp {
     }
 
     public static OkResult post(String url, String json, Map<String, String> header) throws IOException {
+        if (RustTransportBridge.isEnabled()) {
+            try {
+                return RustTransportBridge.executeOkResult(
+                        url,
+                        "POST",
+                        header,
+                        json,
+                        null,
+                        "json",
+                        true,
+                        15_000L);
+            } catch (IOException error) {
+                System.err.println("DEBUG: OkHttp unified JSON POST failed for " + url + " -> " + error.getMessage());
+            }
+        }
         MediaType JSON = MediaType.parse("application/json; charset=utf-8");
         RequestBody body = RequestBody.create(JSON, json);
         OkRequest req = new OkRequest(url, header);
@@ -65,6 +81,13 @@ public class OkHttp {
     }
 
     public static OkResult execute(String url, Map<String, String> header) throws IOException {
+        if (RustTransportBridge.isEnabled()) {
+            try {
+                return RustTransportBridge.executeOkResult(url, "GET", header, null, null, null, true, 15_000L);
+            } catch (IOException error) {
+                System.err.println("DEBUG: OkHttp unified GET failed for " + url + " -> " + error.getMessage());
+            }
+        }
         OkRequest req = new OkRequest(url, header);
         Request request = req.buildGet(null);
         try (Response response = client().newCall(request).execute()) {
@@ -79,6 +102,21 @@ public class OkHttp {
     }
 
     public static String post(String url, Map<String, String> params, Map<String, String> header) throws IOException {
+        if (RustTransportBridge.isEnabled()) {
+            try {
+                return RustTransportBridge.executeText(
+                        url,
+                        "POST",
+                        header,
+                        null,
+                        params,
+                        "form",
+                        true,
+                        15_000L);
+            } catch (IOException error) {
+                System.err.println("DEBUG: OkHttp unified form POST failed for " + url + " -> " + error.getMessage());
+            }
+        }
         okhttp3.FormBody.Builder builder = new okhttp3.FormBody.Builder();
         if (params != null) {
             for (Map.Entry<String, String> entry : params.entrySet()) {
@@ -97,6 +135,13 @@ public class OkHttp {
     }
 
     public static Response newCall(String url) throws IOException {
+        if (RustTransportBridge.isEnabled()) {
+            try {
+                return RustTransportBridge.executeResponse(url, "GET", null, null, null, null, true, 15_000L);
+            } catch (IOException error) {
+                System.err.println("DEBUG: OkHttp unified response GET failed for " + url + " -> " + error.getMessage());
+            }
+        }
         Request request = new Request.Builder().url(url).get().build();
         return client().newCall(request).execute();
     }

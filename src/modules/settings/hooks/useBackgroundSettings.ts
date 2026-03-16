@@ -10,6 +10,7 @@ import {
   setBackgroundBlur,
 } from "@/modules/settings/services/settingsService";
 import { SETTINGS_MESSAGES } from "@/modules/settings/constants";
+import { reportRuntimeError } from "@/modules/shared/services/runtimeError";
 import type { AppSettingsResponse } from "@/modules/settings/types/settings.types";
 import { formatSettingsError, pickStoredBackgroundPath } from "@/modules/settings/utils";
 
@@ -108,7 +109,13 @@ export function useBackgroundSettings({
           : SETTINGS_MESSAGES.background.optimizeHint.disabled,
       );
     } catch (error) {
-      setStorageMessage(`${SETTINGS_MESSAGES.background.optimizeHint.settingFailed}：${formatSettingsError(error)}`);
+      reportRuntimeError({
+        title: "Failed to update background download permission",
+        summary: "Background component download permission could not be updated.",
+        error,
+        source: "settings.background.download-permission",
+      });
+      setStorageMessage(`${SETTINGS_MESSAGES.background.optimizeHint.settingFailed}闂?{formatSettingsError(error)}`);
     }
   }, [setSettings, setStorageMessage]);
 
@@ -116,9 +123,15 @@ export function useBackgroundSettings({
     try {
       setBgOptimizeStage("download_start");
       const ok = await prepareVideoOptimizer();
-      setBgOptimizeHint(ok ? "视频优化组件已就绪。" : SETTINGS_MESSAGES.background.optimizeHint.prepareFailed);
+      setBgOptimizeHint(ok ? "Video optimizer ready." : SETTINGS_MESSAGES.background.optimizeHint.prepareFailed);
     } catch (error) {
-      setBgOptimizeHint(`${SETTINGS_MESSAGES.background.optimizeHint.prepareFailed}：${formatSettingsError(error)}`);
+      reportRuntimeError({
+        title: "Failed to prepare video optimizer",
+        summary: "Background video optimizer preparation failed.",
+        error,
+        source: "settings.background.optimizer",
+      });
+      setBgOptimizeHint(`${SETTINGS_MESSAGES.background.optimizeHint.prepareFailed}闂?{formatSettingsError(error)}`);
     } finally {
       setBgOptimizeStage(null);
     }
@@ -141,7 +154,13 @@ export function useBackgroundSettings({
         try {
           await setBackgroundBlur(normalized);
         } catch (error) {
-          setStorageMessage(`${SETTINGS_MESSAGES.background.applyFailed}：${formatSettingsError(error)}`);
+          reportRuntimeError({
+            title: "Failed to apply background blur",
+            summary: "Background blur setting could not be applied.",
+            error,
+            source: "settings.background.blur",
+          });
+          setStorageMessage(`${SETTINGS_MESSAGES.background.applyFailed}闂?{formatSettingsError(error)}`);
         }
       })();
     }, 180);
@@ -153,7 +172,13 @@ export function useBackgroundSettings({
         await applyBackground("none", null);
         setStorageMessage(SETTINGS_MESSAGES.background.restoredDefault);
       } catch (error) {
-        setStorageMessage(`${SETTINGS_MESSAGES.background.applyFailed}：${formatSettingsError(error)}`);
+        reportRuntimeError({
+          title: "Failed to clear background",
+          summary: "Background could not be reset to the default state.",
+          error,
+          source: "settings.background.clear",
+        });
+        setStorageMessage(`${SETTINGS_MESSAGES.background.applyFailed}闂?{formatSettingsError(error)}`);
       }
     })();
   }, [applyBackground, setStorageMessage]);
@@ -169,7 +194,13 @@ export function useBackgroundSettings({
         await applyBackground(type, stored);
         setStorageMessage(type === "image" ? SETTINGS_MESSAGES.background.switchedSaved.image : SETTINGS_MESSAGES.background.switchedSaved.video);
       } catch (error) {
-        setStorageMessage(`${SETTINGS_MESSAGES.background.switchFailed}：${formatSettingsError(error)}`);
+        reportRuntimeError({
+          title: "Failed to apply saved background",
+          summary: "Saved background could not be applied.",
+          error,
+          source: "settings.background.apply-saved",
+        });
+        setStorageMessage(`${SETTINGS_MESSAGES.background.switchFailed}闂?{formatSettingsError(error)}`);
       }
     })();
   }, [applyBackground, setStorageMessage, settings]);
@@ -190,7 +221,13 @@ export function useBackgroundSettings({
             : [{ name: "Video", extensions: ["mp4", "m4v", "mov", "webm"] }],
         });
       } catch (error) {
-        setStorageMessage(`${SETTINGS_MESSAGES.background.setupFailed}：${formatSettingsError(error)}`);
+        reportRuntimeError({
+          title: "Failed to open background picker",
+          summary: "Background file picker could not be opened.",
+          error,
+          source: "settings.background.dialog",
+        });
+        setStorageMessage(`${SETTINGS_MESSAGES.background.setupFailed}闂?{formatSettingsError(error)}`);
         return;
       }
 
@@ -213,20 +250,26 @@ export function useBackgroundSettings({
 
         setBgNotice({
           kind: "success",
-          title: "背景设置成功",
-          detail: type === "image" ? "图片背景已应用" : "视频背景已应用",
+          title: "Background updated",
+          detail: type === "image" ? "Image background applied." : "Video background applied.",
           fileName: filePath.split(/[/\\]/).pop(),
           path: importedPath,
         });
       } catch (error) {
+        reportRuntimeError({
+          title: "Failed to import background asset",
+          summary: "Background asset import or apply failed.",
+          error,
+          source: "settings.background.import",
+        });
         setBgNotice({
           kind: "error",
-          title: "背景设置失败",
+          title: "Background update failed",
           detail: formatSettingsError(error),
           fileName: filePath.split(/[/\\]/).pop(),
           path: filePath,
         });
-        setStorageMessage(`${SETTINGS_MESSAGES.background.setupFailed}：${formatSettingsError(error)}`);
+        setStorageMessage(`${SETTINGS_MESSAGES.background.setupFailed}闂?{formatSettingsError(error)}`);
       }
     })();
   }, [applyBackground, isTauri, setSettings, setStorageMessage]);
@@ -246,3 +289,5 @@ export function useBackgroundSettings({
     handleChooseBackground,
   };
 }
+
+

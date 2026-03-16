@@ -7,7 +7,7 @@ const FEIMAO_REMOTE_CANDIDATES: &[&str] = &[
 ];
 
 const IYOUHUN_DC_XS_FALLBACK: &str = r#"{
-  "spider": "https://pic7.fukit.cn/autoupload/gE6Y0Af2tjXBCNig6CtNDI12_FRYNb81z6UPhMWD8iI/20260308/hFr8/0X0/03081756.png;md5;a68439d0afacd1cdbc3f8d1d9f69a19a",
+  "spider": "builtin://halo_spider.jar",
   "wallpaper": "http://127.0.0.1:9978/proxy?do=wallpaper",
   "logo": "https://pic7.fukit.cn/autoupload/gE6Y0Af2tjXBCNig6CtNDI12_FRYNb81z6UPhMWD8iI/20251224/dJkT/1080X1080/logo.jpg/webp",
   "sites": [
@@ -54,7 +54,7 @@ const IYOUHUN_DC_XS_FALLBACK: &str = r#"{
 }"#;
 
 const FEIMAO_FALLBACK: &str = r#"{
-  "spider": "https://cik07-cos.7moor-fs2.com/im/4d2c3f00-7d4c-11e5-af15-41bf63ae4ea0/7a3502fc0415ddd7/PandaQ260228.png;md5;96a8b5e130d6aac01a449bd006f9a460",
+  "spider": "builtin://halo_spider.jar",
   "wallpaper": "https://深色壁纸.xxooo.cf/",
   "logo": "http://hello.xn--z7x900a.com/fm.gif",
   "sites": [
@@ -206,7 +206,8 @@ pub fn resolve_known_source_candidates(url: &str) -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_known_source_candidates, resolve_known_source_fallback, resolve_known_source_redirect,
+        resolve_known_source_candidates, resolve_known_source_fallback,
+        resolve_known_source_redirect,
     };
 
     #[test]
@@ -218,6 +219,16 @@ mod tests {
     #[test]
     fn matches_iyouhun_source_url() {
         assert!(resolve_known_source_fallback("https://www.iyouhun.com/tv/dc-xs").is_some());
+    }
+
+    #[test]
+    fn bundled_fallbacks_use_builtin_spider_runtime() {
+        let iyouhun = resolve_known_source_fallback("https://www.iyouhun.com/tv/dc-xs")
+            .expect("iyouhun fallback");
+        let feimao =
+            resolve_known_source_fallback("http://xn--z7x900a.com/").expect("feimao fallback");
+        assert!(iyouhun.contains("\"spider\": \"builtin://halo_spider.jar\""));
+        assert!(feimao.contains("\"spider\": \"builtin://halo_spider.jar\""));
     }
 
     #[test]
@@ -239,6 +250,8 @@ mod tests {
     #[test]
     fn exposes_known_feimao_remote_candidates() {
         let candidates = resolve_known_source_candidates("http://xn--z7x900a.com/");
-        assert!(candidates.iter().any(|item| item.contains("raw.githubusercontent.com")));
+        assert!(candidates
+            .iter()
+            .any(|item| item.contains("raw.githubusercontent.com")));
     }
 }

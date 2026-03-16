@@ -40,7 +40,6 @@ function Get-PublishContext {
     OneClickDir = $scriptDir
     ArtifactRoot = $artifactRoot
     ExeOutDir = Join-Path $artifactRoot 'exe'
-    MsiOutDir = Join-Path $artifactRoot 'msi'
     UpdateDir = Join-Path $artifactRoot 'meta'
     TauriConfigPath = Join-Path $projectRoot 'src-tauri\tauri.conf.json'
     CargoTomlPath = Join-Path $projectRoot 'src-tauri\Cargo.toml'
@@ -50,7 +49,6 @@ function Get-PublishContext {
     SecretsPath = Join-Path $scriptDir '.publish-secrets.json'
     BuildScriptPath = Join-Path $projectRoot 'scripts\build-installers-unsigned.ps1'
     NsisDir = Join-Path $projectRoot 'src-tauri\target\release\bundle\nsis'
-    MsiDir = Join-Path $projectRoot 'src-tauri\target\release\bundle\msi'
     RemoteDir = '/opt/halo-update'
     RemoteServiceDir = '/opt/halo-update/service-files'
   }
@@ -111,7 +109,7 @@ function Save-JsonObject([string]$path, [object]$obj) {
 }
 
 function Ensure-LocalDirectories([hashtable]$ctx) {
-  foreach ($dir in @($ctx.ArtifactRoot, $ctx.ExeOutDir, $ctx.MsiOutDir, $ctx.UpdateDir)) {
+  foreach ($dir in @($ctx.ArtifactRoot, $ctx.ExeOutDir, $ctx.UpdateDir)) {
     if (-not (Test-Path -LiteralPath $dir)) {
       New-Item -ItemType Directory -Path $dir | Out-Null
     }
@@ -382,13 +380,15 @@ function Set-ProjectVersion([hashtable]$ctx, [string]$newVersion) {
   Write-Ok "版本已更新为 $newVersion"
 }
 
-function Invoke-UnsignedBuild([hashtable]$ctx) {
+function Invoke-UnsignedBuild([hashtable]$ctx, [string]$privateKeyPath, [string]$privateKeyPassword) {
   Ensure-File $ctx.BuildScriptPath '缺少构建脚本'
-  Write-Info '开始构建安装包（MSI + NSIS，unsigned config）...'
+  Write-Info '开始构建安装包（NSIS EXE，unsigned config）...'
   Push-Location $ctx.ProjectRoot
   try {
     # Keep logs visible while preventing command output from becoming function return value.
-    & powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $ctx.BuildScriptPath | Out-Host
+    & powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $ctx.BuildScriptPath `
+      -SigningPrivateKeyPath $privateKeyPath `
+      -SigningPrivateKeyPassword $privateKeyPassword | Out-Host
     if ($LASTEXITCODE -ne 0) {
       throw "构建失败，退出码：$LASTEXITCODE"
     }
@@ -410,24 +410,22 @@ function Get-LatestNsisInstaller([hashtable]$ctx) {
   return $built
 }
 
-function Get-LatestMsiInstaller([hashtable]$ctx) {
-  if (-not (Test-Path -LiteralPath $ctx.MsiDir)) {
-    throw "未找到 MSI 输出目录：$($ctx.MsiDir)"
-  }
-  $built = Get-ChildItem -LiteralPath $ctx.MsiDir -Filter 'halo_*_x64*.msi' -File |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
-  if ($null -eq $built) {
-    throw '未找到 MSI 安装包（halo_*_x64*.msi）。'
-  }
-  return $built
-}
-
 function Copy-InstallerToDir([hashtable]$ctx, [System.IO.FileInfo]$installer, [string]$targetDir) {
   Ensure-LocalDirectories $ctx
   $target = Join-Path $targetDir $installer.Name
   Copy-Item -LiteralPath $installer.FullName -Destination $target -Force
   return (Get-Item -LiteralPath $target)
+}
+
+function Copy-InstallerSignatureToDir([System.IO.FileInfo]$installer, [string]$targetDir) {
+  $signaturePath = "$($installer.FullName).sig"
+  if (-not (Test-Path -LiteralPath $signaturePath)) {
+    return $null
+  }
+
+  $target = Join-Path $targetDir "$($installer.Name).sig"
+  Copy-Item -LiteralPath $signaturePath -Destination $target -Force
+  return $target
 }
 
 function Sign-Installer([hashtable]$ctx, [string]$installerPath, [string]$privateKeyPath, [string]$privateKeyPassword) {
@@ -588,8 +586,7 @@ function Push-FilesToLinux {
     [string]$remoteServiceDir,
     [string]$latestPath,
     [string]$installerPath,
-    [string]$sigPath,
-    [string]$msiPath
+    [string]$sigPath
   )
 
   Ensure-Command 'ssh'
@@ -690,17 +687,18 @@ function Prepare-ReleaseArtifacts {
     [string]$version
   )
 
-  Invoke-UnsignedBuild -ctx $ctx
+  Invoke-UnsignedBuild -ctx $ctx -privateKeyPath $privateKeyPath -privateKeyPassword $privateKeyPassword
   $builtNsis = Get-LatestNsisInstaller -ctx $ctx
   $installerInUpdate = Copy-InstallerToDir -ctx $ctx -installer $builtNsis -targetDir $ctx.ExeOutDir
-  $builtMsi = Get-LatestMsiInstaller -ctx $ctx
-  $msiInUpdate = Copy-InstallerToDir -ctx $ctx -installer $builtMsi -targetDir $ctx.MsiOutDir
-  $sigPath = Sign-Installer -ctx $ctx -installerPath $installerInUpdate.FullName -privateKeyPath $privateKeyPath -privateKeyPassword $privateKeyPassword
+  $sigPath = Copy-InstallerSignatureToDir -installer $builtNsis -targetDir $ctx.ExeOutDir
+  if ([string]::IsNullOrWhiteSpace($sigPath)) {
+    Write-WarnMsg '构建产物未包含 .sig，开始补签名。'
+    $sigPath = Sign-Installer -ctx $ctx -installerPath $installerInUpdate.FullName -privateKeyPath $privateKeyPath -privateKeyPassword $privateKeyPassword
+  }
   $latestPath = Generate-LatestJson -ctx $ctx -installerPath $installerInUpdate.FullName -sigPath $sigPath -version $version
 
   return [ordered]@{
     InstallerPath = $installerInUpdate.FullName
-    MsiPath = $msiInUpdate.FullName
     SigPath = $sigPath
     LatestPath = $latestPath
   }
@@ -724,15 +722,7 @@ function Ensure-ReleaseArtifactsForPush {
     Write-WarnMsg "未在 $($ctx.ExeOutDir) 发现安装包，将从构建输出目录复制最近版本。"
     $built = Get-LatestNsisInstaller -ctx $ctx
     $installer = Copy-InstallerToDir -ctx $ctx -installer $built -targetDir $ctx.ExeOutDir
-  }
-
-  $msi = Get-ChildItem -LiteralPath $ctx.MsiOutDir -Filter 'halo_*_x64*.msi' -File |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
-  if ($null -eq $msi) {
-    Write-WarnMsg "未在 $($ctx.MsiOutDir) 发现 MSI，将从构建输出目录复制最近版本。"
-    $builtMsi = Get-LatestMsiInstaller -ctx $ctx
-    $msi = Copy-InstallerToDir -ctx $ctx -installer $builtMsi -targetDir $ctx.MsiOutDir
+    $null = Copy-InstallerSignatureToDir -installer $built -targetDir $ctx.ExeOutDir
   }
 
   $sigPath = "$($installer.FullName).sig"
@@ -749,7 +739,6 @@ function Ensure-ReleaseArtifactsForPush {
 
   return [ordered]@{
     InstallerPath = $installer.FullName
-    MsiPath = $msi.FullName
     SigPath = $sigPath
     LatestPath = $latestPath
   }

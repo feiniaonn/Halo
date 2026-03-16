@@ -10,6 +10,7 @@ import {
   updaterProbeEndpoint,
   updaterSetConfig,
 } from "../services/updaterService";
+import { reportRuntimeError } from "@/modules/shared/services/runtimeError";
 import type {
   UpdaterCheckResult,
   UpdaterEndpointHealth,
@@ -22,7 +23,7 @@ function toMessage(err: unknown) {
   try {
     return JSON.stringify(err);
   } catch {
-    return "未知错误";
+    return "Unknown error";
   }
 }
 
@@ -69,7 +70,7 @@ export function useUpdater(): UseUpdaterResult {
 
       const target = (value ?? endpointRef.current).trim();
       if (!target) {
-        setEndpointHealth({ state: "error", message: "更新源不能为空" });
+        setEndpointHealth({ state: "error", message: "Updater endpoint is required." });
         return;
       }
 
@@ -84,9 +85,15 @@ export function useUpdater(): UseUpdaterResult {
         setEndpointHealth({
           state: "error",
           result,
-          message: result.message ?? "更新源不可访问",
+          message: result.message ?? "Updater endpoint is not reachable.",
         });
       } catch (error) {
+        reportRuntimeError({
+          title: "Failed to probe updater endpoint",
+          summary: "Updater endpoint health check failed.",
+          error,
+          source: "updater.probe",
+        });
         setEndpointHealth({ state: "error", message: toMessage(error) });
       }
     },
@@ -102,7 +109,13 @@ export function useUpdater(): UseUpdaterResult {
       if (cfg.endpoint.trim()) {
         void probeEndpoint(cfg.endpoint);
       }
-    } catch {
+    } catch (error) {
+      reportRuntimeError({
+        title: "Failed to load updater settings",
+        summary: "Updater configuration could not be loaded.",
+        error,
+        source: "updater.load-config",
+      });
       setEndpointHealth({ state: "idle" });
     }
 
@@ -114,7 +127,6 @@ export function useUpdater(): UseUpdaterResult {
   }, [isTauri, probeEndpoint]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
 
@@ -150,8 +162,13 @@ export function useUpdater(): UseUpdaterResult {
             setStatus({ state: "installed" });
           }
         });
-      } catch {
-        void 0;
+      } catch (error) {
+        reportRuntimeError({
+          title: "Failed to initialize updater listeners",
+          summary: "Updater progress listeners could not be attached.",
+          error,
+          source: "updater.listeners",
+        });
       }
     })();
 
@@ -166,7 +183,7 @@ export function useUpdater(): UseUpdaterResult {
 
     const next = endpoint.trim();
     if (!next) {
-      setEndpointHealth({ state: "error", message: "更新源不能为空" });
+      setEndpointHealth({ state: "error", message: "Updater endpoint is required." });
       return;
     }
 
@@ -177,6 +194,12 @@ export function useUpdater(): UseUpdaterResult {
       setStatus({ state: "idle" });
       await probeEndpoint(cfg.endpoint);
     } catch (error) {
+      reportRuntimeError({
+        title: "Failed to save updater endpoint",
+        summary: "Updater endpoint could not be saved.",
+        error,
+        source: "updater.save-config",
+      });
       setStatus({ state: "error", message: toMessage(error) });
     }
   }, [endpoint, isTauri, probeEndpoint]);
@@ -198,11 +221,17 @@ export function useUpdater(): UseUpdaterResult {
       }
     } catch (error) {
       const message = toMessage(error);
+      reportRuntimeError({
+        title: "Failed to check for updates",
+        summary: "Updater check failed.",
+        error,
+        source: "updater.check",
+      });
       setStatus({
         state: "error",
         message:
-          message === "检查失败"
-            ? "检查更新失败，请确认更新源地址和网络连接是否可用。"
+          message === "check_failed"
+            ? "Update check failed. Verify the endpoint and network connection."
             : message,
       });
       emitUpdateSignal("halo:update-check-failed", { message });
@@ -217,9 +246,6 @@ export function useUpdater(): UseUpdaterResult {
     if (!isTauri) return;
 
     try {
-      // Skip re-checking if we already know an update is available.
-      // The Rust side reuses its cached manifest (60 s TTL) so no extra
-      // network request is needed in the common check → install flow.
       if (!lastCheck?.available) {
         setStatus({ state: "checking" });
         const checkResult = await updaterCheck();
@@ -236,22 +262,24 @@ export function useUpdater(): UseUpdaterResult {
       }
 
       setStatus({ state: "downloading", downloaded: 0, total: null });
-
-      // 安装阶段由 Rust 侧负责下载（含自动重试）、调用安装器并退出当前进程。
-      // 这里不能再次重启旧进程，否则会复现双进程或错误路径问题。
       await updaterDownloadAndInstall();
     } catch (error) {
       const message = toMessage(error);
       if (message === "no_update") {
         setStatus({ state: "up_to_date" });
       } else {
+        reportRuntimeError({
+          title: "Failed to install update",
+          summary: "Updater download or install failed.",
+          error,
+          source: "updater.install",
+        });
         setStatus({ state: "error", message });
       }
     }
   }, [isTauri, lastCheck]);
 
   const relaunch = useCallback(async () => {
-    // 当前更新流程不需要前端主动重启，保留签名避免影响现有调用方。
     if (!isTauri) return;
   }, [isTauri]);
 
@@ -271,3 +299,4 @@ export function useUpdater(): UseUpdaterResult {
     relaunch,
   };
 }
+

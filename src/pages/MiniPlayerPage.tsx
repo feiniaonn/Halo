@@ -1,61 +1,48 @@
- 
- 
- import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+
 import { cn } from "@/lib/utils";
 import { clampPercent } from "@/lib/formatters";
 import { MarqueeText } from "@/components/ui/MarqueeText";
 import { CoverImage } from "@/modules/music/components/CoverImage";
-import { OptionalCoverImage } from "@/modules/music/components/OptionalCoverImage";
+import { MiniMetricsCanvas, getMiniMetricsCanvasWidth } from "@/modules/music/components/MiniMetricsCanvas";
 import { useCurrentPlaying } from "@/modules/music/hooks/useCurrentPlaying";
 import { useMusicControl } from "@/modules/music/hooks/useMusicControl";
-import { useMusicDailySummary } from "@/modules/music/hooks/useMusicDailySummary";
 import { useMusicLyrics } from "@/modules/music/hooks/useMusicLyrics";
 import { usePlaybackClock } from "@/modules/music/hooks/usePlaybackClock";
 import { getMusicSettings } from "@/modules/music/services/musicService";
 import { resolveCurrentLyricText, resolvePlaybackMs } from "@/modules/music/utils/lyrics";
 import { useSystemOverview } from "@/modules/dashboard";
-import type {
-  MusicMiniVisibleKey,
-  MusicSettings,
-} from "@/modules/music/types/music.types";
+import type { MusicMiniVisibleKey, MusicSettings } from "@/modules/music/types/music.types";
 import type { MiniRestoreMode } from "@/modules/settings/types/settings.types";
 
-function SystemMetric({
-  label,
-  value,
-  barClassName,
-}: {
-  label: string;
-  value: number | null;
-  barClassName: string;
-}) {
-  const pct = value === null ? null : clampPercent(value);
+type MiniDensity = "tight" | "compact" | "comfortable";
+type MiniMetricSnapshot = {
+  cpu: number | null;
+  memory: number | null;
+  gpu: number | null;
+};
+
+function clampValue(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function SeparatorLine({ className }: { className?: string }) {
   return (
-    <div className="min-w-[48px]">
-      <div className="flex items-center justify-between gap-1.5">
-        <span className="text-[9px] font-medium text-foreground/72 dark:text-foreground/78">
-          {label}
-        </span>
-        <span className="text-[10px] font-semibold tabular-nums">
-          {pct === null ? "--" : `${Math.round(pct)}%`}
-        </span>
-      </div>
-      <div className="mt-0.5 h-1 w-full overflow-hidden rounded-full bg-black/15 dark:bg-white/20">
-        <div
-          className={cn("h-full transition-all duration-300", barClassName)}
-          style={{ width: `${pct ?? 0}%` }}
-        />
-      </div>
-    </div>
+    <div 
+      className={cn(
+        "h-[58%] w-px shrink-0 bg-linear-to-b from-transparent via-black/10 to-transparent dark:via-white/12", 
+        className
+      )} 
+      aria-hidden 
+    />
   );
 }
 
 const DEFAULT_MINI_SETTINGS = {
   controlsEnabled: false,
   visibleKeys: ["play_pause", "next"] as MusicMiniVisibleKey[],
-  showStatsWithoutSession: false,
   lyricsEnabled: true,
   lyricsOffsetMs: 0,
 };
@@ -68,7 +55,6 @@ function mapMiniSettings(settings: MusicSettings | null) {
       settings.music_mini_visible_keys.length > 0
         ? settings.music_mini_visible_keys
         : DEFAULT_MINI_SETTINGS.visibleKeys,
-    showStatsWithoutSession: settings.music_mini_show_stats_without_session,
     lyricsEnabled: settings.music_lyrics_enabled,
     lyricsOffsetMs: settings.music_lyrics_offset_ms,
   };
@@ -108,24 +94,46 @@ function MiniPauseIcon({ className }: { className?: string }) {
   );
 }
 
+function pickDensity(width: number, height: number): MiniDensity {
+  if (width < 560 || height <= 30) return "tight";
+  if (width < 820 || height <= 42) return "compact";
+  return "comfortable";
+}
+
 export function MiniPlayerPage({
   className,
   onToggleMini,
   isTransitioning = false,
   miniRestoreMode = "both",
+  bgType = "none",
+  bgPath = null,
+  bgBlur = 12,
 }: {
   className?: string;
   onToggleMini?: (anchorRect?: { left: number; top: number; width: number; height: number }) => void;
   isTransitioning?: boolean;
   miniRestoreMode?: MiniRestoreMode;
+  bgType?: "none" | "image" | "video";
+  bgPath?: string | null;
+  bgBlur?: number;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [miniSettings, setMiniSettings] = useState(DEFAULT_MINI_SETTINGS);
-  const [compact, setCompact] = useState(false);
   const [layoutWidth, setLayoutWidth] = useState(0);
+  const [layoutHeight, setLayoutHeight] = useState(0);
+  const [metricSnapshot, setMetricSnapshot] = useState<MiniMetricSnapshot>({
+    cpu: null,
+    memory: null,
+    gpu: null,
+  });
+  const latestMetricSnapshotRef = useRef<MiniMetricSnapshot>({
+    cpu: null,
+    memory: null,
+    gpu: null,
+  });
+
   const { data: current } = useCurrentPlaying();
   const { state: controlState, runCommand, runningCommand } = useMusicControl();
-  const { data: dailySummary } = useMusicDailySummary();
   const playbackTrackKey = `${current?.source_app_id ?? ""}::${current?.artist ?? ""}::${current?.title ?? ""}`;
   const livePlaybackPositionSecs = usePlaybackClock(
     current?.position_secs,
@@ -145,14 +153,17 @@ export function MiniPlayerPage({
   const allowButtonRestore = miniRestoreMode === "button" || miniRestoreMode === "both";
   const allowDoubleClickRestore = miniRestoreMode === "double_click" || miniRestoreMode === "both";
 
-  const isMusicVisible = useMemo(() => {
-    return Boolean(current?.title && current.playback_status === "Playing");
-  }, [current?.title, current?.playback_status]);
+  const effectiveLayoutWidth = layoutWidth > 0 ? layoutWidth : 700;
+  const effectiveLayoutHeight = layoutHeight > 0 ? layoutHeight : 50;
+  const density = useMemo(
+    () => pickDensity(effectiveLayoutWidth, effectiveLayoutHeight),
+    [effectiveLayoutHeight, effectiveLayoutWidth],
+  );
 
-  const showStats = useMemo(() => {
-    if (!dailySummary) return false;
-    return isMusicVisible || miniSettings.showStatsWithoutSession;
-  }, [dailySummary, isMusicVisible, miniSettings.showStatsWithoutSession]);
+  const isMusicVisible = useMemo(
+    () => Boolean(current?.title && current.playback_status !== "Stopped" && current.playback_status !== "Closed"),
+    [current?.title, current?.playback_status],
+  );
 
   const miniLyricText = useMemo(() => {
     if (!miniSettings.lyricsEnabled || !current || !lyrics.response?.ok) {
@@ -163,15 +174,14 @@ export function MiniPlayerPage({
   }, [
     current,
     lyrics.response,
+    livePlaybackPositionSecs,
     miniSettings.lyricsEnabled,
     miniSettings.lyricsOffsetMs,
-    livePlaybackPositionSecs,
   ]);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-setMiniSettings(DEFAULT_MINI_SETTINGS);
+      setMiniSettings(DEFAULT_MINI_SETTINGS);
       return;
     }
 
@@ -183,6 +193,7 @@ setMiniSettings(DEFAULT_MINI_SETTINGS);
         setMiniSettings(DEFAULT_MINI_SETTINGS);
       }
     };
+
     void loadMiniSettings();
 
     const unlistenPromise = listen<MusicSettings>("music:settings-changed", (event) => {
@@ -198,177 +209,345 @@ setMiniSettings(DEFAULT_MINI_SETTINGS);
     const node = containerRef.current;
     if (!node || typeof ResizeObserver === "undefined") return;
 
-    let timer: number | null = null;
     const observer = new ResizeObserver((entries) => {
-      const width = entries[0]?.contentRect.width ?? 0;
-      if (timer !== null) {
-        window.clearTimeout(timer);
-      }
-      timer = window.setTimeout(() => {
-        setCompact(width < 600);
-        setLayoutWidth(width);
-      }, 80);
+      const rect = entries[0]?.contentRect;
+      if (!rect) return;
+      setLayoutWidth(rect.width);
+      setLayoutHeight(rect.height);
     });
 
     observer.observe(node);
-    return () => {
-      observer.disconnect();
-      if (timer !== null) {
-        window.clearTimeout(timer);
-      }
-    };
+    return () => observer.disconnect();
   }, []);
 
-  const cpuUsage = systemOverview ? clampPercent(systemOverview.cpuUsage) : null;
-  const memoryUsage =
+  const cpuUsageRaw = systemOverview ? clampPercent(systemOverview.cpuUsage) : null;
+  const memoryUsageRaw =
     systemOverview && systemOverview.memoryTotalBytes > 0
       ? clampPercent((systemOverview.memoryUsedBytes / systemOverview.memoryTotalBytes) * 100)
       : null;
-  const gpuUsage = systemOverview?.gpuUsage == null ? null : clampPercent(systemOverview.gpuUsage);
-  const titleTextClass = layoutWidth > 0 && layoutWidth < 560 ? "text-[11px]" : "text-xs";
-  const sublineTextClass = layoutWidth > 0 && layoutWidth < 560 ? "text-[10px]" : "text-[11px]";
-  const titleWidthClass = layoutWidth > 0 && layoutWidth < 560 ? "w-[180px]" : layoutWidth < 640 ? "w-[220px]" : "w-[260px]";
+  const gpuUsageRaw = systemOverview?.gpuUsage == null ? null : clampPercent(systemOverview.gpuUsage);
+  const cpuUsage = cpuUsageRaw == null ? null : Math.round(cpuUsageRaw);
+  const memoryUsage = memoryUsageRaw == null ? null : Math.round(memoryUsageRaw);
+  const gpuUsage = gpuUsageRaw == null ? null : Math.round(gpuUsageRaw);
+
+  useEffect(() => {
+    latestMetricSnapshotRef.current = {
+      cpu: cpuUsage,
+      memory: memoryUsage,
+      gpu: gpuUsage,
+    };
+  }, [cpuUsage, gpuUsage, memoryUsage]);
+
+  useEffect(() => {
+    setMetricSnapshot(latestMetricSnapshotRef.current);
+
+    const timer = window.setInterval(() => {
+      setMetricSnapshot((prev) => {
+        const next = latestMetricSnapshotRef.current;
+        if (
+          prev.cpu === next.cpu
+          && prev.memory === next.memory
+          && prev.gpu === next.gpu
+        ) {
+          return prev;
+        }
+        return next;
+      });
+    }, 420);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const hasMetricsBlock = Boolean(systemOverview) && effectiveLayoutWidth >= 220 && effectiveLayoutHeight >= 20;
+  const showRestoreButton = allowButtonRestore && effectiveLayoutWidth >= 360;
+  const hasControlsBlock = miniSettings.controlsEnabled && miniSettings.visibleKeys.length > 0;
+  const visibleMetricCount = effectiveLayoutWidth < 520 ? 2 : 3;
+  const visibleMetricItems = [
+    { label: "CPU", value: metricSnapshot.cpu },
+    { label: "MEM", value: metricSnapshot.memory },
+    { label: "GPU", value: metricSnapshot.gpu },
+  ].slice(0, visibleMetricCount);
+  const metricBlockWidth = getMiniMetricsCanvasWidth(effectiveLayoutHeight, visibleMetricItems.length);
+
+  const titleMaxWidth = useMemo(() => {
+    let base = effectiveLayoutWidth;
+    if (hasMetricsBlock) base -= metricBlockWidth + 40;
+    if (hasControlsBlock) base -= 100;
+    if (showRestoreButton) base -= 40;
+    return Math.max(120, Math.min(base * 0.5, 360));
+  }, [effectiveLayoutWidth, hasMetricsBlock, metricBlockWidth, hasControlsBlock, showRestoreButton]);
+
+  const lyricLine = useMemo(() => {
+    if (!miniSettings.lyricsEnabled || !lyrics.response?.ok) return null;
+
+    const activeLine = miniLyricText?.trim();
+    if (activeLine) return activeLine;
+
+    const firstTimedLine = lyrics.response.lines.find((line) => line.text.trim().length > 0)?.text.trim();
+    if (firstTimedLine) return firstTimedLine;
+
+    const firstPlainLine = lyrics.response.plain_text
+      ?.split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+
+    return firstPlainLine ?? null;
+  }, [lyrics.response, miniLyricText, miniSettings.lyricsEnabled]);
+
+  const playbackProgress = useMemo(() => {
+    const duration = current?.duration_secs ?? 0;
+    const pos = livePlaybackPositionSecs ?? current?.position_secs ?? 0;
+    if (duration <= 0) return 0;
+    return Math.min(1, Math.max(0, pos / duration));
+  }, [current, livePlaybackPositionSecs]);
+
+  // --- Standalone Background Logic ---
+  const hasCustomBg = bgType !== "none" && !!bgPath;
+  const backgroundScale = 1.05;
+  const normalizedBgBlur = (bgBlur / 100) * 32;
+
+  const bgVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    if (bgType !== "video" || !bgPath) return;
+    const el = bgVideoRef.current;
+    if (!el) return;
+    try {
+      el.load();
+      void el.play().catch(() => {});
+    } catch {}
+  }, [bgType, bgPath]);
+
+  const isPlaying = current?.playback_status === "Playing";
+
+  const coverSize = clampValue(
+    effectiveLayoutHeight - (density === "tight" ? 8 : density === "compact" ? 12 : 14),
+    18,
+    42,
+  );
+  const controlSize = clampValue(
+    effectiveLayoutHeight - (density === "tight" ? 10 : 14),
+    18,
+    32,
+  );
+  const titleTextClass =
+    density === "tight"
+      ? "text-[11px]"
+      : density === "compact"
+        ? "text-[12.5px]"
+        : "text-[13.5px]";
+  const sublineTextClass =
+    density === "tight"
+      ? "text-[9px]"
+      : density === "compact"
+        ? "text-[10.5px]"
+        : "text-[11.5px]";
 
   return (
-    <div className={cn("h-full w-full transition-all duration-200 ease-out", className)}>
+    <div 
+      className={cn(
+        "halo-mini-standalone relative flex h-full w-full items-stretch overflow-hidden",
+        "bg-white/10 text-foreground backdrop-blur-[24px] dark:bg-black/22",
+        className
+      )}
+    >
+      {/* Self-Encapsulated Background */}
+      {hasCustomBg && (
+        <div className="absolute inset-0 z-[-2] overflow-hidden pointer-events-none">
+          {bgType === "image" ? (
+            <img
+              key={bgPath ?? "none"}
+              src={bgPath ?? ""}
+              alt="Background"
+              className="absolute inset-0 h-full w-full object-cover opacity-72"
+              style={{
+                filter: `blur(${Math.max(0, normalizedBgBlur * 0.45)}px)`,
+                transform: `scale(${Math.max(1.02, backgroundScale - 0.03)})`,
+              }}
+            />
+          ) : (
+            <video
+              key={bgPath ?? "none"}
+              ref={bgVideoRef}
+              src={bgPath ?? ""}
+              autoPlay
+              loop
+              muted
+              playsInline
+              className="absolute inset-0 h-full w-full object-cover opacity-68"
+              style={{
+                filter: `blur(${Math.max(0, normalizedBgBlur * 0.35)}px)`,
+                transform: `scale(${Math.max(1.02, backgroundScale - 0.02)})`,
+              }}
+            />
+          )}
+          <div className="absolute inset-0 bg-black/10 dark:bg-black/25" />
+        </div>
+      )}
+
       <div
         ref={containerRef}
-        onContextMenu={(e) => e.preventDefault()}
-        onDoubleClick={(e) => {
+        onContextMenu={(event) => event.preventDefault()}
+        onDoubleClick={(event) => {
           if (!isTransitioning && allowDoubleClickRestore) {
-            onToggleMini?.(e.currentTarget.getBoundingClientRect());
+            onToggleMini?.(event.currentTarget.getBoundingClientRect());
           }
         }}
-        className="relative flex h-full w-full select-none items-center px-3 py-1.5 transition-all duration-200 ease-out"
+        className={cn(
+          "relative flex h-full w-full select-none items-center justify-center gap-6 px-6",
+          className
+        )}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden">
-          <div
-            className={cn(
-              "flex min-w-0 items-center gap-2.5 overflow-hidden transition-all duration-300 ease-out",
-              isMusicVisible
-                ? "max-w-[400px] translate-x-0 opacity-100"
-                : "max-w-0 -translate-x-2 opacity-0",
-            )}
-            aria-hidden={!isMusicVisible}
-          >
-            <CoverImage
-              coverPath={current?.cover_path ?? null}
-              dataUrl={current?.cover_data_url ?? null}
-              size="md"
-              className="h-8 w-8 rounded-md bg-white/15 shadow-sm flex-shrink-0"
-            />
-            <div className="min-w-0 flex flex-col justify-center flex-1">
-              <div className={cn(titleWidthClass, "overflow-hidden")}>
-                <MarqueeText className="inline-flex items-center gap-1.5">
-                  <span className={cn("font-semibold leading-tight whitespace-nowrap", titleTextClass)}>
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.08),transparent_42%,rgba(255,255,255,0.03))] dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.04),transparent_42%,rgba(255,255,255,0.01))]" />
+
+        {isMusicVisible && (
+          <div className="flex shrink-0 items-center gap-3 overflow-hidden">
+            <div className="relative flex shrink-0 items-center justify-center rounded-full overflow-hidden" style={{ width: coverSize + 8, height: coverSize + 8 }}>
+              <div 
+                className={cn(
+                  "overflow-hidden rounded-full border border-white/10 transition-transform duration-700 ease-in-out shadow-lg z-1",
+                  isPlaying ? "animate-[spin_8s_linear_infinite] scale-100" : "scale-95"
+                )}
+                style={{ willChange: "transform", width: coverSize, height: coverSize }}
+              >
+                <CoverImage
+                  coverPath={current?.cover_path ?? null}
+                  dataUrl={current?.cover_data_url ?? null}
+                  size="md"
+                  className="h-full w-full rounded-full object-cover"
+                />
+              </div>
+              
+              <svg 
+                className="absolute inset-0 h-full w-full -rotate-90 pointer-events-none z-0"
+                viewBox="0 0 100 100"
+              >
+                <circle
+                  cx="50"
+                  cy="50"
+                  r="42"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="6"
+                  className="text-white/5 dark:text-white/10"
+                />
+                <circle
+                  cx="50"
+                  cy="50"
+                  r="42"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="6"
+                  strokeDasharray="263.89"
+                  strokeDashoffset={263.89 * (1 - playbackProgress)}
+                  className="text-primary/60 dark:text-primary/70 transition-[stroke-dashoffset] duration-300"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </div>
+
+            <div className="flex min-w-0 flex-col justify-center gap-0.5">
+              <div className="overflow-hidden" style={{ maxWidth: `${titleMaxWidth}px` }}>
+                <MarqueeText containerClassName="leading-none">
+                  <span className={cn("font-bold leading-[1.05] whitespace-nowrap text-foreground tracking-tight drop-shadow-sm", titleTextClass)}>
                     {current?.title ?? ""}
                   </span>
                 </MarqueeText>
               </div>
-              {miniLyricText && (
-                <div className={cn(titleWidthClass, "overflow-hidden")}>
-                  <MarqueeText
-                    className={cn("leading-tight text-foreground/68 dark:text-foreground/74", sublineTextClass)}
-                  >
-                    {miniLyricText}
+
+              {lyricLine && (
+                <div className="overflow-hidden" style={{ maxWidth: `${Math.max(120, titleMaxWidth + 40)}px` }}>
+                  <MarqueeText containerClassName="leading-none">
+                    <span className={cn(
+                      "font-semibold tracking-wide whitespace-nowrap",
+                      isPlaying ? "text-primary/90 dark:text-primary/90" : "text-foreground/60 dark:text-foreground/70",
+                      sublineTextClass
+                    )}>
+                      {lyricLine}
+                    </span>
                   </MarqueeText>
                 </div>
               )}
             </div>
           </div>
+        )}
 
-          {isMusicVisible && <div className="h-5 w-px bg-border/75 flex-shrink-0" aria-hidden />}
-
-          <div className={cn("flex items-center gap-2 flex-shrink-0", compact && "hidden")}>
-            <SystemMetric label="CPU" value={cpuUsage} barClassName="bg-sky-500" />
-            <SystemMetric label="内存" value={memoryUsage} barClassName="bg-violet-500" />
-            <SystemMetric label="GPU" value={gpuUsage} barClassName="bg-amber-500" />
-          </div>
-        </div>
-
-        <div className="ml-2 flex shrink-0 items-center gap-1.5">
-          {miniSettings.controlsEnabled && (
-            <div className="flex items-center gap-1.5 rounded-md border border-white/15 bg-white/8 px-1.5 py-1 backdrop-blur-md">
-              {miniSettings.visibleKeys.includes("previous") && (
-                <button
-                  type="button"
-                  disabled={!controlState?.target?.supports_previous || runningCommand !== null}
-                  onClick={() => void runCommand("previous")}
-                  className="inline-flex h-6 w-6 items-center justify-center rounded border border-white/20 bg-white/8 transition-colors hover:bg-white/12 disabled:opacity-40"
-                  aria-label="上一首"
-                  title="上一首"
-                >
-                  <MiniPreviousIcon className="h-3.5 w-3.5" />
-                </button>
-              )}
-              {miniSettings.visibleKeys.includes("play_pause") && (
-                <button
-                  type="button"
-                  disabled={!controlState?.target?.supports_play_pause || runningCommand !== null}
-                  onClick={() => void runCommand("play_pause")}
-                  className="inline-flex h-6 w-6 items-center justify-center rounded border border-white/20 bg-white/8 transition-colors hover:bg-white/12 disabled:opacity-40"
-                  aria-label={controlState?.target?.playback_status === "Playing" ? "暂停" : "播放"}
-                  title={controlState?.target?.playback_status === "Playing" ? "暂停" : "播放"}
-                >
-                  {controlState?.target?.playback_status === "Playing" ? (
-                    <MiniPauseIcon className="h-3.5 w-3.5" />
-                  ) : (
-                    <MiniPlayIcon className="h-3.5 w-3.5" />
-                  )}
-                </button>
-              )}
-              {miniSettings.visibleKeys.includes("next") && (
-                <button
-                  type="button"
-                  disabled={!controlState?.target?.supports_next || runningCommand !== null}
-                  onClick={() => void runCommand("next")}
-                  className="inline-flex h-6 w-6 items-center justify-center rounded border border-white/20 bg-white/8 transition-colors hover:bg-white/12 disabled:opacity-40"
-                  aria-label="下一首"
-                  title="下一首"
-                >
-                  <MiniNextIcon className="h-3.5 w-3.5" />
-                </button>
-              )}
+        <div className="flex shrink-0 items-center gap-3 h-full">
+          {hasMetricsBlock && (
+            <div className="flex items-center gap-2">
+              <SeparatorLine className="h-6" />
+              <div style={{ width: `${metricBlockWidth}px` }} className="flex justify-end">
+                <MiniMetricsCanvas items={visibleMetricItems} height={effectiveLayoutHeight} />
+              </div>
             </div>
           )}
 
-          {showStats && (
-            <div className="flex min-w-[84px] max-w-[240px] items-center gap-1.5 rounded-md border border-white/12 bg-white/6 px-2 py-1 text-[10px] text-foreground/72">
-              <span className="shrink-0">今日 {dailySummary?.total_play_events ?? 0}</span>
-              {dailySummary?.top_song && (
-                <>
-                  <span className="opacity-60">|</span>
-                  {!compact && (
-                    <OptionalCoverImage
-                      coverPath={dailySummary.top_song.cover_path}
-                      className="h-5 w-5 rounded flex-shrink-0"
-                    />
+          {(hasControlsBlock || showRestoreButton) && (
+            <div className="flex items-center gap-2 mr-2">
+              {(isMusicVisible || hasMetricsBlock) && <SeparatorLine className="h-6" />}
+              
+              {hasControlsBlock && (
+                <div className="flex items-center gap-1.5">
+                  {miniSettings.visibleKeys.includes("previous") && (
+                    <button
+                      type="button"
+                      disabled={!controlState?.target?.supports_previous || runningCommand !== null}
+                      onClick={(e) => { e.stopPropagation(); void runCommand("previous"); }}
+                      className="inline-flex items-center justify-center rounded-full bg-white/8 text-foreground/82 transition-all hover:bg-white/16 hover:text-foreground disabled:opacity-30 dark:bg-white/6"
+                      style={{ width: controlSize, height: controlSize }}
+                    >
+                      <MiniPreviousIcon className="h-4 w-4" />
+                    </button>
                   )}
-                  <span className="truncate">
-                    {compact ? dailySummary.top_song.title.slice(0, 4) : dailySummary.top_song.title}
-                  </span>
-                </>
+
+                  {miniSettings.visibleKeys.includes("play_pause") && (
+                    <button
+                      type="button"
+                      disabled={!controlState?.target?.supports_play_pause || runningCommand !== null}
+                      onClick={(e) => { e.stopPropagation(); void runCommand("play_pause"); }}
+                      className="inline-flex items-center justify-center rounded-full bg-white/12 text-foreground/92 transition-all hover:bg-white/20 hover:text-foreground hover:scale-105 active:scale-95 disabled:opacity-30 dark:bg-white/10"
+                      style={{ width: controlSize + 2, height: controlSize + 2 }}
+                    >
+                      {isPlaying ? <MiniPauseIcon className="h-5 w-5" /> : <MiniPlayIcon className="h-5 w-5 ml-0.5" />}
+                    </button>
+                  )}
+
+                  {miniSettings.visibleKeys.includes("next") && (
+                    <button
+                      type="button"
+                      disabled={!controlState?.target?.supports_next || runningCommand !== null}
+                      onClick={(e) => { e.stopPropagation(); void runCommand("next"); }}
+                      className="inline-flex items-center justify-center rounded-full bg-white/8 text-foreground/82 transition-all hover:bg-white/16 hover:text-foreground disabled:opacity-30 dark:bg-white/6"
+                      style={{ width: controlSize, height: controlSize }}
+                    >
+                      <MiniNextIcon className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {showRestoreButton && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (!isTransitioning) {
+                      onToggleMini?.(event.currentTarget.getBoundingClientRect());
+                    }
+                  }}
+                  disabled={isTransitioning}
+                  className="inline-flex items-center justify-center rounded-full bg-primary/10 text-primary transition-all hover:bg-primary/20 disabled:opacity-30"
+                  style={{ width: controlSize - 2, height: controlSize - 2 }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M15 3h6v6" />
+                    <path d="M9 21H3v-6" />
+                    <path d="M21 3l-7 7" />
+                    <path d="M3 21l7-7" />
+                  </svg>
+                </button>
               )}
             </div>
-          )}
-
-          {allowButtonRestore && (
-            <button
-              type="button"
-              onClick={(e) => {
-                if (!isTransitioning) onToggleMini?.(e.currentTarget.getBoundingClientRect());
-              }}
-              disabled={isTransitioning}
-              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/25 bg-white/20 text-foreground/72 backdrop-blur-md transition-colors hover:bg-white/30 hover:text-foreground disabled:opacity-45 dark:border-white/12 dark:bg-white/6 dark:text-foreground/78 dark:hover:bg-white/14"
-              title="恢复正常窗口"
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M4 8V4h4" />
-                <path d="M20 16v4h-4" />
-                <path d="M8 4L4 8" />
-                <path d="M16 20l4-4" />
-              </svg>
-            </button>
           )}
         </div>
       </div>

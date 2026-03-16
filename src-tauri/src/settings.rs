@@ -5,8 +5,23 @@ const MIN_BACKGROUND_BLUR: f64 = 0.0;
 const MAX_BACKGROUND_BLUR: f64 = 36.0;
 const DEFAULT_BACKGROUND_BLUR: f64 = 12.0;
 
+const DEFAULT_MINI_MODE_WIDTH: f64 = 700.0;
+const DEFAULT_MINI_MODE_HEIGHT: f64 = 50.0;
+const MIN_MINI_MODE_WIDTH: f64 = 400.0;
+const MAX_MINI_MODE_WIDTH: f64 = 1000.0;
+const MIN_MINI_MODE_HEIGHT: f64 = 20.0;
+const MAX_MINI_MODE_HEIGHT: f64 = 50.0;
+
 fn default_background_blur() -> f64 {
     DEFAULT_BACKGROUND_BLUR
+}
+
+fn default_mini_mode_width() -> f64 {
+    DEFAULT_MINI_MODE_WIDTH
+}
+
+fn default_mini_mode_height() -> f64 {
+    DEFAULT_MINI_MODE_HEIGHT
 }
 
 fn normalize_background_blur(value: f64) -> f64 {
@@ -29,6 +44,10 @@ pub struct AppSettingsResponse {
     pub background_blur: f64,
     pub allow_component_download: bool,
     pub mini_restore_mode: String,
+    #[serde(default = "default_mini_mode_width")]
+    pub mini_mode_width: f64,
+    #[serde(default = "default_mini_mode_height")]
+    pub mini_mode_height: f64,
 }
 
 impl Default for AppSettingsResponse {
@@ -46,6 +65,8 @@ impl Default for AppSettingsResponse {
             background_blur: default_background_blur(),
             allow_component_download: false,
             mini_restore_mode: "both".to_string(),
+            mini_mode_width: default_mini_mode_width(),
+            mini_mode_height: default_mini_mode_height(),
         }
     }
 }
@@ -119,6 +140,13 @@ fn normalize_settings(mut value: AppSettingsResponse) -> AppSettingsResponse {
         _ => "both".to_string(),
     };
 
+    value.mini_mode_width = value
+        .mini_mode_width
+        .clamp(MIN_MINI_MODE_WIDTH, MAX_MINI_MODE_WIDTH);
+    value.mini_mode_height = value
+        .mini_mode_height
+        .clamp(MIN_MINI_MODE_HEIGHT, MAX_MINI_MODE_HEIGHT);
+
     value.storage_root = value
         .storage_root
         .as_deref()
@@ -183,7 +211,8 @@ pub fn get_app_settings() -> Result<AppSettingsResponse, String> {
     let guard = settings_store()
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?;
-    Ok(guard.clone())
+    let value = guard.clone();
+    Ok(value)
 }
 
 #[tauri::command]
@@ -219,6 +248,14 @@ pub fn get_close_behavior() -> String {
 pub fn set_mini_restore_mode(mode: String) -> Result<(), String> {
     update_settings(|s| {
         s.mini_restore_mode = mode;
+    })
+}
+
+#[tauri::command]
+pub fn set_mini_mode_size(width: f64, height: f64) -> Result<(), String> {
+    update_settings(|s| {
+        s.mini_mode_width = width;
+        s.mini_mode_height = height;
     })
 }
 

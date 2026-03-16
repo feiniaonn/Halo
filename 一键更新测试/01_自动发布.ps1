@@ -40,7 +40,6 @@ try {
     latestPath = $artifacts.LatestPath
     installerPath = $artifacts.InstallerPath
     sigPath = $artifacts.SigPath
-    msiPath = $artifacts.MsiPath
   }
   Push-FilesToLinux @pushArgs
 

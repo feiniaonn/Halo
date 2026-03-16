@@ -4,7 +4,7 @@ use regex::Regex;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
-use super::{apply_request_headers, build_client, resolve_media_request};
+use super::{apply_request_headers, build_transport_client, resolve_media_request};
 
 const JIEXI_WORKER_LABEL: &str = "jiexi_worker";
 
@@ -15,6 +15,38 @@ pub struct JiexiClickActionInput {
     pub target: String,
     pub frame_selector: Option<String>,
     pub index: Option<usize>,
+}
+
+fn looks_like_image_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico"]
+        .iter()
+        .any(|token| lower.contains(token))
+}
+
+fn looks_like_direct_media_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    if !lower.starts_with("http") || looks_like_image_url(&lower) {
+        return false;
+    }
+
+    lower.contains(".m3u8")
+        || lower.contains(".mp4")
+        || lower.contains(".flv")
+        || lower.contains(".mpd")
+        || lower.contains(".m4s")
+        || lower.contains(".m2ts")
+        || lower.contains(".ts")
+        || lower.contains(".webm")
+        || lower.contains(".mkv")
+        || lower.contains(".mov")
+        || lower.contains("mime=video")
+        || lower.contains("contenttype=video")
+        || lower.contains("type=m3u8")
+        || lower.contains("type=mp4")
+        || lower.contains("type=flv")
+        || lower.contains("type=mpd")
+        || lower.contains("video/mp2t")
 }
 
 fn extract_playable_url_from_text(text: &str) -> Option<String> {
@@ -51,8 +83,34 @@ fn extract_playable_url_from_text(text: &str) -> Option<String> {
         .replace("&amp;", "&")
         .replace("\\u0026", "&");
 
-    let re = Regex::new(r#"https?://[^\s"'<>]+?(?:\.m3u8|\.mp4)[^\s"'<>]*"#).ok()?;
-    re.find(&normalized).map(|m| m.as_str().to_string())
+    let re = Regex::new(r#"https?://[^\s"'<>]+"#).ok()?;
+    let matched = re
+        .find_iter(&normalized)
+        .map(|m| {
+            m.as_str()
+                .trim_end_matches(&['\\', '"', '\'', ',', ';'][..])
+                .to_string()
+        })
+        .find(|candidate| looks_like_direct_media_url(candidate));
+    matched
+}
+
+fn looks_like_m3u8_manifest(text: &str) -> bool {
+    let trimmed = text.trim_start_matches('\u{feff}').trim_start();
+    trimmed.starts_with("#EXTM3U")
+}
+
+fn extract_playable_target_from_wrapped_response(text: &str, target_url: &str) -> Option<String> {
+    if let Some(found) = extract_playable_url_from_text(text) {
+        return Some(found);
+    }
+    if looks_like_m3u8_manifest(text) {
+        let normalized = target_url.trim();
+        if normalized.starts_with("http") && !looks_like_image_url(normalized) {
+            return Some(normalized.to_string());
+        }
+    }
+    None
 }
 
 async fn request_jiexi_text(
@@ -64,7 +122,7 @@ async fn request_jiexi_text(
     let resolved = resolve_media_request(call_url, extra_headers.clone());
     let mut builder = client
         .get(&resolved.url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
         .header("Referer", video_url);
     builder = apply_request_headers(builder, &resolved.headers);
 
@@ -89,7 +147,8 @@ pub async fn resolve_jiexi(
     let encoded_video =
         url::form_urlencoded::byte_serialize(video_url.as_bytes()).collect::<String>();
     let call_url = format!("{}{}", jiexi_prefix.trim_end_matches('&'), encoded_video);
-    let client = build_client()?;
+    let resolved = resolve_media_request(&call_url, extra_headers.clone());
+    let client = build_transport_client(&resolved, true, Duration::from_secs(10))?;
     let text = request_jiexi_text(&client, &call_url, &video_url, &extra_headers).await?;
     if let Some(found) = extract_playable_url_from_text(&text) {
         return Ok(found);
@@ -125,6 +184,24 @@ pub async fn resolve_jiexi(
     ))
 }
 
+pub async fn resolve_wrapped_media_url(
+    target_url: String,
+    extra_headers: Option<std::collections::HashMap<String, String>>,
+) -> Result<String, String> {
+    let resolved = resolve_media_request(&target_url, extra_headers.clone());
+    let client = build_transport_client(&resolved, true, Duration::from_secs(10))?;
+    let text = request_jiexi_text(&client, &target_url, &target_url, &extra_headers).await?;
+    if let Some(found) = extract_playable_target_from_wrapped_response(&text, &target_url) {
+        return Ok(found);
+    }
+
+    let trimmed = text.trim().to_string();
+    Err(format!(
+        "Wrapped media endpoint did not return a playable URL. Response: {}",
+        &trimmed[..trimmed.len().min(200)]
+    ))
+}
+
 /// Resolve a jiexi/parse service URL using a hidden WebView.
 /// This is used for services that require JavaScript execution to obtain the stream URL.
 pub async fn resolve_jiexi_webview(
@@ -143,7 +220,7 @@ pub async fn resolve_jiexi_webview(
         serde_json::to_string(&click_actions.unwrap_or_default()).map_err(|e| e.to_string())?;
 
     if let Some(existing) = app.get_webview_window(JIEXI_WORKER_LABEL) {
-        let _ = existing.close();
+        let _ = existing.destroy(); // destroy is more definitive than close for background workers
     }
 
     let window =
@@ -160,11 +237,34 @@ pub async fn resolve_jiexi_webview(
         window.__HALO_JIEXI_ACTIVE__ = true;
         const clickActions = __HALO_CLICK_ACTIONS__;
         const found = new Set();
-        const regex = /https?:\/\/[^\s"'<>]+?\.(m3u8|mp4)(\?[^\s"'<>]*)?/ig;
+        const urlRegex = /https?:\/\/[^\s"'<>]+/ig;
+        const looksLikeDirectMediaUrl = (value) => {
+            if (!value || typeof value !== "string") return false;
+            const lower = value.trim().toLowerCase();
+            if (!lower.startsWith("http")) return false;
+            if (/\.(png|jpe?g|gif|webp|bmp|ico)(\?|$)/i.test(lower)) return false;
+            return lower.includes(".m3u8")
+                || lower.includes(".mp4")
+                || lower.includes(".flv")
+                || lower.includes(".mpd")
+                || lower.includes(".m4s")
+                || lower.includes(".m2ts")
+                || lower.includes(".ts")
+                || lower.includes(".webm")
+                || lower.includes(".mkv")
+                || lower.includes(".mov")
+                || lower.includes("mime=video")
+                || lower.includes("contenttype=video")
+                || lower.includes("type=m3u8")
+                || lower.includes("type=mp4")
+                || lower.includes("type=flv")
+                || lower.includes("type=mpd")
+                || lower.includes("video/mp2t");
+        };
         const markFound = (u) => {
             if (!u || typeof u !== "string") return;
             if (!u.startsWith("http")) return;
-            if (!u.match(regex)) return;
+            if (!looksLikeDirectMediaUrl(u)) return;
             if (found.has(u)) return;
             found.add(u);
             document.title = `HALO_URL:${u}`;
@@ -173,7 +273,7 @@ pub async fn resolve_jiexi_webview(
         const scanText = (text) => {
             if (!text || typeof text !== "string") return;
             let match;
-            const local = new RegExp(regex);
+            const local = new RegExp(urlRegex);
             while ((match = local.exec(text)) !== null) {
                 markFound(match[0]);
             }
@@ -457,5 +557,45 @@ pub async fn resolve_jiexi_webview(
             return Ok(url.to_string());
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_playable_target_from_wrapped_response, extract_playable_url_from_text};
+
+    #[test]
+    fn extracts_dash_like_url_from_embedded_html() {
+        let html =
+            r#"<script>const play="https://cdn.example.com/live/index.mpd?token=1";</script>"#;
+        assert_eq!(
+            extract_playable_url_from_text(html).as_deref(),
+            Some("https://cdn.example.com/live/index.mpd?token=1")
+        );
+    }
+
+    #[test]
+    fn extracts_flv_url_from_json_payload() {
+        let payload = r#"{"data":{"url":"https://cdn.example.com/stream.flv?auth=1"}}"#;
+        assert_eq!(
+            extract_playable_url_from_text(payload).as_deref(),
+            Some("https://cdn.example.com/stream.flv?auth=1")
+        );
+    }
+
+    #[test]
+    fn skips_image_urls() {
+        let payload = r#"<img src="https://cdn.example.com/poster.png">"#;
+        assert!(extract_playable_url_from_text(payload).is_none());
+    }
+
+    #[test]
+    fn returns_wrapped_target_when_body_is_hls_manifest() {
+        let target = "http://wrapper.example.com/api/getM3u8?url=wrapped";
+        let body = "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:5,\nsegment.ts\n";
+        assert_eq!(
+            extract_playable_target_from_wrapped_response(body, target).as_deref(),
+            Some(target)
+        );
     }
 }

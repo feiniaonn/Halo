@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useUpdater } from "@/modules/updater/hooks/useUpdater";
@@ -7,6 +7,7 @@ import {
   setStorageRoot,
 } from "@/modules/settings/services/settingsService";
 import { SETTINGS_MESSAGES } from "@/modules/settings/constants";
+import { reportRuntimeError } from "@/modules/shared/services/runtimeError";
 import { useBackgroundSettings } from "./useBackgroundSettings";
 import { useMigrationSettings } from "./useMigrationSettings";
 import { useWindowSettings } from "./useWindowSettings";
@@ -20,13 +21,20 @@ export function useSettingsPageController({
   onBgChange,
   onBgBlurChange,
   onMiniRestoreModeChange,
+  onMiniModeWidthChange,
+  onMiniModeHeightChange,
 }: {
   bgType: "none" | "image" | "video";
   bgFsPath?: string | null;
   bgBlur: number;
+  miniRestoreMode?: MiniRestoreMode;
+  miniModeWidth?: number;
+  miniModeHeight?: number;
   onBgChange?: (type: "none" | "image" | "video", path: string | null) => void;
   onBgBlurChange?: (blur: number) => void;
   onMiniRestoreModeChange?: (mode: MiniRestoreMode) => void;
+  onMiniModeWidthChange?: (width: number) => void;
+  onMiniModeHeightChange?: (height: number) => void;
 }) {
   const isTauri = useMemo(() => isTauriRuntime(), []);
   const updater = useUpdater();
@@ -43,7 +51,13 @@ export function useSettingsPageController({
       const data = await getAppSettings();
       setSettings(data);
     } catch (error) {
-      setStorageMessage(`设置加载失败：${formatSettingsError(error)}`);
+      reportRuntimeError({
+        title: "Failed to load settings",
+        summary: "Settings page could not load desktop settings.",
+        error,
+        source: "settings.page.load",
+      });
+      setStorageMessage(`设置加载失败：`);
     } finally {
       setLoading(false);
     }
@@ -78,10 +92,16 @@ export function useSettingsPageController({
     setStorageMessage,
   });
 
+  const onMiniModeSizeChange = useCallback((w: number, h: number) => {
+    onMiniModeWidthChange?.(w);
+    onMiniModeHeightChange?.(h);
+  }, [onMiniModeWidthChange, onMiniModeHeightChange]);
+
   const {
     handleLaunchAtLogin,
     handleCloseBehavior,
     handleMiniRestoreMode,
+    handleMiniModeSize,
   } = useWindowSettings({
     isTauri,
     settings,
@@ -89,6 +109,7 @@ export function useSettingsPageController({
     formatErrorMessage: formatSettingsError,
     setStorageMessage,
     onMiniRestoreModeChange,
+    onMiniModeSizeChange,
   });
 
   const {
@@ -125,7 +146,13 @@ export function useSettingsPageController({
       await load();
       setStorageMessage(SETTINGS_MESSAGES.storage.switched);
     } catch (error) {
-      setStorageMessage(`${SETTINGS_MESSAGES.storage.switchFailed}：${formatSettingsError(error)}`);
+      reportRuntimeError({
+        title: "Failed to change storage folder",
+        summary: "Storage folder selection or apply failed.",
+        error,
+        source: "settings.storage.change",
+      });
+      setStorageMessage(`${SETTINGS_MESSAGES.storage.switchFailed}：`);
     }
   }, [isTauri, load]);
 
@@ -139,7 +166,13 @@ export function useSettingsPageController({
       await load();
       setStorageMessage(SETTINGS_MESSAGES.storage.restored);
     } catch (error) {
-      setStorageMessage(`${SETTINGS_MESSAGES.storage.restoreFailed}：${formatSettingsError(error)}`);
+      reportRuntimeError({
+        title: "Failed to restore storage folder",
+        summary: "Default storage folder could not be restored.",
+        error,
+        source: "settings.storage.restore",
+      });
+      setStorageMessage(`${SETTINGS_MESSAGES.storage.restoreFailed}：`);
     }
   }, [isTauri, load]);
 
@@ -180,6 +213,7 @@ export function useSettingsPageController({
     handleLaunchAtLogin,
     handleCloseBehavior,
     handleMiniRestoreMode,
+    handleMiniModeSize,
     handleChooseFolder,
     handleRestoreDefaultStorage,
     handleStartMigration,

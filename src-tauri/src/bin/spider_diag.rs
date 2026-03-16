@@ -45,8 +45,8 @@ fn main() {
                     .await
                 {
                     Ok(report) => {
-                        let json =
-                            serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
+                        let json = serde_json::to_string_pretty(&report)
+                            .unwrap_or_else(|_| "{}".to_string());
                         println!(">>HALO_SPIDER_DIAG<<");
                         println!("{json}");
                         println!(">>HALO_SPIDER_DIAG<<");

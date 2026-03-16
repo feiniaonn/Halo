@@ -4,7 +4,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::LazyLock;
 use url::Url;
 
-use super::{apply_request_headers, build_client, build_rescue_client, resolve_media_request};
+use super::{
+    apply_request_headers, build_client, build_rescue_transport_client, build_transport_client,
+    resolve_media_request,
+};
 
 const TVBOX_RESOLVE_MAX_DEPTH: usize = 2;
 const TVBOX_RESOLVE_MAX_FETCHES: usize = 24;
@@ -517,7 +520,12 @@ async fn fetch_remote_text(client: &Client, raw_url: &str) -> Result<String, Str
         Err(_) => raw_url.trim().to_string(),
     };
     let resolved = resolve_media_request(&request_url, None);
-    let resp = apply_request_headers(client.get(&resolved.url), &resolved.headers)
+    let request_client = if resolved.matched_proxy_rule.is_some() {
+        build_transport_client(&resolved, true, std::time::Duration::from_secs(15))?
+    } else {
+        client.clone()
+    };
+    let resp = apply_request_headers(request_client.get(&resolved.url), &resolved.headers)
         .send()
         .await
         .map_err(|e| format!("request failed for {}: {e}", resolved.url))?;
@@ -764,11 +772,10 @@ pub async fn fetch_tvbox_config(url: String) -> Result<String, String> {
     if raw_source.is_empty() {
         return Err("source url is empty".to_string());
     }
-    let source = crate::media_cmds::media_cmds_source_fallbacks::resolve_known_source_redirect(
-        &raw_source,
-    )
-    .map(str::to_string)
-    .unwrap_or(raw_source.clone());
+    let source =
+        crate::media_cmds::media_cmds_source_fallbacks::resolve_known_source_redirect(&raw_source)
+            .map(str::to_string)
+            .unwrap_or(raw_source.clone());
     if source != raw_source {
         println!(
             "[tvbox][resolver] redirected known source alias: {} -> {}",
@@ -806,9 +813,12 @@ pub async fn fetch_tvbox_config(url: String) -> Result<String, String> {
     let text = match fetch_remote_text(&client, &source).await {
         Ok(text) => text,
         Err(err) => {
-            if let Some(resolved) =
-                resolve_tvbox_config_from_known_candidates(&client, &source, known_remote_candidates)
-                    .await
+            if let Some(resolved) = resolve_tvbox_config_from_known_candidates(
+                &client,
+                &source,
+                known_remote_candidates,
+            )
+            .await
             {
                 println!(
                     "[tvbox][resolver] stabilized source via known remote candidate after root fetch failure: {}",
@@ -843,7 +853,8 @@ pub async fn fetch_tvbox_config(url: String) -> Result<String, String> {
     if looks_like_html_document(&text) {
         println!("[tvbox][resolver] html wrapper detected: {}", source);
         if let Some(resolved) =
-            resolve_tvbox_config_from_known_candidates(&client, &source, known_remote_candidates).await
+            resolve_tvbox_config_from_known_candidates(&client, &source, known_remote_candidates)
+                .await
         {
             println!(
                 "[tvbox][resolver] stabilized source via known remote candidate before html wrapper parse: {}",
@@ -893,7 +904,6 @@ pub async fn fetch_tvbox_config(url: String) -> Result<String, String> {
 }
 
 pub async fn fetch_vod_home(api_url: String) -> Result<String, String> {
-    let client = build_client()?;
     let url = if api_url.contains("ac=") {
         api_url.clone()
     } else if api_url.contains('?') {
@@ -902,6 +912,7 @@ pub async fn fetch_vod_home(api_url: String) -> Result<String, String> {
         format!("{}?ac=videolist", api_url)
     };
     let resolved = resolve_media_request(&url, None);
+    let client = build_transport_client(&resolved, true, std::time::Duration::from_secs(15))?;
     let resp = apply_request_headers(client.get(&resolved.url), &resolved.headers)
         .send()
         .await
@@ -910,7 +921,6 @@ pub async fn fetch_vod_home(api_url: String) -> Result<String, String> {
 }
 
 pub async fn fetch_vod_category(api_url: String, tid: String, pg: u32) -> Result<String, String> {
-    let client = build_client()?;
     // Query parameters for CMS category
     let url = if api_url.contains('?') {
         format!("{}&ac=videolist&t={}&pg={}", api_url, tid, pg)
@@ -919,6 +929,7 @@ pub async fn fetch_vod_category(api_url: String, tid: String, pg: u32) -> Result
     };
 
     let resolved = resolve_media_request(&url, None);
+    let client = build_transport_client(&resolved, true, std::time::Duration::from_secs(15))?;
     let resp = apply_request_headers(client.get(&resolved.url), &resolved.headers)
         .send()
         .await
@@ -927,7 +938,6 @@ pub async fn fetch_vod_category(api_url: String, tid: String, pg: u32) -> Result
 }
 
 pub async fn fetch_vod_search(api_url: String, keyword: String) -> Result<String, String> {
-    let client = build_client()?;
     let encoded_keyword: String =
         url::form_urlencoded::byte_serialize(keyword.trim().as_bytes()).collect();
     let url = if api_url.contains("wd=") {
@@ -941,6 +951,7 @@ pub async fn fetch_vod_search(api_url: String, keyword: String) -> Result<String
     };
 
     let resolved = resolve_media_request(&url, None);
+    let client = build_transport_client(&resolved, true, std::time::Duration::from_secs(15))?;
     let resp = apply_request_headers(client.get(&resolved.url), &resolved.headers)
         .send()
         .await
@@ -960,7 +971,6 @@ pub async fn fetch_vod_detail(api_url: String, ids: String) -> Result<String, St
 
     let encoded_ids: String =
         url::form_urlencoded::byte_serialize(trimmed_ids.as_bytes()).collect();
-    let client = build_client()?;
     let candidates = [
         build_cms_api_url(
             trimmed_api,
@@ -975,6 +985,7 @@ pub async fn fetch_vod_detail(api_url: String, ids: String) -> Result<String, St
     let mut last_non_empty = None::<String>;
     for url in candidates {
         let resolved = resolve_media_request(&url, None);
+        let client = build_transport_client(&resolved, true, std::time::Duration::from_secs(15))?;
         let resp = apply_request_headers(client.get(&resolved.url), &resolved.headers)
             .send()
             .await
@@ -1023,12 +1034,61 @@ fn build_image_origin_headers(url: &str) -> HashMap<String, String> {
         );
         headers.insert("Origin".to_string(), "https://movie.douban.com".to_string());
     }
+    if lowered.contains("baidu.com") || lowered.contains("bdimg.com") {
+        headers.insert("Referer".to_string(), "https://www.baidu.com/".to_string());
+        headers.insert("Origin".to_string(), "https://www.baidu.com".to_string());
+    }
     if lowered.contains("iqiyipic.com")
         || lowered.contains("qiyipic.com")
         || lowered.contains("iqiyi.com")
     {
         headers.insert("Referer".to_string(), "https://www.iqiyi.com/".to_string());
         headers.insert("Origin".to_string(), "https://www.iqiyi.com".to_string());
+    }
+    if lowered.contains("mgtv.com")
+        || lowered.contains("mgtvimg.com")
+        || lowered.contains("imgo.tv")
+        || lowered.contains("hunantv.com")
+    {
+        headers.insert("Referer".to_string(), "https://www.mgtv.com/".to_string());
+        headers.insert("Origin".to_string(), "https://www.mgtv.com".to_string());
+    }
+    if lowered.contains("51touxiang.com") {
+        headers.insert(
+            "Referer".to_string(),
+            "https://www.51touxiang.com/".to_string(),
+        );
+        headers.insert(
+            "Origin".to_string(),
+            "https://www.51touxiang.com".to_string(),
+        );
+    }
+    if lowered.contains("hdslb.com")
+        || lowered.contains("biliimg.com")
+        || lowered.contains("bilivideo.com")
+    {
+        headers.insert(
+            "Referer".to_string(),
+            "https://www.bilibili.com/".to_string(),
+        );
+        headers.insert("Origin".to_string(), "https://www.bilibili.com".to_string());
+    }
+    if lowered.contains("qpic.cn")
+        || lowered.contains("gtimg.com")
+        || lowered.contains("gtimg.cn")
+        || lowered.contains("qlogo.cn")
+        || lowered.contains("myqcloud.com")
+    {
+        headers.insert("Referer".to_string(), "https://v.qq.com/".to_string());
+        headers.insert("Origin".to_string(), "https://v.qq.com".to_string());
+    }
+    if lowered.contains("itc.cn") {
+        headers.insert("Referer".to_string(), "https://tv.sohu.com/".to_string());
+        headers.insert("Origin".to_string(), "https://tv.sohu.com".to_string());
+    }
+    if lowered.contains("ykimg.com") {
+        headers.insert("Referer".to_string(), "https://www.youku.com/".to_string());
+        headers.insert("Origin".to_string(), "https://www.youku.com".to_string());
     }
 
     headers
@@ -1040,7 +1100,7 @@ fn apply_image_request_headers(
 ) -> reqwest::RequestBuilder {
     let mut builder = builder
         .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36");
 
     for (key, value) in build_image_origin_headers(url) {
         builder = builder.header(key, value);
@@ -1081,12 +1141,13 @@ pub async fn proxy_media(
     headers: Option<std::collections::HashMap<String, String>>,
 ) -> Result<String, String> {
     let resolved = resolve_media_request(&url, headers);
-    let client = build_client()?;
+    let client = build_transport_client(&resolved, true, std::time::Duration::from_secs(20))?;
 
     match proxy_media_once(&client, &resolved.url, &resolved.headers).await {
         Ok(result) => Ok(result),
         Err(first_err) => {
-            let rescue_client = build_rescue_client()?;
+            let rescue_client =
+                build_rescue_transport_client(&resolved, true, std::time::Duration::from_secs(20))?;
             proxy_media_once(&rescue_client, &resolved.url, &resolved.headers)
                 .await
                 .map_err(|second_err| format!("{first_err}; retry failed: {second_err}"))

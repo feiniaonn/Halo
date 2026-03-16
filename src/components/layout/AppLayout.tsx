@@ -170,7 +170,7 @@ setCustomBgFailed(false);
   }, [connectedAnimation]);
 
   const showCustomBg = hasCustomBg && !customBgFailed;
-  const shellRadius = isMiniMode ? 14 : 10;
+  const shellRadius = isMiniMode ? 32 : 10;
   const normalizedBgBlur = Math.min(36, Math.max(0, Math.round(bgBlur * 10) / 10));
   const backgroundScale = 1.02 + Math.min(0.16, normalizedBgBlur / 220);
   const fogOpacity = Math.min(0.56, 0.2 + normalizedBgBlur * 0.01);
@@ -180,34 +180,40 @@ setCustomBgFailed(false);
     "--halo-fog-opacity": `${fogOpacity}`,
   } as CSSProperties;
 
+  if (isMiniMode) {
+    return (
+      <div 
+        className="halo-mini-root relative h-full w-full overflow-hidden bg-transparent select-none"
+        style={{ borderRadius: `${shellRadius}px` }}
+      >
+        {children}
+      </div>
+    );
+  }
+
   return (
     <div
       ref={shellRef}
       className={cn(
         "halo-shell relative isolate flex h-full w-full flex-col overflow-hidden",
         "transition-[border-radius,opacity,box-shadow,filter] duration-320 ease-[cubic-bezier(0.22,1,0.36,1)]",
-        isMiniMode &&
-        "bg-transparent shadow-[0_12px_36px_rgba(0,0,0,0.22)]",
       )}
       style={shellStyle}
       data-bg-active={showCustomBg ? "true" : "false"}
       data-bg-kind={showCustomBg ? bgType : "none"}
     >
       {/* Background Layer */}
-      {isMiniMode ? (
-        <div className="absolute left-1/2 top-1/2 z-[-3] h-px w-px -translate-x-1/2 -translate-y-1/2 bg-transparent" />
-      ) : (
-        <>
-          <div className="absolute inset-0 z-[-3] bg-background text-foreground transition-colors duration-500" />
-          {/* Global Ambient Blobs for subtle Glassmorphism baseline */}
-          {!showCustomBg && (
-            <>
-              <div className="ambient-blob bg-[rgb(14,176,201)]/10 dark:bg-[rgb(14,176,201)]/15 w-[50vw] h-[50vw] left-[-10%] top-[-10%]" />
-              <div className="ambient-blob bg-white/40 dark:bg-black/40 w-[40vw] h-[40vw] right-[-5%] top-[20%]" style={{ animationDelay: '-5s' }} />
-            </>
-          )}
-        </>
-      )}
+      <>
+        <div className="absolute inset-0 z-[-3] bg-background text-foreground transition-colors duration-500" />
+        {/* Global Ambient Blobs for subtle Glassmorphism baseline */}
+        {!showCustomBg && (
+          <>
+            <div className="ambient-blob bg-[rgb(14,176,201)]/10 dark:bg-[rgb(14,176,201)]/15 w-[50vw] h-[50vw] left-[-10%] top-[-10%]" />
+            <div className="ambient-blob bg-white/40 dark:bg-black/40 w-[40vw] h-[40vw] right-[-5%] top-[20%]" style={{ animationDelay: '-5s' }} />
+          </>
+        )}
+      </>
+
       {showCustomBg && (
         <div className="absolute inset-0 z-[-2] overflow-hidden pointer-events-none">
           {bgType === "image" ? (
@@ -271,22 +277,18 @@ setCustomBgFailed(false);
               aria-hidden="true"
             />
           )}
+
           <div
             className={cn(
               "absolute inset-0",
-              isMiniMode
-                ? bgType === "video"
-                  ? "bg-transparent"
-                  : "bg-transparent"
-                : bgType === "video"
-                  ? "bg-background/34"
-                  : "bg-background/28",
+              bgType === "video" ? "bg-background/34" : "bg-background/28",
             )}
-            style={{ opacity: isMiniMode ? 1 : fogOpacity }}
+            style={{ opacity: fogOpacity }}
           />
         </div>
       )}
-      {showCustomBg && !isMiniMode && (
+
+      {showCustomBg && (
         <div
           className={cn(
             "pointer-events-none absolute inset-0 z-[-1]",
@@ -295,29 +297,26 @@ setCustomBgFailed(false);
         />
       )}
 
-      {!isMiniMode && (
-        <TitleBar
-          isMiniMode={isMiniMode}
-          isTransitioning={miniTransitioning}
-          onToggleMini={onToggleMini}
-        />
-      )}
+      <TitleBar
+        isMiniMode={isMiniMode}
+        isTransitioning={miniTransitioning}
+        onToggleMini={onToggleMini}
+      />
+      
       <SidebarProvider defaultOpen={true} className="flex flex-1 overflow-hidden bg-transparent">
-        {!isMiniMode && (
-          <AppSidebar
-            currentPage={currentPage}
-            onNavigate={onNavigate}
-            hasUpdate={hasUpdate}
-          />
-        )}
+        <AppSidebar
+          currentPage={currentPage}
+          onNavigate={onNavigate}
+          hasUpdate={hasUpdate}
+        />
         <SidebarInset
           className={cn(
             "bg-transparent flex-1 m-0 shadow-none border-none min-w-0 transition-all duration-300",
-            "overflow-y-auto overflow-x-hidden", // Primary scroll container
-            isMiniMode ? "items-center justify-center p-0" : "px-8 pt-1 pb-3"
+            "overflow-y-auto overflow-x-hidden",
+            "px-8 pt-1 pb-3",
           )}
         >
-          {!isMiniMode && globalHint && (
+          {globalHint && (
             <div className="mb-3 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
               {globalHint}
             </div>
@@ -325,7 +324,7 @@ setCustomBgFailed(false);
           {children}
         </SidebarInset>
       </SidebarProvider>
-      {!isMiniMode && <FloatingPlayer />}
+      <FloatingPlayer />
     </div>
   );
 }

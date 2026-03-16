@@ -1,5 +1,6 @@
 ﻿import { invoke } from "@tauri-apps/api/core";
 
+import { invokeSpiderDetailV2 } from "@/modules/media/services/spiderV2";
 import { parseVodDetailResponse, resolveSiteSpiderUrl } from "@/modules/media/services/tvboxConfig";
 import { resolveSiteExtInput } from "@/modules/media/services/tvboxRuntime";
 import type { NormalizedTvBoxSite } from "@/modules/media/types/tvbox.types";
@@ -46,24 +47,32 @@ export async function fetchVodDetail(
 ): Promise<{ detail: VodDetail; routes: VodRoute[]; extInput: string; }> {
   const { site, spider } = context;
   const extInput = await resolveSiteExtInput(site);
-  const response = site.capability.requiresSpider
-    ? await invoke<string>("spider_detail", {
+  let rawResponse = "";
+  let normalizedPayload: unknown;
+  if (site.capability.requiresSpider) {
+    const response = await invokeSpiderDetailV2({
       spiderUrl: resolveSiteSpiderUrl(site, spider),
       siteKey: site.key,
       apiClass: site.api,
       ext: extInput,
       ids: [String(vodId)],
-    })
-    : await invoke<string>("fetch_vod_detail", {
+    });
+    rawResponse = response.rawPayload;
+    normalizedPayload = response.normalizedPayload;
+  } else {
+    const response = await invoke<string>("fetch_vod_detail", {
       apiUrl: site.api,
       ids: String(vodId),
     });
+    rawResponse = response;
+    normalizedPayload = response;
+  }
 
-  if (!response || !response.trim()) {
+  if (!rawResponse || !rawResponse.trim()) {
     throw new Error("源站返回空详情。");
   }
 
-  const detail = parseVodDetailResponse(response).list?.[0] as VodDetail | undefined;
+  const detail = parseVodDetailResponse(normalizedPayload).list?.[0] as VodDetail | undefined;
   if (!detail?.vod_id) {
     throw new Error("未获取到影视详情。");
   }

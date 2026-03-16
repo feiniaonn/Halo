@@ -1,10 +1,17 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use zip::ZipArchive;
+
+use crate::spider_runtime_contract::{
+    current_spider_feature_flags, detect_runtime_family, SpiderExecutionDiagnostics,
+    SpiderExecutionEnvelope, SpiderExecutionPhase, SpiderExecutionTimings, SpiderFailureCode,
+    SpiderFeatureFlags, SpiderRuntimeFamily, SpiderSourceHealthImpact, SpiderTransportTarget,
+};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
@@ -77,12 +84,22 @@ pub struct SpiderExecutionReport {
     pub ok: bool,
     pub site_key: String,
     pub method: String,
+    pub phase: SpiderExecutionPhase,
+    pub runtime_family: SpiderRuntimeFamily,
     pub execution_target: SpiderExecutionTarget,
+    pub transport_target: SpiderTransportTarget,
     pub class_name: Option<String>,
     pub failure_kind: Option<SpiderFailureKind>,
+    pub failure_code: Option<SpiderFailureCode>,
     pub failure_message: Option<String>,
     pub missing_dependency: Option<String>,
+    pub retryable: bool,
+    pub source_health_impact: SpiderSourceHealthImpact,
+    pub request_id: String,
     pub checked_at_ms: u64,
+    pub timings: SpiderExecutionTimings,
+    pub diagnostics: SpiderExecutionDiagnostics,
+    pub feature_flags: SpiderFeatureFlags,
     pub artifact: Option<SpiderArtifactAnalysis>,
     pub site_profile: Option<SpiderSiteProfile>,
 }
@@ -103,9 +120,16 @@ pub struct PreparedSpiderJar {
 }
 
 static SPIDER_REPORTS: OnceLock<Mutex<HashMap<String, SpiderExecutionReport>>> = OnceLock::new();
+static SPIDER_METHOD_REPORTS: OnceLock<Mutex<HashMap<String, SpiderExecutionReport>>> =
+    OnceLock::new();
+static SPIDER_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn spider_report_store() -> &'static Mutex<HashMap<String, SpiderExecutionReport>> {
     SPIDER_REPORTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn spider_method_report_store() -> &'static Mutex<HashMap<String, SpiderExecutionReport>> {
+    SPIDER_METHOD_REPORTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn now_unix_ms() -> u64 {
@@ -113,6 +137,25 @@ fn now_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn next_request_id(site_key: &str, method: &str) -> String {
+    let counter = SPIDER_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{}:{}:{}:{}",
+        site_key.trim(),
+        method.trim(),
+        now_unix_ms(),
+        counter
+    )
+}
+
+fn phase_from_method(method: &str) -> SpiderExecutionPhase {
+    match method.trim() {
+        "prefetch" => SpiderExecutionPhase::Prefetch,
+        "profile" => SpiderExecutionPhase::Profile,
+        _ => SpiderExecutionPhase::Execute,
+    }
 }
 
 fn normalize_jar_entry_to_class(name: &str) -> Option<String> {
@@ -378,6 +421,161 @@ pub(crate) fn classify_spider_failure(
     )
 }
 
+fn classify_failure_code(
+    message: &str,
+    failure_kind: &SpiderFailureKind,
+) -> (SpiderFailureCode, bool, SpiderSourceHealthImpact) {
+    let normalized = message.to_ascii_lowercase();
+    match failure_kind {
+        SpiderFailureKind::FetchError => {
+            if looks_like_tls_transport_error(&normalized) {
+                (
+                    SpiderFailureCode::TransportTlsFailed,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            } else if looks_like_proxy_transport_error(&normalized) {
+                (
+                    SpiderFailureCode::TransportProxyFailed,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            } else if looks_like_timeout_transport_error(&normalized) {
+                (
+                    SpiderFailureCode::TransportTimeout,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            } else if normalized.contains("403") || normalized.contains("forbidden") {
+                (
+                    SpiderFailureCode::UpstreamForbidden,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            } else {
+                (
+                    SpiderFailureCode::RemoteArtifactFetchFailed,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            }
+        }
+        SpiderFailureKind::ClassSelectionError => (
+            SpiderFailureCode::ClassSelectionMiss,
+            false,
+            SpiderSourceHealthImpact::Hard,
+        ),
+        SpiderFailureKind::InitError => (
+            SpiderFailureCode::RuntimeInitFailed,
+            true,
+            SpiderSourceHealthImpact::Soft,
+        ),
+        SpiderFailureKind::SiteRuntimeError => {
+            if looks_like_tls_transport_error(&normalized) {
+                (
+                    SpiderFailureCode::TransportTlsFailed,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            } else if looks_like_proxy_transport_error(&normalized) {
+                (
+                    SpiderFailureCode::TransportProxyFailed,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            } else if normalized.contains("403") || normalized.contains("forbidden") {
+                (
+                    SpiderFailureCode::UpstreamForbidden,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            } else {
+                (
+                    SpiderFailureCode::RuntimeMethodFailed,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            }
+        }
+        SpiderFailureKind::ResponseShapeError => (
+            SpiderFailureCode::PayloadSchemaInvalid,
+            true,
+            SpiderSourceHealthImpact::Soft,
+        ),
+        SpiderFailureKind::Timeout => (
+            SpiderFailureCode::TransportTimeout,
+            true,
+            SpiderSourceHealthImpact::Soft,
+        ),
+        SpiderFailureKind::MissingDependency => (
+            SpiderFailureCode::DependencyMissing,
+            false,
+            SpiderSourceHealthImpact::Soft,
+        ),
+        SpiderFailureKind::NeedsCompatPack
+        | SpiderFailureKind::NeedsContextShim
+        | SpiderFailureKind::NativeMethodBlocked
+        | SpiderFailureKind::TransformError
+        | SpiderFailureKind::NeedsLocalHelper => (
+            SpiderFailureCode::CapabilityUnsupported,
+            false,
+            SpiderSourceHealthImpact::Soft,
+        ),
+        SpiderFailureKind::Unknown => {
+            if looks_like_tls_transport_error(&normalized) {
+                (
+                    SpiderFailureCode::TransportTlsFailed,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            } else if looks_like_proxy_transport_error(&normalized) {
+                (
+                    SpiderFailureCode::TransportProxyFailed,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            } else if looks_like_timeout_transport_error(&normalized) {
+                (
+                    SpiderFailureCode::TransportTimeout,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            } else if normalized.contains("json") || normalized.contains("payload") {
+                (
+                    SpiderFailureCode::UpstreamMalformedPayload,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            } else {
+                (
+                    SpiderFailureCode::Unknown,
+                    true,
+                    SpiderSourceHealthImpact::Soft,
+                )
+            }
+        }
+    }
+}
+
+fn looks_like_tls_transport_error(normalized: &str) -> bool {
+    normalized.contains("sslhandshake")
+        || normalized.contains("certificate")
+        || normalized.contains("tls")
+        || normalized.contains("unexpected eof")
+        || normalized.contains("eof occurred in violation of protocol")
+        || normalized.contains("remote host terminated the handshake")
+        || normalized.contains("err_connection_closed")
+        || normalized.contains("connection closed")
+}
+
+fn looks_like_proxy_transport_error(normalized: &str) -> bool {
+    normalized.contains("proxy")
+}
+
+fn looks_like_timeout_transport_error(normalized: &str) -> bool {
+    normalized.contains("timeout") || normalized.contains("timed out")
+}
+
 fn extract_missing_dependency(message: &str) -> Option<String> {
     const PATTERNS: [&str; 2] = ["NoClassDefFoundError:", "ClassNotFoundException:"];
 
@@ -415,6 +613,27 @@ fn preferred_execution_target(
         .unwrap_or(fallback)
 }
 
+fn infer_transport_target(
+    execution_target: &SpiderExecutionTarget,
+    runtime_family: &SpiderRuntimeFamily,
+) -> SpiderTransportTarget {
+    if *execution_target == SpiderExecutionTarget::DesktopHelper {
+        return SpiderTransportTarget::LocalHelper;
+    }
+    if current_spider_feature_flags().unified_request_policy_v1
+        && matches!(
+            runtime_family,
+            SpiderRuntimeFamily::FmAnotherds
+                | SpiderRuntimeFamily::AppMergeC
+                | SpiderRuntimeFamily::A0JsHeavy
+                | SpiderRuntimeFamily::PureJsBridge
+        )
+    {
+        return SpiderTransportTarget::RustUnified;
+    }
+    SpiderTransportTarget::JavaOkHttp
+}
+
 pub(crate) fn success_report(
     site_key: &str,
     method: &str,
@@ -422,22 +641,47 @@ pub(crate) fn success_report(
     artifact: Option<SpiderArtifactAnalysis>,
     site_profile: Option<SpiderSiteProfile>,
 ) -> SpiderExecutionReport {
+    let checked_at_ms = now_unix_ms();
     let execution_target = preferred_execution_target(
         artifact.as_ref(),
         site_profile.as_ref(),
         SpiderExecutionTarget::DesktopDirect,
     );
+    let runtime_family = detect_runtime_family(site_key, class_name.as_deref());
+    let request_id = next_request_id(site_key, method);
+    let timings = SpiderExecutionTimings {
+        started_at_ms: checked_at_ms,
+        finished_at_ms: checked_at_ms,
+        duration_ms: 0,
+    };
+    let diagnostics = SpiderExecutionDiagnostics {
+        request_id: request_id.clone(),
+        root_cause: None,
+        fallback_used: false,
+        schema_version: 1,
+    };
+    let transport_target = infer_transport_target(&execution_target, &runtime_family);
 
     SpiderExecutionReport {
         ok: true,
         site_key: site_key.to_string(),
         method: method.to_string(),
+        phase: phase_from_method(method),
+        runtime_family: runtime_family.clone(),
         execution_target,
+        transport_target,
         class_name,
         failure_kind: None,
+        failure_code: None,
         failure_message: None,
         missing_dependency: None,
-        checked_at_ms: now_unix_ms(),
+        retryable: false,
+        source_health_impact: SpiderSourceHealthImpact::None,
+        request_id,
+        checked_at_ms,
+        timings,
+        diagnostics,
+        feature_flags: current_spider_feature_flags().clone(),
         artifact,
         site_profile,
     }
@@ -452,19 +696,46 @@ pub(crate) fn failure_report(
     site_profile: Option<SpiderSiteProfile>,
 ) -> SpiderExecutionReport {
     let (failure_kind, fallback_target, missing_dependency) = classify_spider_failure(message);
+    let checked_at_ms = now_unix_ms();
     let execution_target =
         preferred_execution_target(artifact.as_ref(), site_profile.as_ref(), fallback_target);
+    let runtime_family = detect_runtime_family(site_key, class_name.as_deref());
+    let (failure_code, retryable, source_health_impact) =
+        classify_failure_code(message, &failure_kind);
+    let request_id = next_request_id(site_key, method);
+    let timings = SpiderExecutionTimings {
+        started_at_ms: checked_at_ms,
+        finished_at_ms: checked_at_ms,
+        duration_ms: 0,
+    };
+    let diagnostics = SpiderExecutionDiagnostics {
+        request_id: request_id.clone(),
+        root_cause: Some(message.trim().to_string()),
+        fallback_used: message.to_ascii_lowercase().contains("fallback"),
+        schema_version: 1,
+    };
+    let transport_target = infer_transport_target(&execution_target, &runtime_family);
 
     SpiderExecutionReport {
         ok: false,
         site_key: site_key.to_string(),
         method: method.to_string(),
+        phase: phase_from_method(method),
+        runtime_family: runtime_family.clone(),
         execution_target,
+        transport_target,
         class_name,
         failure_kind: Some(failure_kind),
+        failure_code: Some(failure_code),
         failure_message: Some(message.trim().to_string()),
         missing_dependency,
-        checked_at_ms: now_unix_ms(),
+        retryable,
+        source_health_impact,
+        request_id,
+        checked_at_ms,
+        timings,
+        diagnostics,
+        feature_flags: current_spider_feature_flags().clone(),
         artifact,
         site_profile,
     }
@@ -479,7 +750,59 @@ pub(crate) fn store_execution_report(report: SpiderExecutionReport) {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    guard.insert(report.site_key.clone(), report);
+    guard.insert(report.site_key.clone(), report.clone());
+
+    let mut method_guard = match spider_method_report_store().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    method_guard.insert(
+        format!("{}::{}", report.site_key.trim(), report.method.trim()),
+        report,
+    );
+}
+
+pub(crate) fn clear_spider_execution_reports() {
+    let mut guard = match spider_report_store().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.clear();
+
+    let mut method_guard = match spider_method_report_store().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    method_guard.clear();
+}
+
+#[tauri::command]
+pub fn clear_spider_execution_report(site_key: Option<String>) {
+    let mut guard = match spider_report_store().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    let Some(site_key) = site_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        guard.clear();
+        let mut method_guard = match spider_method_report_store().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        method_guard.clear();
+        return;
+    };
+
+    guard.remove(site_key);
+    let mut method_guard = match spider_method_report_store().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    method_guard.retain(|key, _| !key.starts_with(&format!("{site_key}::")));
 }
 
 #[tauri::command]
@@ -489,6 +812,48 @@ pub fn get_spider_execution_report(site_key: String) -> Option<SpiderExecutionRe
         Err(poisoned) => poisoned.into_inner(),
     };
     guard.get(site_key.trim()).cloned()
+}
+
+pub(crate) fn get_method_execution_report(
+    site_key: &str,
+    method: &str,
+) -> Option<SpiderExecutionReport> {
+    let guard = match spider_method_report_store().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard
+        .get(&format!("{}::{}", site_key.trim(), method.trim()))
+        .cloned()
+}
+
+#[tauri::command]
+pub fn get_spider_feature_flags() -> SpiderFeatureFlags {
+    current_spider_feature_flags().clone()
+}
+
+pub(crate) fn build_execution_envelope<T: Clone>(
+    report: &SpiderExecutionReport,
+    payload: Option<T>,
+) -> SpiderExecutionEnvelope<T> {
+    SpiderExecutionEnvelope {
+        ok: report.ok,
+        site_key: report.site_key.clone(),
+        method: report.method.clone(),
+        phase: report.phase.clone(),
+        runtime_family: report.runtime_family.clone(),
+        execution_target: serde_json::to_string(&report.execution_target)
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string(),
+        transport_target: report.transport_target.clone(),
+        failure_code: report.failure_code.clone(),
+        retryable: report.retryable,
+        source_health_impact: report.source_health_impact.clone(),
+        timings: report.timings.clone(),
+        payload,
+        diagnostics: report.diagnostics.clone(),
+    }
 }
 
 pub(crate) fn build_prefetch_result(prepared: &PreparedSpiderJar) -> SpiderPrefetchResult {
@@ -502,9 +867,10 @@ pub(crate) fn build_prefetch_result(prepared: &PreparedSpiderJar) -> SpiderPrefe
 #[cfg(test)]
 mod tests {
     use super::{
-        analyze_spider_artifact, classify_spider_failure, SpiderArtifactKind,
-        SpiderExecutionTarget, SpiderFailureKind,
+        analyze_spider_artifact, classify_failure_code, classify_spider_failure,
+        SpiderArtifactKind, SpiderExecutionTarget, SpiderFailureKind,
     };
+    use crate::spider_runtime_contract::{SpiderFailureCode, SpiderSourceHealthImpact};
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -603,5 +969,27 @@ mod tests {
         assert_eq!(kind, SpiderFailureKind::NativeMethodBlocked);
         assert_eq!(target, SpiderExecutionTarget::DesktopCompatPack);
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn classifies_fetch_error_tls_failure_code() {
+        let (code, retryable, impact) = classify_failure_code(
+            "bridge HTTP runtime failure: SSLHandshakeException: Remote host terminated the handshake",
+            &SpiderFailureKind::FetchError,
+        );
+        assert_eq!(code, SpiderFailureCode::TransportTlsFailed);
+        assert!(retryable);
+        assert_eq!(impact, SpiderSourceHealthImpact::Soft);
+    }
+
+    #[test]
+    fn classifies_fetch_error_connection_closed_as_tls_failure() {
+        let (code, retryable, impact) = classify_failure_code(
+            "request failed with ERR_CONNECTION_CLOSED after unexpected EOF while reading",
+            &SpiderFailureKind::FetchError,
+        );
+        assert_eq!(code, SpiderFailureCode::TransportTlsFailed);
+        assert!(retryable);
+        assert_eq!(impact, SpiderSourceHealthImpact::Soft);
     }
 }

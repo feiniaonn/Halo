@@ -15,6 +15,7 @@ import {
   proxyVodImage,
   shouldPreferProxyImage,
 } from "@/modules/media/services/vodImageProxy";
+import type { VodDispatchCandidate } from "@/modules/media/types/vodDispatch.types";
 import type { NormalizedTvBoxSite } from "@/modules/media/types/tvbox.types";
 import type { VodDetail, VodRoute } from "@/modules/media/types/vodWindow.types";
 
@@ -22,6 +23,7 @@ interface MediaDetailModalProps {
   vodId: string;
   site: NormalizedTvBoxSite;
   spider: string;
+  fallbackTitle?: string;
   onClose: () => void;
   onPlay: (flag: string, id: string, title: string) => void;
   onPlayWithDetail?: (
@@ -32,6 +34,10 @@ interface MediaDetailModalProps {
     extInput: string,
   ) => void;
   onSearchOnlyPlay?: (keyword: string, fallbackTitle: string) => Promise<void> | void;
+  onResolveSearchDispatch?: (
+    keyword: string,
+    fallbackTitle: string,
+  ) => Promise<VodDispatchCandidate[]>;
 }
 
 function extractMsearchKeyword(url: string): string {
@@ -67,10 +73,12 @@ export function MediaDetailModal({
   vodId,
   site,
   spider,
+  fallbackTitle = "",
   onClose,
   onPlay,
   onPlayWithDetail,
   onSearchOnlyPlay,
+  onResolveSearchDispatch,
 }: MediaDetailModalProps) {
   const [detail, setDetail] = useState<VodDetail | null>(null);
   const [resolvedExt, setResolvedExt] = useState("");
@@ -80,6 +88,9 @@ export function MediaDetailModal({
   const [playWarning, setPlayWarning] = useState<string | null>(null);
   const [searchResolving, setSearchResolving] = useState(false);
   const [backgroundImageSrc, setBackgroundImageSrc] = useState("");
+  const [dispatchCandidates, setDispatchCandidates] = useState<VodDispatchCandidate[]>([]);
+  const [dispatchLoading, setDispatchLoading] = useState(false);
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -112,6 +123,51 @@ export function MediaDetailModal({
   }, [site, spider, vodId]);
 
   useEffect(() => {
+    const keyword = fallbackTitle.trim() || detail?.vod_name?.trim() || "";
+    const shouldResolveDispatch = Boolean(keyword)
+      && Boolean(onResolveSearchDispatch)
+      && !loading
+      && (Boolean(error) || !detail || routes.length === 0);
+
+    if (!shouldResolveDispatch) {
+      setDispatchCandidates([]);
+      setDispatchLoading(false);
+      setDispatchError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setDispatchLoading(true);
+    setDispatchError(null);
+    setPlayWarning(`Dispatch lookup in progress: ${keyword}`);
+
+    void onResolveSearchDispatch!(keyword, fallbackTitle || keyword)
+      .then((matches) => {
+        if (cancelled) return;
+        setDispatchCandidates(matches);
+        if (matches.length > 0) {
+          setPlayWarning(null);
+        } else {
+          setDispatchError("No playable dispatch results were found.");
+        }
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setDispatchCandidates([]);
+        setDispatchError(message || "Dispatch lookup failed.");
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setDispatchLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [detail, error, fallbackTitle, loading, onResolveSearchDispatch, routes.length]);
+
+  useEffect(() => {
     let mounted = true;
     const nextSrc = normalizeVodImageUrl(detail?.vod_pic ?? "");
     setBackgroundImageSrc(shouldPreferProxyImage(nextSrc) ? "" : nextSrc);
@@ -137,19 +193,42 @@ export function MediaDetailModal({
 
     if (searchOnly) {
       const keyword = extractMsearchKeyword(episodeUrl) || detail?.vod_name || episodeName;
+      if (onResolveSearchDispatch) {
+        setSearchResolving(true);
+        setDispatchLoading(true);
+        setDispatchError(null);
+        setPlayWarning(`Dispatch lookup in progress: ${keyword}`);
+        try {
+          const matches = await onResolveSearchDispatch(keyword, detail?.vod_name || episodeName);
+          setDispatchCandidates(matches);
+          if (matches.length > 0) {
+            setPlayWarning(null);
+          } else {
+            setDispatchError("No playable dispatch results were found.");
+          }
+        } catch (reason: unknown) {
+          const message = reason instanceof Error ? reason.message : String(reason);
+          setDispatchCandidates([]);
+          setDispatchError(message || "Dispatch lookup failed.");
+        } finally {
+          setDispatchLoading(false);
+          setSearchResolving(false);
+        }
+        return;
+      }
       if (!onSearchOnlyPlay) {
-        setPlayWarning("这条线路只提供跨站搜索入口，当前没有启用自动搜索播放。");
+        setPlayWarning("Current route only provides dispatch search.");
         return;
       }
 
       setSearchResolving(true);
-      setPlayWarning(`正在跨站搜索可播放节点：${keyword}`);
+      setPlayWarning(`Dispatch lookup in progress: ${keyword}`);
       try {
         await onSearchOnlyPlay(keyword, detail?.vod_name || episodeName);
         setPlayWarning(null);
       } catch (reason: unknown) {
         const message = reason instanceof Error ? reason.message : String(reason);
-        setPlayWarning(`跨站搜索失败：${message}`);
+        setPlayWarning(`Dispatch lookup failed: ${message}`);
       } finally {
         setSearchResolving(false);
       }
@@ -168,13 +247,23 @@ export function MediaDetailModal({
     onPlay(routeName, episodeUrl, episodeName);
   };
 
+  const displayDetail: VodDetail = detail ?? {
+    vod_id: vodId,
+    vod_name: fallbackTitle || vodId,
+    vod_pic: "",
+  };
+  const displayTitle = detail?.vod_name || fallbackTitle || "影视详情";
+  const shouldShowDispatchFallback = Boolean(onResolveSearchDispatch)
+    && !loading
+    && (Boolean(error) || !detail || routes.length === 0);
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         showCloseButton={false}
         className="flex h-[min(88vh,900px)] w-[min(1120px,94vw)] max-w-none flex-col gap-0 overflow-hidden rounded-[28px] border-border/55 bg-background/92 p-0 shadow-[0_38px_120px_-56px_rgba(15,23,42,0.72)] backdrop-blur-2xl"
       >
-        <DialogTitle className="sr-only">{detail?.vod_name || "影视详情"}</DialogTitle>
+        <DialogTitle className="sr-only">{displayTitle}</DialogTitle>
 
         <button
           onClick={onClose}
@@ -202,13 +291,13 @@ export function MediaDetailModal({
               <Loader2 className="size-10 animate-spin text-primary" />
               <span className="text-sm font-medium">正在加载详情…</span>
             </div>
-          ) : error ? (
+          ) : error && !shouldShowDispatchFallback ? (
             <div className="flex flex-1 flex-col items-center justify-center p-6 text-center">
               <AlertCircle className="mb-4 size-16 text-destructive/80" />
               <p className="mb-2 text-xl font-bold text-foreground">详情解析失败</p>
               <p className="max-w-md text-sm leading-6 text-muted-foreground break-all">{error}</p>
             </div>
-          ) : !detail ? (
+          ) : !detail && !shouldShowDispatchFallback ? (
             <div className="flex flex-1 flex-col items-center justify-center p-6 text-center">
               <Film className="mb-4 size-16 text-muted-foreground/30" />
               <p className="text-xl font-bold text-muted-foreground">未获取到影视详情</p>
@@ -220,8 +309,8 @@ export function MediaDetailModal({
                   <div className="grid gap-5 sm:grid-cols-[130px_minmax(0,1fr)] lg:grid-cols-[150px_minmax(0,1fr)]">
                     <div className="overflow-hidden rounded-[20px] border border-white/55 bg-background/80 shadow-[0_18px_36px_-26px_rgba(15,23,42,0.52)] self-start">
                       <VodProxyImage
-                        src={detail.vod_pic || ""}
-                        alt={detail.vod_name}
+                        src={displayDetail.vod_pic || ""}
+                        alt={displayDetail.vod_name}
                         className="aspect-[0.72] w-full object-cover"
                       />
                     </div>
@@ -230,27 +319,27 @@ export function MediaDetailModal({
                       <div className="space-y-2">
                         <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-primary/70">Selected Title</div>
                         <h2 className="text-[1.5rem] font-semibold leading-tight tracking-tight text-foreground whitespace-pre-wrap break-words md:text-[1.7rem]">
-                          {detail.vod_name}
+                          {displayDetail.vod_name}
                         </h2>
                         <div className="flex flex-wrap gap-2 pt-1">
                           <Badge variant="outline" className="bg-background/70 shadow-sm">{site.name}</Badge>
                           <Badge variant="secondary" className="shadow-sm">
                             {site.capability.sourceKind === "spider" ? "Spider" : "CMS"}
                           </Badge>
-                          {detail.vod_year && <Badge variant="outline" className="bg-background/40">{detail.vod_year}</Badge>}
-                          {detail.vod_area && <Badge variant="outline" className="bg-background/40">{detail.vod_area}</Badge>}
+                          {displayDetail.vod_year && <Badge variant="outline" className="bg-background/40">{displayDetail.vod_year}</Badge>}
+                          {displayDetail.vod_area && <Badge variant="outline" className="bg-background/40">{displayDetail.vod_area}</Badge>}
                         </div>
                       </div>
 
                       <div className="grid gap-3 xl:grid-cols-2">
-                        <MetaBlock label="导演" value={detail.vod_director} />
-                        <MetaBlock label="演员" value={detail.vod_actor} />
+                        <MetaBlock label="导演" value={displayDetail.vod_director} />
+                        <MetaBlock label="演员" value={displayDetail.vod_actor} />
                       </div>
                     </div>
                   </div>
                 </div>
 
-                <MetaBlock label="剧情简介" value={detail.vod_content?.replace(/<[^>]*>?/gm, '').trim() || "暂无剧情简介"} />
+                <MetaBlock label="剧情简介" value={displayDetail.vod_content?.replace(/<[^>]*>?/gm, '').trim() || "暂无剧情简介"} />
 
                 {playWarning && (
                   <div className="flex items-start gap-3 rounded-2xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 shadow-sm dark:text-amber-200">
@@ -259,6 +348,46 @@ export function MediaDetailModal({
                   </div>
                 )}
 
+
+                {shouldShowDispatchFallback && (
+                  <div className="space-y-3 rounded-2xl border border-border/60 bg-background/72 p-4 shadow-sm">
+                    <div className="space-y-1">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-primary/70">Successful Interfaces</div>
+                      <h3 className="text-base font-semibold text-foreground">Dispatch Results</h3>
+                      <p className="text-[13px] text-muted-foreground">Playable results discovered from other searchable interfaces in the same source.</p>
+                    </div>
+
+                    {dispatchLoading ? (
+                      <div className="flex items-center gap-2 rounded-xl border border-border/50 bg-muted/20 px-3 py-3 text-sm text-muted-foreground">
+                        <Loader2 className="size-4 animate-spin" />
+                        <span>Searching playable interfaces...</span>
+                      </div>
+                    ) : dispatchCandidates.length > 0 ? (
+                      <div className="grid gap-2 md:grid-cols-2">
+                        {dispatchCandidates.map((candidate) => (
+                          <Button
+                            key={`${candidate.siteKey}:${candidate.vodId}`}
+                            variant="outline"
+                            className="h-auto justify-start rounded-xl px-3 py-3 text-left"
+                            onClick={() => onPlayWithDetail?.(candidate.detail, candidate.routes, 0, 0, candidate.extInput)}
+                          >
+                            <div className="space-y-1">
+                              <div className="text-sm font-semibold text-foreground">{candidate.siteName}</div>
+                              <div className="text-xs text-muted-foreground break-all">{candidate.matchTitle}</div>
+                              <div className="text-[11px] text-muted-foreground">
+                                {candidate.routes.length} routes{candidate.remarks ? ` / ${candidate.remarks}` : ""}
+                              </div>
+                            </div>
+                          </Button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-dashed border-border/55 bg-muted/10 px-3 py-4 text-sm text-muted-foreground">
+                        {dispatchError || 'No playable dispatch results were found.'}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <Separator className="bg-border/55" />
 
                 <div className="space-y-4">

@@ -4,7 +4,9 @@ import {
   buildEffectiveSiteParses,
   normalizeRepoUrls,
   normalizeTvBoxConfig,
+  parseVodDetailResponse,
   parseTvboxJsonLoose,
+  parseVodResponse,
   serializeSiteExt,
 } from "@/modules/media/services/tvboxConfig";
 
@@ -155,5 +157,185 @@ describe("tvboxConfig", () => {
     expect(config?.proxy).toEqual(["googlevideo.com", "bfzycdn.com"]);
     expect(config?.hosts).toEqual([{ host: "media.example.com", target: "mirror.example.net" }]);
     expect(config?.ads).toEqual(["ads.example.net", "tracker.cdn.example"]);
+  });
+
+  it("parses obfuscated merge payloads from spider runtimes", () => {
+    const payload = JSON.stringify({
+      a: [
+        { a: "tv_hot", b: "热播剧集" },
+      ],
+      b: [
+        { b: "sid-1", c: "第一部", d: "https://img.example.com/poster.jpg", e: "更新至10集" },
+      ],
+      c: {
+        tv_hot: [
+          { n: "综合", v: "tv_hot" },
+        ],
+      },
+      k: 1,
+      m: 99,
+      n: 120,
+    });
+
+    expect(parseVodResponse(payload)).toEqual({
+      class: [
+        { type_id: "tv_hot", type_name: "热播剧集" },
+      ],
+      list: [
+        {
+          vod_id: "sid-1",
+          vod_name: "第一部",
+          vod_pic: "https://img.example.com/poster.jpg",
+          vod_remarks: "更新至10集",
+        },
+      ],
+      pagecount: 99,
+      total: 120,
+    });
+  });
+
+  it("extracts nested image objects and Hxq-style fallback remarks", () => {
+    const payload = JSON.stringify({
+      list: [
+        {
+          sid: "hxq-1",
+          name: "韩圈片单",
+          image: {
+            url: "https://cdn.example.com/hxq.jpg",
+          },
+          conerMemo: "独播",
+        },
+      ],
+    });
+
+    expect(parseVodResponse(payload).list).toEqual([
+      {
+        vod_id: "hxq-1",
+        vod_name: "韩圈片单",
+        vod_pic: "https://cdn.example.com/hxq.jpg",
+        vod_remarks: "独播",
+      },
+    ]);
+  });
+
+  it("parses douban-style nested home payload items", () => {
+    const payload = JSON.stringify({
+      class: ["anime_hot"],
+      filters: {
+        anime_hot: [
+          { name: "动漫热播", value: "anime_hot" },
+        ],
+      },
+      list: [
+        {
+          card_subtitle: "更新中",
+          target: {
+            id: "douban-1",
+            title: "成何体统 第二季",
+            pic: {
+              normal: "http://t11.baidu.com/it/u=1,2&fm=58&app=83&f=JPEG?w=195&h=260",
+            },
+          },
+        },
+      ],
+    });
+
+    expect(parseVodResponse(payload)).toEqual({
+      class: [
+        { type_id: "anime_hot", type_name: "anime_hot" },
+      ],
+      list: [
+        {
+          vod_id: "douban-1",
+          vod_name: "成何体统 第二季",
+          vod_pic: "http://t11.baidu.com/it/u=1,2&fm=58&app=83&f=JPEG?w=195&h=260",
+          vod_remarks: "更新中",
+        },
+      ],
+      pagecount: undefined,
+      total: undefined,
+    });
+  });
+
+  it("normalizes obfuscated detail payloads", () => {
+    const payload = JSON.stringify({
+      b: [
+        {
+          b: "sid-9",
+          c: "热播详情",
+          d: "https://img.example.com/detail.jpg",
+          vod_play_from: "默认线路",
+          vod_play_url: "第1集$play-1",
+          vod_content: "剧情简介",
+        },
+      ],
+    });
+
+    expect(parseVodDetailResponse(payload)).toEqual({
+      list: [
+        {
+          vod_id: "sid-9",
+          vod_name: "热播详情",
+          vod_pic: "https://img.example.com/detail.jpg",
+          vod_content: "剧情简介",
+          vod_play_from: "默认线路",
+          vod_play_url: "第1集$play-1",
+        },
+      ],
+    });
+  });
+
+  it("unwraps data-wrapped spider payloads", () => {
+    const payload = JSON.stringify({
+      code: 1,
+      msg: "",
+      data: {
+        class: [
+          { type_id: "10", type_name: "内地" },
+        ],
+        list: [
+          { vod_id: "1", vod_name: "热播片", vod_pic: "https://img.example.com/a.jpg" },
+        ],
+      },
+    });
+
+    expect(parseVodResponse(payload)).toEqual({
+      class: [
+        { type_id: "10", type_name: "内地" },
+      ],
+      list: [
+        {
+          vod_id: "1",
+          vod_name: "热播片",
+          vod_pic: "https://img.example.com/a.jpg",
+          vod_remarks: "",
+        },
+      ],
+      pagecount: undefined,
+      total: undefined,
+    });
+  });
+
+  it("treats data-wrapped app category lists as classes", () => {
+    const payload = JSON.stringify({
+      code: 1,
+      msg: "",
+      data: {
+        list: [
+          { type_id: "10", type_name: "内地" },
+          { type_id: "1", type_name: "电影" },
+        ],
+      },
+    });
+
+    expect(parseVodResponse(payload)).toEqual({
+      class: [
+        { type_id: "10", type_name: "内地" },
+        { type_id: "1", type_name: "电影" },
+      ],
+      list: [],
+      pagecount: undefined,
+      total: undefined,
+    });
   });
 });

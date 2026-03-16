@@ -43,9 +43,14 @@ function ResolvedVodProxyImage({
       };
     }
     void proxyVodImage(normalizedSrc).then((resolved) => {
-      if (cancelled || !resolved) return;
-      setDisplaySrc(resolved);
+      if (cancelled) return;
+      if (!resolved) {
+        setProxyAttempted(false);
+        setDisplaySrc(normalizedSrc);
+        return;
+      }
       setProxyAttempted(true);
+      setDisplaySrc(resolved);
       setError(false);
     });
 
@@ -69,6 +74,12 @@ function ResolvedVodProxyImage({
     setProxyAttempted(true);
     void proxyVodImage(normalized).then((resolved) => {
       if (!resolved) {
+        if (displaySrc !== normalized) {
+          setDisplaySrc(normalized);
+          setProxyAttempted(false);
+          setError(false);
+          return;
+        }
         setError(true);
         return;
       }

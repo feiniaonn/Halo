@@ -5,10 +5,10 @@ use url::Url;
 
 use super::super::{apply_request_headers, resolve_media_request};
 use super::{
-    apply_hls_like_headers, build_rescue_client, filter_media_manifest_content,
-    matches_host_pattern, retry_backoff_ms, should_retry_fetch_error,
-    update_live_metrics_on_manifest_status, update_live_metrics_on_retry, TvBoxPlaybackRuleInput,
-    MANIFEST_FETCH_MAX_ATTEMPTS,
+    apply_hls_like_headers, build_rescue_client, build_rescue_transport_client,
+    build_transport_client, filter_media_manifest_content, matches_host_pattern, retry_backoff_ms,
+    should_retry_fetch_error, update_live_metrics_on_manifest_status, update_live_metrics_on_retry,
+    TvBoxPlaybackRuleInput, MANIFEST_FETCH_MAX_ATTEMPTS,
 };
 
 fn is_absolute_url(input: &str) -> bool {
@@ -152,8 +152,18 @@ async fn fetch_manifest_text_once(
     add_range: bool,
 ) -> Result<(Url, String), String> {
     let resolved = resolve_media_request(url, headers.clone());
+    let request_client = if force_close
+        || force_identity_encoding
+        || add_range
+        || resolved.matched_proxy_rule.is_some()
+    {
+        build_rescue_transport_client(&resolved, true, Duration::from_secs(15))?
+    } else {
+        build_transport_client(&resolved, true, Duration::from_secs(15))
+            .unwrap_or_else(|_| client.clone())
+    };
     let mut builder = apply_hls_like_headers(
-        client.get(&resolved.url),
+        request_client.get(&resolved.url),
         &resolved.url,
         force_close,
         force_identity_encoding,

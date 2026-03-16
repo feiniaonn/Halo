@@ -7,6 +7,7 @@ import {
   startMigrateLegacyData,
 } from "@/modules/settings/services/settingsService";
 import { SETTINGS_MESSAGES } from "@/modules/settings/constants";
+import { reportRuntimeError } from "@/modules/shared/services/runtimeError";
 import type {
   MigrationCompletePayload,
   MigrationProgress,
@@ -52,21 +53,31 @@ export function useMigrationSettings({
             if ((latest?.total ?? 0) === 0 && (latest?.done ?? 0) === 0) {
               setStorageMessage(latest?.message ?? SETTINGS_MESSAGES.migration.noneFound);
             } else {
-              setStorageMessage((migrationRemoveSource ?? removeSource) ? SETTINGS_MESSAGES.migration.successRemoved : SETTINGS_MESSAGES.migration.successKept);
+              setStorageMessage(
+                (migrationRemoveSource ?? removeSource)
+                  ? SETTINGS_MESSAGES.migration.successRemoved
+                  : SETTINGS_MESSAGES.migration.successKept,
+              );
             }
             void load();
           } else if (event.payload.canceled) {
             setStorageMessage(SETTINGS_MESSAGES.migration.canceled);
           } else {
-            setStorageMessage(`${SETTINGS_MESSAGES.migration.failed}：${event.payload.error ?? SETTINGS_MESSAGES.unknownError}`);
+            setStorageMessage(`${SETTINGS_MESSAGES.migration.failed}锛?{event.payload.error ?? SETTINGS_MESSAGES.unknownError}`);
           }
         });
 
-        const p = await getMigrationProgress();
-        migrationProgressRef.current = p;
-        setMigrationProgress(p);
-      } catch (e) {
-        console.error(e);
+        const progress = await getMigrationProgress();
+        migrationProgressRef.current = progress;
+        setMigrationProgress(progress);
+      } catch (error) {
+        reportRuntimeError({
+          title: "Failed to initialize migration monitor",
+          summary: "Migration progress listeners could not be initialized.",
+          error,
+          source: "settings.migration.bootstrap",
+        });
+        console.error(error);
       }
     })();
 
@@ -94,9 +105,15 @@ export function useMigrationSettings({
       setMigrationRemoveSource(removeSource);
       await startMigrateLegacyData(removeSource);
       setStorageMessage(SETTINGS_MESSAGES.migration.startOk);
-    } catch (e) {
-      console.error(e);
-      setStorageMessage(`${SETTINGS_MESSAGES.migration.startFailed}：${formatErrorMessage(e)}`);
+    } catch (error) {
+      reportRuntimeError({
+        title: "Failed to start migration",
+        summary: "Legacy data migration could not be started.",
+        error,
+        source: "settings.migration.start",
+      });
+      console.error(error);
+      setStorageMessage(`${SETTINGS_MESSAGES.migration.startFailed}锛?{formatErrorMessage(error)}`);
     }
   }, [formatErrorMessage, isTauri, migrationProgress?.running, removeSource, setStorageMessage, settings?.legacy_roots?.length]);
 
@@ -104,9 +121,15 @@ export function useMigrationSettings({
     if (!migrationProgress?.running) return;
     try {
       await cancelMigrateLegacyData();
-    } catch (e) {
-      console.error(e);
-      setStorageMessage(`${SETTINGS_MESSAGES.migration.cancelFailed}：${formatErrorMessage(e)}`);
+    } catch (error) {
+      reportRuntimeError({
+        title: "Failed to cancel migration",
+        summary: "Legacy data migration could not be canceled.",
+        error,
+        source: "settings.migration.cancel",
+      });
+      console.error(error);
+      setStorageMessage(`${SETTINGS_MESSAGES.migration.cancelFailed}锛?{formatErrorMessage(error)}`);
     }
   }, [formatErrorMessage, migrationProgress?.running, setStorageMessage]);
 
@@ -123,10 +146,20 @@ export function useMigrationSettings({
       setIsMigrating(true);
       await migrateLegacyData(removeSource);
       await load();
-      setStorageMessage(removeSource ? SETTINGS_MESSAGES.migration.runDoneRemoved : SETTINGS_MESSAGES.migration.runDoneKept);
-    } catch (e) {
-      console.error(e);
-      setStorageMessage(`${SETTINGS_MESSAGES.migration.runFailed}：${formatErrorMessage(e)}`);
+      setStorageMessage(
+        removeSource
+          ? SETTINGS_MESSAGES.migration.runDoneRemoved
+          : SETTINGS_MESSAGES.migration.runDoneKept,
+      );
+    } catch (error) {
+      reportRuntimeError({
+        title: "Failed to run migration",
+        summary: "Legacy data migration did not complete successfully.",
+        error,
+        source: "settings.migration.run",
+      });
+      console.error(error);
+      setStorageMessage(`${SETTINGS_MESSAGES.migration.runFailed}锛?{formatErrorMessage(error)}`);
     } finally {
       setIsMigrating(false);
     }
@@ -147,3 +180,4 @@ export function useMigrationSettings({
     handleMigrateNow,
   };
 }
+

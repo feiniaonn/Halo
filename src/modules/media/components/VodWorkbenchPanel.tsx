@@ -26,7 +26,7 @@ interface VodWorkbenchPanelProps {
   onSearchSubmit?: () => void;
   onSearchReset?: () => void;
   onLoadMore: () => void;
-  onSelectVod: (id: string) => void;
+  onSelectVod: (item: TvBoxVodItem) => void;
   renderVodImage: (item: TvBoxVodItem) => ReactNode;
 }
 
@@ -215,13 +215,10 @@ export function VodWorkbenchPanel({
                 vodList.map((item) => (
                   <div
                     key={item.vod_id}
-                    className={cn(
-                      'group relative flex flex-col gap-2 outline-none',
-                      detailEnabled ? 'cursor-pointer' : 'cursor-default opacity-80'
-                    )}
-                    onClick={() => detailEnabled && onSelectVod(item.vod_id)}
+                    className="group relative flex cursor-pointer flex-col gap-2 outline-none"
+                    onClick={() => onSelectVod(item)}
                     role="button"
-                    tabIndex={detailEnabled ? 0 : -1}
+                    tabIndex={0}
                   >
                     <div className="relative aspect-[0.72] w-full overflow-hidden rounded-lg bg-muted border shadow-sm transition-all duration-300 group-hover:shadow-md">
                       <div className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105">
@@ -229,13 +226,11 @@ export function VodWorkbenchPanel({
                       </div>
                       
                       {/* Overlay gradients and icons for hover interaction */}
-                      {detailEnabled && (
-                        <div className="absolute inset-0 bg-black/40 opacity-0 transition-opacity duration-300 group-hover:opacity-100 flex items-center justify-center">
-                          <div className="flex items-center justify-center size-10 rounded-full bg-primary/90 text-primary-foreground transform scale-75 opacity-0 transition-all duration-300 group-hover:scale-100 group-hover:opacity-100 shadow-xl">
-                            <Play className="size-4 ml-0.5" />
-                          </div>
+                      <div className="absolute inset-0 bg-black/40 opacity-0 transition-opacity duration-300 group-hover:opacity-100 flex items-center justify-center">
+                        <div className="flex items-center justify-center size-10 rounded-full bg-primary/90 text-primary-foreground transform scale-75 opacity-0 transition-all duration-300 group-hover:scale-100 group-hover:opacity-100 shadow-xl">
+                          <Play className="size-4 ml-0.5" />
                         </div>
-                      )}
+                      </div>
 
                       {/* Top Badges */}
                       <div className="absolute top-1.5 left-1.5 right-1.5 flex justify-between items-start gap-1 pointer-events-none">

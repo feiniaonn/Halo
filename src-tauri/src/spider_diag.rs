@@ -5,6 +5,7 @@ use tauri::AppHandle;
 use crate::spider_cmds_runtime::{
     get_spider_execution_report, SpiderExecutionReport, SpiderFailureKind, SpiderPrefetchResult,
 };
+use crate::spider_response_contract::NormalizedSpiderMethodResponse;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +71,9 @@ pub struct SpiderSiteDiagnostic {
     pub profile: Option<SpiderExecutionReport>,
     pub home: Option<SpiderMethodDiagnostic>,
     pub category: Option<SpiderMethodDiagnostic>,
+    pub search: Option<SpiderMethodDiagnostic>,
+    pub detail: Option<SpiderMethodDiagnostic>,
+    pub player: Option<SpiderPlayerDiagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,6 +84,32 @@ pub struct SpiderMethodDiagnostic {
     pub failure_message: Option<String>,
     pub execution_report: Option<SpiderExecutionReport>,
     pub payload_summary: Option<SpiderPayloadSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpiderPlayerDiagnostic {
+    pub flag: String,
+    pub episode_title: String,
+    pub episode_id: String,
+    pub ok: bool,
+    pub failure_kind: Option<SpiderFailureKind>,
+    pub failure_message: Option<String>,
+    pub execution_report: Option<SpiderExecutionReport>,
+    pub raw_payload: Option<String>,
+    pub normalized_payload: Option<Value>,
+    pub payload_summary: Option<SpiderPlayerPayloadSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpiderPlayerPayloadSummary {
+    pub payload_kind: String,
+    pub payload_keys: Vec<String>,
+    pub url: Option<String>,
+    pub parse: Option<i64>,
+    pub jx: Option<i64>,
+    pub header_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -96,6 +126,7 @@ pub struct SpiderPayloadSummary {
     pub first_category_name: Option<String>,
     pub sample_class_names: Vec<String>,
     pub sample_vod_names: Vec<String>,
+    pub sample_vod_pics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -385,6 +416,136 @@ fn repo_matches_selector(repo: &SpiderRepoInventoryItem, selector: &str) -> bool
 }
 
 fn summarize_payload(payload: &str) -> Result<SpiderPayloadSummary, String> {
+    fn value_text(value: &Value) -> Option<String> {
+        match value {
+            Value::String(text) => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            Value::Number(number) => Some(number.to_string()),
+            _ => None,
+        }
+    }
+
+    fn pick_object_text(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+        keys.iter()
+            .find_map(|key| object.get(*key).and_then(value_text))
+    }
+
+    fn summarize_class_item(item: &Value) -> Option<(String, String)> {
+        match item {
+            Value::String(text) => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some((trimmed.to_string(), trimmed.to_string()))
+                }
+            }
+            Value::Array(items) => {
+                let values = items.iter().filter_map(value_text).collect::<Vec<_>>();
+                if values.is_empty() {
+                    None
+                } else if values.len() == 1 {
+                    Some((values[0].clone(), values[0].clone()))
+                } else {
+                    Some((values[0].clone(), values[1].clone()))
+                }
+            }
+            Value::Object(object) => {
+                let type_id = pick_object_text(
+                    object,
+                    &[
+                        "type_id", "typeId", "tid", "id", "type", "tag", "cate_id", "a", "b",
+                    ],
+                );
+                let type_name = pick_object_text(
+                    object,
+                    &[
+                        "type_name",
+                        "typeName",
+                        "name",
+                        "title",
+                        "label",
+                        "text",
+                        "b",
+                        "a",
+                    ],
+                );
+                match (type_id, type_name) {
+                    (Some(id), Some(name)) => Some((id, name)),
+                    (Some(id), None) => Some((id.clone(), id)),
+                    (None, Some(name)) => Some((name.clone(), name)),
+                    (None, None) => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn summarize_vod_item(item: &Value) -> Option<(String, String)> {
+        match item {
+            Value::Array(items) => {
+                let values = items.iter().filter_map(value_text).collect::<Vec<_>>();
+                if values.is_empty() {
+                    None
+                } else {
+                    let name = values
+                        .iter()
+                        .find(|value| {
+                            !value.starts_with("http://") && !value.starts_with("https://")
+                        })
+                        .cloned()
+                        .unwrap_or_else(|| values[0].clone());
+                    let pic = values
+                        .iter()
+                        .find(|value| value.starts_with("http://") || value.starts_with("https://"))
+                        .cloned()
+                        .unwrap_or_default();
+                    Some((name, pic))
+                }
+            }
+            Value::Object(object) => {
+                let name = pick_object_text(
+                    object,
+                    &[
+                        "vod_name",
+                        "vodName",
+                        "name",
+                        "title",
+                        "vod_title",
+                        "c",
+                        "b",
+                    ],
+                )
+                .or_else(|| pick_object_text(object, &["vod_id", "vodId", "id", "sid", "a"]));
+                let pic = pick_object_text(
+                    object,
+                    &[
+                        "vod_pic", "vodPic", "pic", "img", "image", "cover", "thumb", "poster", "d",
+                    ],
+                )
+                .or_else(|| {
+                    ["image", "cover", "poster"].iter().find_map(|key| {
+                        object
+                            .get(*key)
+                            .and_then(Value::as_object)
+                            .and_then(|nested| {
+                                pick_object_text(nested, &["url", "thumb", "src", "image"])
+                            })
+                    })
+                })
+                .unwrap_or_default();
+                name.map(|resolved| (resolved, pic))
+            }
+            _ => None,
+        }
+    }
+
     let parsed: Value = serde_json::from_str(payload).map_err(|err| err.to_string())?;
     match parsed {
         Value::Object(map) => {
@@ -398,51 +559,52 @@ fn summarize_payload(payload: &str) -> Result<SpiderPayloadSummary, String> {
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
+            let class_summaries = class_items
+                .iter()
+                .filter_map(summarize_class_item)
+                .collect::<Vec<_>>();
+            let list_summaries = list_items
+                .iter()
+                .filter_map(summarize_vod_item)
+                .collect::<Vec<_>>();
+            let filter_object = map.get("filters").and_then(Value::as_object);
+            let fallback_filter_category =
+                filter_object.and_then(|items| items.keys().next().cloned());
 
-            let first_category_id = class_items
+            let first_category_id = class_summaries
                 .first()
-                .and_then(|item| item.get("type_id"))
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
-            let first_category_name = class_items
+                .map(|(type_id, _)| type_id.clone())
+                .or(fallback_filter_category.clone());
+            let first_category_name = class_summaries
                 .first()
-                .and_then(|item| item.get("type_name"))
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
+                .map(|(_, type_name)| type_name.clone())
+                .or(fallback_filter_category);
 
             Ok(SpiderPayloadSummary {
                 payload_kind: "object".to_string(),
                 class_count: class_items.len(),
                 list_count: list_items.len(),
-                filter_count: map
-                    .get("filters")
-                    .and_then(Value::as_object)
-                    .map(|items| items.len())
-                    .unwrap_or(0),
+                filter_count: filter_object.map(|items| items.len()).unwrap_or(0),
                 page: map.get("page").and_then(Value::as_i64),
                 page_count: map.get("pagecount").and_then(Value::as_i64),
                 total: map.get("total").and_then(Value::as_i64),
                 first_category_id,
                 first_category_name,
-                sample_class_names: class_items
+                sample_class_names: class_summaries
                     .iter()
-                    .filter_map(|item| item.get("type_name").and_then(Value::as_str))
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
+                    .map(|(_, type_name)| type_name.clone())
                     .take(5)
-                    .map(ToOwned::to_owned)
                     .collect(),
-                sample_vod_names: list_items
+                sample_vod_names: list_summaries
                     .iter()
-                    .filter_map(|item| item.get("vod_name").and_then(Value::as_str))
-                    .map(str::trim)
+                    .map(|(name, _)| name.clone())
+                    .take(5)
+                    .collect(),
+                sample_vod_pics: list_summaries
+                    .iter()
+                    .map(|(_, pic)| pic.clone())
                     .filter(|value| !value.is_empty())
                     .take(5)
-                    .map(ToOwned::to_owned)
                     .collect(),
             })
         }
@@ -458,6 +620,7 @@ fn summarize_payload(payload: &str) -> Result<SpiderPayloadSummary, String> {
             first_category_name: None,
             sample_class_names: Vec::new(),
             sample_vod_names: Vec::new(),
+            sample_vod_pics: Vec::new(),
         }),
         Value::String(text) => Ok(SpiderPayloadSummary {
             payload_kind: "string".to_string(),
@@ -471,6 +634,7 @@ fn summarize_payload(payload: &str) -> Result<SpiderPayloadSummary, String> {
             first_category_name: None,
             sample_class_names: Vec::new(),
             sample_vod_names: vec![preview_text(&text, 80)],
+            sample_vod_pics: Vec::new(),
         }),
         other => Ok(SpiderPayloadSummary {
             payload_kind: match other {
@@ -490,6 +654,7 @@ fn summarize_payload(payload: &str) -> Result<SpiderPayloadSummary, String> {
             first_category_name: None,
             sample_class_names: Vec::new(),
             sample_vod_names: Vec::new(),
+            sample_vod_pics: Vec::new(),
         }),
     }
 }
@@ -523,6 +688,293 @@ fn build_method_diagnostic(
     }
 }
 
+fn build_contract_method_diagnostic(
+    site_key: &str,
+    result: Result<NormalizedSpiderMethodResponse, String>,
+) -> SpiderMethodDiagnostic {
+    match result {
+        Ok(response) => {
+            let payload_summary = serde_json::to_string(&response.normalized_payload)
+                .ok()
+                .and_then(|payload| summarize_payload(&payload).ok());
+            SpiderMethodDiagnostic {
+                ok: true,
+                failure_kind: None,
+                failure_message: None,
+                execution_report: Some(response.report),
+                payload_summary,
+            }
+        }
+        Err(err) => {
+            let (failure_kind, _, _) = crate::spider_cmds_runtime::classify_spider_failure(&err);
+            SpiderMethodDiagnostic {
+                ok: false,
+                failure_kind: Some(failure_kind),
+                failure_message: Some(err),
+                execution_report: get_spider_execution_report(site_key.to_string()),
+                payload_summary: None,
+            }
+        }
+    }
+}
+
+fn value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+fn value_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => number.as_i64(),
+        Value::String(text) => text.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn object_text(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(value_text))
+}
+
+fn extract_first_vod_id_from_value(value: &Value) -> Option<String> {
+    let items = value
+        .as_object()
+        .and_then(|object| object.get("list"))
+        .and_then(Value::as_array)?;
+    items.iter().find_map(|item| match item {
+        Value::Object(object) => object_text(object, &["vod_id", "vodId", "id", "sid", "a"]),
+        Value::Array(parts) => parts.first().and_then(value_text),
+        _ => None,
+    })
+}
+
+fn extract_search_keyword_from_value(value: &Value) -> Option<String> {
+    let items = value
+        .as_object()
+        .and_then(|object| object.get("list"))
+        .and_then(Value::as_array)?;
+    items.iter().find_map(|item| match item {
+        Value::Object(object) => object_text(
+            object,
+            &[
+                "vod_name",
+                "vodName",
+                "name",
+                "title",
+                "vod_title",
+                "c",
+                "b",
+            ],
+        ),
+        Value::Array(parts) => parts.iter().find_map(value_text),
+        _ => None,
+    })
+}
+
+fn extract_first_vod_id_from_payload(payload: &str) -> Option<String> {
+    serde_json::from_str::<Value>(payload)
+        .ok()
+        .and_then(|value| extract_first_vod_id_from_value(&value))
+}
+
+fn extract_search_keyword_from_payload(payload: &str) -> Option<String> {
+    serde_json::from_str::<Value>(payload)
+        .ok()
+        .and_then(|value| extract_search_keyword_from_value(&value))
+}
+
+fn extract_header_keys(value: Option<&Value>) -> Vec<String> {
+    let mut keys = match value {
+        Some(Value::Object(object)) => object
+            .keys()
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty())
+            .collect::<Vec<_>>(),
+        Some(Value::String(text)) => serde_json::from_str::<Value>(text)
+            .ok()
+            .and_then(|parsed| match parsed {
+                Value::Object(object) => Some(
+                    object
+                        .keys()
+                        .map(|key| key.trim().to_string())
+                        .filter(|key| !key.is_empty())
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+fn summarize_player_payload_value(value: &Value) -> SpiderPlayerPayloadSummary {
+    match value {
+        Value::Object(object) => {
+            let mut payload_keys = object.keys().cloned().collect::<Vec<_>>();
+            payload_keys.sort();
+            let mut header_keys = extract_header_keys(object.get("headers"));
+            header_keys.extend(extract_header_keys(object.get("header")));
+            header_keys.sort();
+            header_keys.dedup();
+
+            SpiderPlayerPayloadSummary {
+                payload_kind: "object".to_string(),
+                payload_keys,
+                url: object_text(object, &["url", "playUrl", "parseUrl"]),
+                parse: object.get("parse").and_then(value_i64),
+                jx: object.get("jx").and_then(value_i64),
+                header_keys,
+            }
+        }
+        Value::Array(_) => SpiderPlayerPayloadSummary {
+            payload_kind: "array".to_string(),
+            payload_keys: Vec::new(),
+            url: None,
+            parse: None,
+            jx: None,
+            header_keys: Vec::new(),
+        },
+        Value::String(text) => SpiderPlayerPayloadSummary {
+            payload_kind: "string".to_string(),
+            payload_keys: Vec::new(),
+            url: Some(preview_text(text, 120)),
+            parse: None,
+            jx: None,
+            header_keys: Vec::new(),
+        },
+        Value::Bool(_) => SpiderPlayerPayloadSummary {
+            payload_kind: "bool".to_string(),
+            payload_keys: Vec::new(),
+            url: None,
+            parse: None,
+            jx: None,
+            header_keys: Vec::new(),
+        },
+        Value::Number(number) => SpiderPlayerPayloadSummary {
+            payload_kind: "number".to_string(),
+            payload_keys: Vec::new(),
+            url: Some(number.to_string()),
+            parse: None,
+            jx: None,
+            header_keys: Vec::new(),
+        },
+        Value::Null => SpiderPlayerPayloadSummary {
+            payload_kind: "null".to_string(),
+            payload_keys: Vec::new(),
+            url: None,
+            parse: None,
+            jx: None,
+            header_keys: Vec::new(),
+        },
+    }
+}
+
+fn extract_first_play_target_from_detail_value(value: &Value) -> Option<(String, String, String)> {
+    let detail = value
+        .as_object()
+        .and_then(|object| object.get("list"))
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(Value::as_object)?;
+
+    let play_from = object_text(detail, &["vod_play_from", "vodPlayFrom", "playFrom"])?;
+    let play_url = object_text(detail, &["vod_play_url", "vodPlayUrl", "playUrl"])?;
+    let route_names = play_from.split("$$$").map(str::trim).collect::<Vec<_>>();
+
+    for (index, raw_group) in play_url.split("$$$").enumerate() {
+        let route_name = route_names
+            .get(index)
+            .copied()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("默认线路");
+        for entry in raw_group
+            .split('#')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let split_at = entry.find('$');
+            let (episode_title, episode_id) = match split_at {
+                Some(position) => {
+                    let title = entry[..position].trim();
+                    let id = entry[position + 1..].trim();
+                    (if title.is_empty() { "未命名" } else { title }, id)
+                }
+                None => ("未命名", entry),
+            };
+            if !episode_id.is_empty() {
+                return Some((
+                    route_name.to_string(),
+                    episode_title.to_string(),
+                    episode_id.to_string(),
+                ));
+            }
+        }
+    }
+
+    None
+}
+
+fn fallback_search_keyword(site: &SpiderSiteInventoryItem) -> Option<String> {
+    [site.name.trim(), site.key.trim()]
+        .into_iter()
+        .find(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn build_player_diagnostic(
+    site_key: &str,
+    flag: String,
+    episode_title: String,
+    episode_id: String,
+    result: Result<NormalizedSpiderMethodResponse, String>,
+) -> SpiderPlayerDiagnostic {
+    match result {
+        Ok(response) => {
+            let payload_summary = summarize_player_payload_value(&response.normalized_payload);
+            SpiderPlayerDiagnostic {
+                flag,
+                episode_title,
+                episode_id,
+                ok: true,
+                failure_kind: None,
+                failure_message: None,
+                execution_report: Some(response.report),
+                raw_payload: Some(response.raw_payload),
+                normalized_payload: Some(response.normalized_payload),
+                payload_summary: Some(payload_summary),
+            }
+        }
+        Err(err) => {
+            let (failure_kind, _, _) = crate::spider_cmds_runtime::classify_spider_failure(&err);
+            SpiderPlayerDiagnostic {
+                flag,
+                episode_title,
+                episode_id,
+                ok: false,
+                failure_kind: Some(failure_kind),
+                failure_message: Some(err),
+                execution_report: get_spider_execution_report(site_key.to_string()),
+                raw_payload: None,
+                normalized_payload: None,
+                payload_summary: None,
+            }
+        }
+    }
+}
+
 fn pick_first_category_id(
     site: &SpiderSiteInventoryItem,
     home: &SpiderMethodDiagnostic,
@@ -543,8 +995,12 @@ async fn diagnose_selected_site(
         site.ext_input.clone()
     };
 
-    let prefetch =
-        crate::spider_cmds::prefetch_spider_jar(app.clone(), site.spider_url.clone()).await;
+    let prefetch = crate::spider_cmds::prefetch_spider_jar(
+        app.clone(),
+        site.spider_url.clone(),
+        Some(site.api_class.clone()),
+    )
+    .await;
     let (prefetch_result, prefetch_error) = match prefetch {
         Ok(result) => (Some(result), None),
         Err(err) => (None, Some(err)),
@@ -558,6 +1014,9 @@ async fn diagnose_selected_site(
             profile: None,
             home: None,
             category: None,
+            search: None,
+            detail: None,
+            player: None,
         };
     }
 
@@ -578,23 +1037,117 @@ async fn diagnose_selected_site(
         ext_input.clone(),
     )
     .await;
+    let home_search_keyword = home_result
+        .as_ref()
+        .ok()
+        .and_then(|payload| extract_search_keyword_from_payload(payload));
+    let home_detail_id = home_result
+        .as_ref()
+        .ok()
+        .and_then(|payload| extract_first_vod_id_from_payload(payload));
     let home = build_method_diagnostic(&site.key, home_result);
 
-    let category = if let Some(first_tid) = pick_first_category_id(&site, &home) {
-        let result = crate::spider_cmds::spider_category(
-            app.clone(),
-            site.spider_url.clone(),
-            site.key.clone(),
-            site.api_class.clone(),
-            ext_input,
-            first_tid,
-            1,
+    let category_result = if let Some(first_tid) = pick_first_category_id(&site, &home) {
+        Some(
+            crate::spider_cmds::spider_category(
+                app.clone(),
+                site.spider_url.clone(),
+                site.key.clone(),
+                site.api_class.clone(),
+                ext_input.clone(),
+                first_tid,
+                1,
+            )
+            .await,
         )
-        .await;
-        Some(build_method_diagnostic(&site.key, result))
     } else {
         None
     };
+    let category_search_keyword = category_result
+        .as_ref()
+        .and_then(|result| result.as_ref().ok())
+        .and_then(|payload| extract_search_keyword_from_payload(payload));
+    let category_detail_id = category_result
+        .as_ref()
+        .and_then(|result| result.as_ref().ok())
+        .and_then(|payload| extract_first_vod_id_from_payload(payload));
+    let category = category_result.map(|result| build_method_diagnostic(&site.key, result));
+
+    let search_keyword = if site.searchable {
+        home_search_keyword
+            .or(category_search_keyword)
+            .or_else(|| fallback_search_keyword(&site))
+    } else {
+        None
+    };
+    let search_result = if let Some(keyword) = search_keyword {
+        Some(
+            crate::spider_cmds::spider_search_v2(
+                app.clone(),
+                site.spider_url.clone(),
+                site.key.clone(),
+                site.api_class.clone(),
+                ext_input.clone(),
+                keyword,
+                site.quick_search,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    let search_detail_id = search_result
+        .as_ref()
+        .and_then(|result| result.as_ref().ok())
+        .and_then(|response| extract_first_vod_id_from_value(&response.normalized_payload));
+    let search = search_result.map(|result| build_contract_method_diagnostic(&site.key, result));
+
+    let detail_result = category_detail_id
+        .or(home_detail_id)
+        .or(search_detail_id)
+        .map(|vod_id| {
+            crate::spider_cmds::spider_detail_v2(
+                app.clone(),
+                site.spider_url.clone(),
+                site.key.clone(),
+                site.api_class.clone(),
+                ext_input.clone(),
+                vec![vod_id],
+            )
+        });
+    let detail_result = if let Some(result) = detail_result {
+        Some(result.await)
+    } else {
+        None
+    };
+    let player = if let Some(Ok(detail_response)) = detail_result.as_ref() {
+        if let Some((flag, episode_title, episode_id)) =
+            extract_first_play_target_from_detail_value(&detail_response.normalized_payload)
+        {
+            Some(build_player_diagnostic(
+                &site.key,
+                flag.clone(),
+                episode_title.clone(),
+                episode_id.clone(),
+                crate::spider_cmds::spider_player_v2(
+                    app.clone(),
+                    site.spider_url.clone(),
+                    site.key.clone(),
+                    site.api_class.clone(),
+                    ext_input.clone(),
+                    flag,
+                    episode_id,
+                    Vec::new(),
+                )
+                .await,
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let detail = detail_result.map(|result| build_contract_method_diagnostic(&site.key, result));
 
     SpiderSiteDiagnostic {
         site,
@@ -603,6 +1156,9 @@ async fn diagnose_selected_site(
         profile: Some(profile),
         home: Some(home),
         category,
+        search,
+        detail,
+        player,
     }
 }
 
@@ -684,8 +1240,9 @@ pub async fn spider_diagnose_source(
 #[cfg(test)]
 mod tests {
     use super::{
-        jar_contains_entry, parse_repo_inventory, parse_site_inventory, repo_matches_selector,
-        site_matches_selector, summarize_payload, SpiderRepoInventoryItem, SpiderSiteInventoryItem,
+        extract_first_play_target_from_detail_value, jar_contains_entry, parse_repo_inventory,
+        parse_site_inventory, repo_matches_selector, site_matches_selector, summarize_payload,
+        summarize_player_payload_value, SpiderRepoInventoryItem, SpiderSiteInventoryItem,
     };
     use serde_json::json;
     use std::io::Write;
@@ -820,5 +1377,66 @@ mod tests {
         assert_eq!(summary.first_category_id.as_deref(), Some("movie"));
         assert_eq!(summary.sample_class_names, vec!["电影", "电视剧"]);
         assert_eq!(summary.sample_vod_names, vec!["第一部", "第二部"]);
+    }
+
+    #[test]
+    fn extracts_first_player_target_from_normalized_detail_payload() {
+        let payload = json!({
+            "list": [{
+                "vod_play_from": "线路A$$$线路B",
+                "vod_play_url": "第1集$play-1#第2集$play-2$$$备用$play-b"
+            }]
+        });
+
+        let target = extract_first_play_target_from_detail_value(&payload).unwrap();
+        assert_eq!(
+            target,
+            (
+                "线路A".to_string(),
+                "第1集".to_string(),
+                "play-1".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn summarizes_player_payload_headers_and_flags() {
+        let payload = json!({
+            "url": "https://media.example.com/live.m3u8",
+            "parse": 1,
+            "jx": "0",
+            "headers": {
+                "User-Agent": "Halo",
+                "Referer": "https://example.com"
+            },
+            "header": "{\"X-Test\":\"1\"}"
+        });
+
+        let summary = summarize_player_payload_value(&payload);
+        assert_eq!(summary.payload_kind, "object");
+        assert_eq!(
+            summary.payload_keys,
+            vec![
+                "header".to_string(),
+                "headers".to_string(),
+                "jx".to_string(),
+                "parse".to_string(),
+                "url".to_string()
+            ]
+        );
+        assert_eq!(
+            summary.url.as_deref(),
+            Some("https://media.example.com/live.m3u8")
+        );
+        assert_eq!(summary.parse, Some(1));
+        assert_eq!(summary.jx, Some(0));
+        assert_eq!(
+            summary.header_keys,
+            vec![
+                "Referer".to_string(),
+                "User-Agent".to_string(),
+                "X-Test".to_string()
+            ]
+        );
     }
 }

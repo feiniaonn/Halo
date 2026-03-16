@@ -97,9 +97,15 @@ fn collect_java_home_candidates(app: &AppHandle) -> Vec<PathBuf> {
 
 fn normalize_java_home(candidate: &Path) -> Option<PathBuf> {
     if candidate.is_file() {
-        let file_name = candidate.file_name()?.to_string_lossy().to_ascii_lowercase();
+        let file_name = candidate
+            .file_name()?
+            .to_string_lossy()
+            .to_ascii_lowercase();
         if file_name == java_binary_name().to_ascii_lowercase() {
-            return candidate.parent().and_then(Path::parent).map(Path::to_path_buf);
+            return candidate
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf);
         }
     }
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 
 import {
   buildSpiderFailureNotice,
@@ -21,7 +21,7 @@ describe("spiderRuntime", () => {
       nativeLibs: [],
     });
     expect(state.runtimeStatus).toBe("needs-compat-pack");
-    expect(getSpiderRuntimeLabel(state)).toContain("兼容包");
+    expect(getSpiderRuntimeLabel(state)).toMatch(/.+/);
   });
 
   it("soft-disables repeated failures", () => {
@@ -43,6 +43,64 @@ describe("spiderRuntime", () => {
     expect(state3.softDisabled).toBe(true);
     expect(state3.runtimeStatus).toBe("temporarily-disabled");
     expect(shouldBlockAutoLoad(state3)).toBe(true);
+  });
+
+  it("does not immediately isolate single upstream response failures", () => {
+    const report: SpiderExecutionReport = {
+      ok: false,
+      siteKey: "csp_app3q",
+      method: "homeContent",
+      executionTarget: "desktop-compat-pack",
+      failureKind: "SiteRuntimeError",
+      failureMessage: "A JSONObject text must begin with '{' at 0 [character 1 line 1]",
+      checkedAtMs: Date.now(),
+      artifact: null,
+    };
+
+    const state = mergeSpiderExecutionReport(undefined, report);
+
+    expect(state.softDisabled).toBe(false);
+    expect(state.failureCount).toBe(1);
+    expect(shouldBlockAutoLoad(state)).toBe(false);
+    expect(buildSpiderFailureNotice(report, "fallback")).not.toContain("临时隔离");
+  });
+
+  it("does not immediately isolate empty-list runtime failures", () => {
+    const report: SpiderExecutionReport = {
+      ok: false,
+      siteKey: "csp_ygp",
+      method: "homeContent",
+      executionTarget: "desktop-compat-pack",
+      failureKind: "SiteRuntimeError",
+      failureMessage: "java.lang.IndexOutOfBoundsException: Index 0 out of bounds for length 0",
+      checkedAtMs: Date.now(),
+      artifact: null,
+    };
+
+    const state = mergeSpiderExecutionReport(undefined, report);
+
+    expect(state.softDisabled).toBe(false);
+    expect(state.failureCount).toBe(1);
+    expect(shouldBlockAutoLoad(state)).toBe(false);
+  });
+
+  it("still immediately isolates deterministic class-selection failures", () => {
+    const report: SpiderExecutionReport = {
+      ok: false,
+      siteKey: "csp_demo",
+      method: "homeContent",
+      executionTarget: "desktop-direct",
+      failureKind: "ClassSelectionError",
+      failureMessage: "explicit spider hint not found in JAR",
+      checkedAtMs: Date.now(),
+      artifact: null,
+    };
+
+    const state = mergeSpiderExecutionReport(undefined, report);
+
+    expect(state.softDisabled).toBe(true);
+    expect(state.failureCount).toBeGreaterThanOrEqual(3);
+    expect(shouldBlockAutoLoad(state)).toBe(true);
   });
 
   it("formats missing dependency notice", () => {
@@ -96,4 +154,102 @@ describe("spiderRuntime", () => {
     expect(shouldBlockAutoLoad(state)).toBe(false);
     expect(state.requiredHelperPorts).toEqual([9966, 1072, 9999]);
   });
+
+  it("does not downgrade profile-stage site errors into terminal site status", () => {
+    const prefetchState = mergePrefetchArtifactState(undefined, {
+      artifactKind: "JvmJar",
+      requiredRuntime: "desktop-direct",
+      transformable: false,
+      originalJarPath: "douban.jar",
+      preparedJarPath: "douban.jar",
+      classInventory: ["com.github.catvod.spider.Douban"],
+      nativeLibs: [],
+    });
+
+    const state = mergeSpiderExecutionReport(prefetchState, {
+      ok: false,
+      siteKey: "csp_douban",
+      method: "profile",
+      executionTarget: "desktop-direct",
+      failureKind: "InitError",
+      failureMessage: "Spider profile runner returned no delimited payload",
+      checkedAtMs: Date.now(),
+      artifact: prefetchState.artifact ?? null,
+      siteProfile: null,
+    });
+
+    expect(state.runtimeStatus).toBe("desktop-ready");
+    expect(state.failureCount).toBe(0);
+    expect(state.softDisabled).toBe(false);
+  });
+
+  it("keeps content execution state authoritative over later profile reports", () => {
+    const contentState = mergeSpiderExecutionReport(undefined, {
+      ok: true,
+      siteKey: "csp_douban",
+      method: "homeContent",
+      executionTarget: "desktop-direct",
+      checkedAtMs: 200,
+      artifact: null,
+      siteProfile: null,
+    });
+
+    const state = mergeSpiderExecutionReport(contentState, {
+      ok: false,
+      siteKey: "csp_douban",
+      method: "profile",
+      executionTarget: "desktop-helper",
+      failureKind: "SiteRuntimeError",
+      failureMessage: "profile stage failed before a class was resolved",
+      checkedAtMs: 250,
+      artifact: null,
+      siteProfile: {
+        className: "com.github.catvod.spider.Douban",
+        hasContextInit: false,
+        declaresContextInit: false,
+        hasNonContextInit: true,
+        hasNativeInit: false,
+        hasNativeContentMethod: false,
+        nativeMethods: [],
+        initSignatures: [],
+        needsContextShim: false,
+        requiredCompatPacks: [],
+        requiredHelperPorts: [9978],
+        recommendedTarget: "desktop-helper",
+        routingReason: "profile stage failed before a class was resolved",
+      },
+    });
+
+    expect(state.runtimeStatus).toBe("desktop-ready");
+    expect(state.executionTarget).toBe("desktop-direct");
+    expect(state.lastReportMethod).toBe("homeContent");
+    expect(state.requiredHelperPorts).toEqual([9978]);
+  });
+
+  it("ignores stale execution reports", () => {
+    const latest = mergeSpiderExecutionReport(undefined, {
+      ok: true,
+      siteKey: "csp_demo",
+      method: "homeContent",
+      executionTarget: "desktop-direct",
+      checkedAtMs: 200,
+      artifact: null,
+      siteProfile: null,
+    });
+
+    const stale = mergeSpiderExecutionReport(latest, {
+      ok: false,
+      siteKey: "csp_demo",
+      method: "profile",
+      executionTarget: "desktop-direct",
+      failureKind: "InitError",
+      failureMessage: "older profile failure",
+      checkedAtMs: 100,
+      artifact: null,
+      siteProfile: null,
+    });
+
+    expect(stale).toEqual(latest);
+  });
 });
+

@@ -20,12 +20,21 @@ release-artifacts
 # Local scratch data
 temp
 tmp
+tmp_*
 *.tmp
 *.bak
 *.cache
 *.db
 *.sqlite
 *.sqlite3
+*.diff
+diff.txt
+diff2.txt
+dummy.html
+mpv_log.txt
+tsc_output.txt
+vlc-help.txt
+temp_apprj_parse.js
 
 # Tauri / Rust
 src-tauri/.cargo
@@ -33,6 +42,13 @@ src-tauri/.rustup
 src-tauri/gen/schemas/desktop-schema.json
 src-tauri/gen/schemas/windows-schema.json
 src-tauri/resources/java/windows-*/
+src-tauri/resources/mpv/
+src-tauri/resources/vlc/
+src-tauri/lib/
+src-tauri/build_error.txt
+src-tauri/spider-bridge/bridge.jar
+src-tauri/spider-bridge/classes/
+src-tauri/spider-bridge/javac_log.txt
 
 # Editor directories and files
 .vscode/*
@@ -44,3 +60,36 @@ src-tauri/resources/java/windows-*/
 *.njsproj
 *.sln
 *.sw?
+
+# Local workspace / agent files
+.codex/
+.openclaw/
+.playwright-cli/
+AGENTS.md
+BOOTSTRAP.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
+MEMORY.md
+memory/
+plans/
+
+# Research / scratch outputs
+apk/
+apk/work/
+docs/github_origin_snapshot/
+docs/CMS单仓样本.json
+docs/其他Ai搜寻的网络资源.md
+docs/总测试报告.md
+docs/所有源.txt
+docs/点播模块优化执行提示.md
+docs/计划.md
+docs/豆包-removebg-preview.png
+javac_log.txt
+findings.md
+progress.md
+task_plan.md
+docs/log_txt.md
+src/components/test_write_probe.txt

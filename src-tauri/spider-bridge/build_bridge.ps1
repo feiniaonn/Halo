@@ -5,8 +5,44 @@ param (
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SrcDir = Join-Path $ProjectRoot "src"
 $LibsDir = Join-Path (Split-Path $ProjectRoot) "resources\jar\libs"
-$ClassesDir = Join-Path $ProjectRoot "classes"
-$OutputJar = Join-Path $ProjectRoot "bridge.jar"
+$BuildRoot = Join-Path (Split-Path $ProjectRoot) "target\bridge-build"
+$ClassesDir = Join-Path $BuildRoot "classes"
+$OutputJar = Join-Path $BuildRoot "bridge.jar"
+$SourcesFile = Join-Path $BuildRoot "sources.txt"
+$JavacLog = Join-Path $BuildRoot "javac_log.txt"
+
+function Ensure-Directory {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+}
+
+function Sync-FileIfChanged {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    Ensure-Directory -Path (Split-Path $Destination -Parent)
+
+    if (Test-Path $Destination) {
+        $SourceHash = (Get-FileHash -Path $Source -Algorithm SHA256).Hash
+        $DestinationHash = (Get-FileHash -Path $Destination -Algorithm SHA256).Hash
+        if ($SourceHash -eq $DestinationHash) {
+            return $false
+        }
+    }
+
+    Copy-Item -Path $Source -Destination $Destination -Force
+    return $true
+}
 
 function Resolve-BundledJavaTool {
     param (
@@ -45,12 +81,27 @@ function Resolve-BundledJavaTool {
 
 Write-Host "Rebuilding Spider Bridge..." -ForegroundColor Cyan
 
+Ensure-Directory -Path $BuildRoot
+
+# Cleanup legacy generated files under watched directories.
+$LegacyGeneratedPaths = @(
+    (Join-Path $ProjectRoot "classes"),
+    (Join-Path $ProjectRoot "sources.txt"),
+    (Join-Path $ProjectRoot "javac_log.txt"),
+    (Join-Path (Split-Path $ProjectRoot) "javac_log.txt")
+)
+foreach ($LegacyPath in $LegacyGeneratedPaths) {
+    if (Test-Path $LegacyPath) {
+        Remove-Item -Path $LegacyPath -Recurse -Force
+    }
+}
+
 # 1. Clean previous build
 Write-Host "-> Cleaning old classes..."
 if (Test-Path $ClassesDir) {
     Remove-Item -Path $ClassesDir -Recurse -Force
 }
-New-Item -ItemType Directory -Path $ClassesDir | Out-Null
+Ensure-Directory -Path $ClassesDir
 
 # 2. Gather Java files
 Write-Host "-> Discovering source files..."
@@ -61,7 +112,6 @@ if ($JavaFiles.Count -eq 0) {
     exit 1
 }
 
-$SourcesFile = Join-Path $ProjectRoot "sources.txt"
 $JavaFiles -join [Environment]::NewLine | Out-File -FilePath $SourcesFile -Encoding ASCII
 
 # 3. Gather libraries for classpath
@@ -82,16 +132,24 @@ $ClassPath = $Jars -join ";"
 # 4. Compile
 Write-Host "-> Compiling $($JavaFiles.Count) Java files..."
 $PreviousErrorAction = $ErrorActionPreference
+$HadNativeErrorPreference = Test-Path Variable:PSNativeCommandUseErrorActionPreference
+if ($HadNativeErrorPreference) {
+    $PreviousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+}
 $ErrorActionPreference = "Continue"
+$PSNativeCommandUseErrorActionPreference = $false
 $JavacExe = Resolve-BundledJavaTool -ToolName "javac.exe"
 
 if ($VerboseOutput) {
-    & $JavacExe -cp $ClassPath -d $ClassesDir -encoding UTF-8 "@$SourcesFile" -verbose > javac_log.txt 2>&1
+    & $JavacExe -cp $ClassPath -d $ClassesDir -encoding UTF-8 "@$SourcesFile" -verbose > $JavacLog 2>&1
 } else {
-    & $JavacExe -cp $ClassPath -d $ClassesDir -encoding UTF-8 "@$SourcesFile" > javac_log.txt 2>&1
+    & $JavacExe -cp $ClassPath -d $ClassesDir -encoding UTF-8 "@$SourcesFile" > $JavacLog 2>&1
 }
 
 $ErrorActionPreference = $PreviousErrorAction
+if ($HadNativeErrorPreference) {
+    $PSNativeCommandUseErrorActionPreference = $PreviousNativeErrorPreference
+}
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Compilation failed! (Exit Code: $LASTEXITCODE)" -ForegroundColor Red
@@ -121,8 +179,12 @@ $Targets = @(
 
 foreach ($Target in $Targets) {
     if (Test-Path $Target) {
-        Copy-Item -Path $OutputJar -Destination $Target -Force
-        Write-Host "   Copied to: $Target"
+        $DestinationJar = Join-Path $Target "bridge.jar"
+        if (Sync-FileIfChanged -Source $OutputJar -Destination $DestinationJar) {
+            Write-Host "   Copied to: $Target"
+        } else {
+            Write-Host "   Up to date: $Target"
+        }
     }
 }
 

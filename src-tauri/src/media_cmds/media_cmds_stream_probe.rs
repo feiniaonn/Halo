@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::{apply_request_headers, build_client, resolve_media_request};
+use super::{apply_request_headers, build_transport_client, resolve_media_request};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StreamProbeResult {
@@ -25,10 +25,14 @@ fn detect_kind_from_url(url: &str) -> Option<&'static str> {
     let lower = url.to_ascii_lowercase();
     if lower.contains(".m3u8") {
         Some("hls")
+    } else if lower.contains(".mpd") {
+        Some("dash")
     } else if lower.contains(".mp4") {
         Some("mp4")
     } else if lower.contains(".flv") {
         Some("flv")
+    } else if lower.contains(".ts") || lower.contains(".m2ts") {
+        Some("mpegts")
     } else {
         None
     }
@@ -42,10 +46,14 @@ fn detect_kind_from_content_type(content_type: &str) -> Option<&'static str> {
         || lower.contains("application/octet-stream+m3u8")
     {
         Some("hls")
+    } else if lower.contains("application/dash+xml") {
+        Some("dash")
     } else if lower.contains("video/mp4") {
         Some("mp4")
     } else if lower.contains("video/x-flv") || lower.contains("video/flv") {
         Some("flv")
+    } else if lower.contains("video/mp2t") {
+        Some("mpegts")
     } else {
         None
     }
@@ -66,6 +74,17 @@ fn detect_kind_from_bytes(bytes: &[u8]) -> Option<&'static str> {
     if bytes.len() >= 12 && bytes[4..8] == [0x66, 0x74, 0x79, 0x70] {
         return Some("mp4");
     }
+    if bytes.len() >= 5
+        && bytes.starts_with(b"<?xml")
+        && bytes
+            .windows(4)
+            .any(|window| window.eq_ignore_ascii_case(b"mpd"))
+    {
+        return Some("dash");
+    }
+    if bytes.len() >= 376 && bytes[0] == 0x47 && bytes[188] == 0x47 {
+        return Some("mpegts");
+    }
     None
 }
 
@@ -83,7 +102,7 @@ pub async fn probe_stream_kind(
         result.kind = kind.to_string();
     }
 
-    let client = build_client()?;
+    let client = build_transport_client(&resolved, true, std::time::Duration::from_secs(10))?;
 
     let head_req = apply_request_headers(client.head(&resolved.url), &resolved.headers);
 
@@ -161,6 +180,11 @@ mod tests {
         );
         assert_eq!(detect_kind_from_content_type("video/mp4"), Some("mp4"));
         assert_eq!(detect_kind_from_content_type("video/x-flv"), Some("flv"));
+        assert_eq!(
+            detect_kind_from_content_type("application/dash+xml"),
+            Some("dash")
+        );
+        assert_eq!(detect_kind_from_content_type("video/mp2t"), Some("mpegts"));
     }
 
     #[test]

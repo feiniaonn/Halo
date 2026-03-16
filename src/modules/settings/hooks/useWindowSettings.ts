@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useRef } from "react";
-import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
-import { setCloseBehavior, setLaunchAtLogin, setMiniRestoreMode } from "@/modules/settings/services/settingsService";
-import type { CloseBehavior, MiniRestoreMode } from "@/modules/settings/types/settings.types";
-import type { AppSettingsResponse } from "@/modules/settings/types/settings.types";
+import {
+  disable as disableAutostart,
+  enable as enableAutostart,
+  isEnabled as isAutostartEnabled,
+} from "@tauri-apps/plugin-autostart";
+import {
+  setCloseBehavior,
+  setLaunchAtLogin,
+  setMiniModeSize,
+  setMiniRestoreMode,
+} from "@/modules/settings/services/settingsService";
 import { SETTINGS_MESSAGES } from "@/modules/settings/constants";
+import { reportRuntimeError } from "@/modules/shared/services/runtimeError";
+import type { AppSettingsResponse, CloseBehavior, MiniRestoreMode } from "@/modules/settings/types/settings.types";
 
 export function useWindowSettings({
   isTauri,
@@ -12,6 +21,7 @@ export function useWindowSettings({
   formatErrorMessage,
   setStorageMessage,
   onMiniRestoreModeChange,
+  onMiniModeSizeChange,
 }: {
   isTauri: boolean;
   settings: AppSettingsResponse | null;
@@ -19,6 +29,7 @@ export function useWindowSettings({
   formatErrorMessage: (error: unknown) => string;
   setStorageMessage: React.Dispatch<React.SetStateAction<string | null>>;
   onMiniRestoreModeChange?: (mode: MiniRestoreMode) => void;
+  onMiniModeSizeChange?: (width: number, height: number) => void;
 }) {
   const hasSyncedAutostart = useRef(false);
 
@@ -31,8 +42,9 @@ export function useWindowSettings({
           await setLaunchAtLogin(enabled);
           setSettings((prev) => (prev ? { ...prev, launch_at_login: enabled } : prev));
         }
-        hasSyncedAutostart.current = true;
       } catch {
+        // Ignore auto-sync mismatches and avoid noisy startup dialogs.
+      } finally {
         hasSyncedAutostart.current = true;
       }
     };
@@ -51,9 +63,15 @@ export function useWindowSettings({
       }
       await setLaunchAtLogin(enabled);
       setSettings((prev) => (prev ? { ...prev, launch_at_login: enabled } : prev));
-    } catch (e) {
-      console.error(e);
-      setStorageMessage(`${SETTINGS_MESSAGES.launchAtLoginFailed}：${formatErrorMessage(e)}`);
+    } catch (error) {
+      reportRuntimeError({
+        title: "Failed to update launch-at-login",
+        summary: "Launch-at-login setting could not be updated.",
+        error,
+        source: "settings.window.launch-at-login",
+      });
+      console.error(error);
+      setStorageMessage(`${SETTINGS_MESSAGES.launchAtLoginFailed}锛?{formatErrorMessage(error)}`);
     }
   }, [formatErrorMessage, isTauri, setSettings, setStorageMessage, settings]);
 
@@ -62,9 +80,15 @@ export function useWindowSettings({
     try {
       await setCloseBehavior(behavior);
       setSettings((prev) => (prev ? { ...prev, close_behavior: behavior } : prev));
-    } catch (e) {
-      console.error(e);
-      setStorageMessage(`${SETTINGS_MESSAGES.closeBehaviorFailed}：${formatErrorMessage(e)}`);
+    } catch (error) {
+      reportRuntimeError({
+        title: "Failed to update close behavior",
+        summary: "Window close behavior could not be updated.",
+        error,
+        source: "settings.window.close-behavior",
+      });
+      console.error(error);
+      setStorageMessage(`${SETTINGS_MESSAGES.closeBehaviorFailed}锛?{formatErrorMessage(error)}`);
     }
   }, [formatErrorMessage, setSettings, setStorageMessage, settings]);
 
@@ -74,15 +98,41 @@ export function useWindowSettings({
       await setMiniRestoreMode(mode);
       setSettings((prev) => (prev ? { ...prev, mini_restore_mode: mode } : prev));
       onMiniRestoreModeChange?.(mode);
-    } catch (e) {
-      console.error(e);
-      setStorageMessage(`${SETTINGS_MESSAGES.miniRestoreModeFailed}：${formatErrorMessage(e)}`);
+    } catch (error) {
+      reportRuntimeError({
+        title: "Failed to update mini restore mode",
+        summary: "Mini-window restore mode could not be updated.",
+        error,
+        source: "settings.window.mini-restore-mode",
+      });
+      console.error(error);
+      setStorageMessage(`${SETTINGS_MESSAGES.miniRestoreModeFailed}锛?{formatErrorMessage(error)}`);
     }
   }, [formatErrorMessage, onMiniRestoreModeChange, setSettings, setStorageMessage, settings]);
+
+  const handleMiniModeSize = useCallback(async (width: number, height: number) => {
+    if (!settings) return;
+    try {
+      await setMiniModeSize(width, height);
+      setSettings((prev) => (prev ? { ...prev, mini_mode_width: width, mini_mode_height: height } : prev));
+      onMiniModeSizeChange?.(width, height);
+    } catch (error) {
+      reportRuntimeError({
+        title: "Failed to update mini window size",
+        summary: "Mini-window size could not be updated.",
+        error,
+        source: "settings.window.mini-size",
+      });
+      console.error(error);
+      setStorageMessage(`璁剧疆杩蜂綘绐楀彛澶у皬澶辫触锛?{formatErrorMessage(error)}`);
+    }
+  }, [formatErrorMessage, setSettings, setStorageMessage, settings]);
 
   return {
     handleLaunchAtLogin,
     handleCloseBehavior,
     handleMiniRestoreMode,
+    handleMiniModeSize,
   };
 }
+

@@ -3,7 +3,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::{apply_request_headers, build_client, build_rescue_client, resolve_media_request};
+use super::{
+    apply_request_headers, build_client, build_rescue_client, build_rescue_transport_client,
+    build_transport_client, resolve_media_request,
+};
 
 #[path = "media_cmds_hls_manifest.rs"]
 mod media_cmds_hls_manifest;
@@ -820,7 +823,7 @@ fn apply_hls_like_headers(
     force_identity_encoding: bool,
 ) -> reqwest::RequestBuilder {
     let b = builder
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
         .header("Accept", "*/*")
         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         .header("Cache-Control", "no-cache")
@@ -935,8 +938,15 @@ async fn fetch_segment_bytes_once(
     force_identity_encoding: bool,
 ) -> Result<Vec<u8>, String> {
     let resolved = resolve_media_request(url, headers.clone());
+    let request_client =
+        if force_close || force_identity_encoding || resolved.matched_proxy_rule.is_some() {
+            build_rescue_transport_client(&resolved, true, Duration::from_secs(15))?
+        } else {
+            build_transport_client(&resolved, true, Duration::from_secs(15))
+                .unwrap_or_else(|_| client.clone())
+        };
     let mut builder = apply_hls_like_headers(
-        client.get(&resolved.url),
+        request_client.get(&resolved.url),
         &resolved.url,
         force_close,
         force_identity_encoding,

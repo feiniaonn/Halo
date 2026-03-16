@@ -14,16 +14,26 @@ export function SettingsPage({
   bgType = 'none',
   bgFsPath,
   bgBlur = 12,
+  miniRestoreMode,
+  miniModeWidth,
+  miniModeHeight,
   onBgChange,
   onBgBlurChange,
   onMiniRestoreModeChange,
+  onMiniModeWidthChange,
+  onMiniModeHeightChange,
 }: {
   bgType?: 'none' | 'image' | 'video';
   bgFsPath?: string | null;
   bgBlur?: number;
+  miniRestoreMode?: MiniRestoreMode;
+  miniModeWidth?: number;
+  miniModeHeight?: number;
   onBgChange?: (type: 'none' | 'image' | 'video', path: string | null) => void;
   onBgBlurChange?: (blur: number) => void;
   onMiniRestoreModeChange?: (mode: MiniRestoreMode) => void;
+  onMiniModeWidthChange?: (width: number) => void;
+  onMiniModeHeightChange?: (height: number) => void;
 }) {
   const {
     updater,
@@ -54,6 +64,7 @@ export function SettingsPage({
     handleLaunchAtLogin,
     handleCloseBehavior,
     handleMiniRestoreMode,
+    handleMiniModeSize,
     handleChooseFolder,
     handleRestoreDefaultStorage,
     handleStartMigration,
@@ -63,9 +74,14 @@ export function SettingsPage({
     bgType,
     bgFsPath,
     bgBlur,
+    miniRestoreMode,
+    miniModeWidth,
+    miniModeHeight,
     onBgChange,
     onBgBlurChange,
     onMiniRestoreModeChange,
+    onMiniModeWidthChange,
+    onMiniModeHeightChange,
   });
 
   // Auto-dismiss success notices after 3 s (must be before any early returns – Rules of Hooks)
@@ -208,9 +224,12 @@ export function SettingsPage({
                 launchAtLogin={settings.launch_at_login}
                 closeBehavior={settings.close_behavior}
                 miniRestoreMode={settings.mini_restore_mode}
+                miniModeWidth={settings.mini_mode_width}
+                miniModeHeight={settings.mini_mode_height}
                 onLaunchAtLoginChange={(enabled) => void handleLaunchAtLogin(enabled)}
                 onCloseBehaviorChange={(behavior) => void handleCloseBehavior(behavior)}
                 onMiniRestoreModeChange={(mode) => void handleMiniRestoreMode(mode)}
+                onMiniModeSizeChange={(width, height) => void handleMiniModeSize(width, height)}
               />
             </TabsContent>
 

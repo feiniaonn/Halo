@@ -5,8 +5,12 @@ import type {
   RawTvBoxConfig,
   RawTvBoxParse,
   RawTvBoxSite,
+  TvBoxHostnameVerificationMode,
   TvBoxClass,
+  TvBoxProxyRule,
   TvBoxRepoUrl,
+  TvBoxTlsMode,
+  TvBoxVodItem,
   VodDetailItem,
   VodDetailResponse,
   VodResponse,
@@ -212,6 +216,34 @@ function normalizeHosts(value: unknown): TvBoxHostMapping[] {
     .filter((item): item is TvBoxHostMapping => !!item);
 }
 
+function normalizeProxyRules(value: unknown): TvBoxProxyRule[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === "string") {
+        const proxyUrl = normalizeText(item);
+        return proxyUrl && /^(https?|socks5):\/\//i.test(proxyUrl)
+          ? { host: "*", proxyUrl }
+          : null;
+      }
+      if (!item || typeof item !== "object") return null;
+      const source = item as { host?: unknown; proxyUrl?: unknown; proxy?: unknown; url?: unknown };
+      const host = normalizeText(source.host) || "*";
+      const proxyUrl = normalizeText(source.proxyUrl ?? source.proxy ?? source.url);
+      if (!proxyUrl) return null;
+      return { host, proxyUrl };
+    })
+    .filter((item): item is TvBoxProxyRule => !!item);
+}
+
+function normalizeTlsMode(value: unknown): TvBoxTlsMode {
+  return normalizeText(value).toLowerCase() === "allow_invalid" ? "allow_invalid" : "strict";
+}
+
+function normalizeHostnameVerificationMode(value: unknown): TvBoxHostnameVerificationMode {
+  return normalizeText(value).toLowerCase() === "allow_invalid" ? "allow_invalid" : "strict";
+}
+
 function isSearchNameHint(name: string): boolean {
   return /(search|搜索|搜片|搜剧|检索|聚搜)/i.test(name);
 }
@@ -388,6 +420,10 @@ export function normalizeTvBoxConfig(input: unknown): NormalizedTvBoxConfig | nu
     rules: normalizePlaybackRules(raw.rules),
     doh: normalizeDoH(raw.doh),
     proxy: normalizeStringArray(raw.proxy),
+    proxyRules: normalizeProxyRules(raw.proxyRules),
+    tlsMode: normalizeTlsMode(raw.tlsMode),
+    caBundlePath: normalizeText(raw.caBundlePath),
+    hostnameVerification: normalizeHostnameVerificationMode(raw.hostnameVerification),
     hosts: normalizeHosts(raw.hosts),
     ads: normalizeStringArray(raw.ads),
     logo: normalizeText(raw.logo),
@@ -415,69 +451,502 @@ export function buildPresetClasses(site: NormalizedTvBoxSite): TvBoxClass[] {
   }));
 }
 
-export function parseVodResponse(resp: string): VodResponse {
-  let data: unknown;
-  try {
-    data = JSON.parse(resp);
-  } catch {
-    return {};
-  }
-
-  const unwrap = (input: unknown): Record<string, unknown> => {
-    let current = input;
-    if (current && typeof current === "object" && "result" in current && ("ok" in current || "className" in current)) {
-      current = (current as { result: unknown }).result;
-    }
-    if (typeof current === "string") {
-      const trimmed = current.trim();
-      if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return {};
-      try {
-        current = JSON.parse(trimmed);
-      } catch {
-        return {};
-      }
-    }
-    if (Array.isArray(current)) {
-      current = current[0] ?? {};
-    }
-    return current && typeof current === "object" ? current as Record<string, unknown> : {};
-  };
-
-  return unwrap(data) as VodResponse;
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
-export function parseVodDetailResponse(resp: string): VodDetailResponse {
-  let data: unknown;
-  try {
-    data = JSON.parse(resp);
-  } catch {
-    return {};
+function pickStringField(
+  source: Record<string, unknown>,
+  keys: string[],
+): string {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) return trimmed;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
+    }
+  }
+  return "";
+}
+
+function pickNestedStringField(
+  source: Record<string, unknown>,
+  parentKeys: string[],
+  childKeys: string[],
+): string {
+  for (const parentKey of parentKeys) {
+    const parent = asRecord(source[parentKey]);
+    if (!parent) continue;
+    const nested = pickStringField(parent, childKeys);
+    if (nested) return nested;
+  }
+  return "";
+}
+
+function pickDeepStringField(
+  source: Record<string, unknown>,
+  paths: string[][],
+): string {
+  for (const path of paths) {
+    if (path.length === 0) continue;
+
+    let current: Record<string, unknown> | null = source;
+    for (let index = 0; index < path.length - 1; index += 1) {
+      current = current ? asRecord(current[path[index]]) : null;
+      if (!current) break;
+    }
+
+    if (!current) continue;
+    const value = pickStringField(current, [path[path.length - 1]]);
+    if (value) return value;
   }
 
-  const unwrap = (input: unknown): Record<string, unknown> | null => {
-    let current: unknown = input;
-    if (current && typeof current === "object" && "result" in current && ("ok" in current || "className" in current)) {
-      current = (current as { result: unknown }).result;
+  return "";
+}
+
+function pickNumberField(
+  source: Record<string, unknown>,
+  keys: string[],
+): number | undefined {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
     }
-    if (typeof current === "string") {
-      const trimmed = current.trim();
-      if (!trimmed) return null;
-      try {
-        current = JSON.parse(trimmed);
-      } catch {
-        return null;
+    if (typeof value === "string") {
+      const parsed = Number(value.trim());
+      if (Number.isFinite(parsed)) {
+        return parsed;
       }
     }
-    if (Array.isArray(current)) {
-      current = current[0] ?? {};
-    }
-    return current && typeof current === "object" ? current as Record<string, unknown> : null;
-  };
+  }
+  return undefined;
+}
 
-  const root = unwrap(data);
+function normalizeScalarText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "";
+}
+
+function looksLikeCompactIdentifier(value: string): boolean {
+  return /^[A-Za-z0-9_-]{1,40}$/.test(value);
+}
+
+function normalizeArrayTexts(items: unknown[]): string[] {
+  return items
+    .map((item) => normalizeScalarText(item))
+    .filter(Boolean);
+}
+
+function normalizeVodClassArrayValue(item: unknown[]): TvBoxClass | null {
+  const values = normalizeArrayTexts(item);
+  if (values.length === 0) return null;
+  if (values.length === 1) {
+    return {
+      type_id: values[0],
+      type_name: values[0],
+    };
+  }
+
+  const [first, second] = values;
+  if (looksLikeCompactIdentifier(first) && !looksLikeCompactIdentifier(second)) {
+    return { type_id: first, type_name: second };
+  }
+  if (!looksLikeCompactIdentifier(first) && looksLikeCompactIdentifier(second)) {
+    return { type_id: second, type_name: first };
+  }
+  return { type_id: first, type_name: second };
+}
+
+function normalizeVodItemArrayValue(item: unknown[]): TvBoxVodItem | null {
+  const values = normalizeArrayTexts(item);
+  if (values.length < 2) return null;
+
+  const imageCandidate = values.find((value) => /^(https?:)?\/\//i.test(value)) ?? "";
+  const nonImageValues = values.filter((value) => value !== imageCandidate);
+  const [first = "", second = "", third = ""] = nonImageValues;
+  if (!first && !second) return null;
+
+  const id = looksLikeCompactIdentifier(first) && second ? first : second || first;
+  const name = looksLikeCompactIdentifier(first) && second ? second : first || second;
+  const remarks = third && third !== id && third !== name ? third : "";
+
+  return {
+    vod_id: id || name,
+    vod_name: name || id,
+    vod_pic: imageCandidate,
+    vod_remarks: remarks,
+  };
+}
+
+function normalizeVodDetailArrayValue(item: unknown[]): VodDetailItem | null {
+  const values = normalizeArrayTexts(item);
+  if (values.length < 2) return null;
+
+  const imageCandidate = values.find((value) => /^(https?:)?\/\//i.test(value)) ?? "";
+  const id = values[0] ?? "";
+  const name = values[1] ?? id;
+  const playUrl = values.find((value) => value.includes("$")) ?? "";
+
+  if (!id && !name && !playUrl) return null;
+
+  return {
+    vod_id: id || undefined,
+    vod_name: name || undefined,
+    vod_pic: imageCandidate || undefined,
+    vod_play_url: playUrl || undefined,
+  };
+}
+
+function normalizeVodClassValue(item: unknown): TvBoxClass | null {
+  if (typeof item === "string") {
+    const text = item.trim();
+    return text ? { type_id: text, type_name: text } : null;
+  }
+  if (Array.isArray(item)) {
+    return normalizeVodClassArrayValue(item);
+  }
+
+  const source = asRecord(item);
+  if (!source) return null;
+
+  const typeId = pickStringField(source, [
+    "type_id",
+    "typeId",
+    "tid",
+    "id",
+    "type",
+    "tag",
+    "cate_id",
+    "cateId",
+    "category_id",
+    "categoryId",
+    "name",
+    "type_name",
+    "typeName",
+    "title",
+    "a",
+    "b",
+  ]);
+  const typeName = pickStringField(source, [
+    "type_name",
+    "typeName",
+    "name",
+    "title",
+    "label",
+    "text",
+    "value",
+    "type_id",
+    "typeId",
+    "tid",
+    "b",
+    "a",
+  ]);
+
+  if (!typeId && !typeName) return null;
+  return {
+    type_id: typeId || typeName,
+    type_name: typeName || typeId,
+  };
+}
+
+function looksLikeClassOnlyItem(item: unknown): boolean {
+  const source = asRecord(item);
+  if (!source) return false;
+
+  const typeId = pickStringField(source, ["type_id", "typeId", "tid"]);
+  const typeName = pickStringField(source, ["type_name", "typeName", "name", "title"]);
+  const vodId = pickStringField(source, ["vod_id", "vodId", "id", "ids"]);
+  const vodName = pickStringField(source, ["vod_name", "vodName"]);
+
+  return !!typeId && !!typeName && !vodId && !vodName;
+}
+
+function normalizeVodItemValue(item: unknown): TvBoxVodItem | null {
+  if (Array.isArray(item)) {
+    return normalizeVodItemArrayValue(item);
+  }
+
+  const source = asRecord(item);
+  if (!source) return null;
+
+  const vodId = pickStringField(source, [
+    "vod_id",
+    "vodId",
+    "id",
+    "ids",
+    "nextlink",
+    "nextLink",
+    "url",
+    "sid",
+    "b",
+    "a",
+  ]) || pickDeepStringField(source, [
+    ["target", "id"],
+    ["target", "sid"],
+    ["subject", "id"],
+    ["subject", "sid"],
+    ["item", "id"],
+    ["item", "sid"],
+    ["data", "id"],
+  ]);
+  const vodName = pickStringField(source, [
+    "vod_name",
+    "vodName",
+    "name",
+    "title",
+    "vod_title",
+    "vodTitle",
+    "c",
+    "b",
+  ]) || pickDeepStringField(source, [
+    ["target", "vod_name"],
+    ["target", "title"],
+    ["target", "name"],
+    ["subject", "vod_name"],
+    ["subject", "title"],
+    ["subject", "name"],
+    ["item", "title"],
+    ["item", "name"],
+    ["data", "title"],
+    ["data", "name"],
+  ]);
+
+  if (!vodId && !vodName) return null;
+
+  const vodPic = pickStringField(source, [
+    "vod_pic",
+    "vodPic",
+    "pic",
+    "img",
+    "image",
+    "cover",
+    "thumb",
+    "poster",
+    "vod_pic_thumb",
+    "vodPicThumb",
+    "pic_url",
+    "picUrl",
+    "img_url",
+    "imgUrl",
+    "cover_url",
+    "coverUrl",
+    "poster_url",
+    "posterUrl",
+    "thumbnail",
+    "d",
+  ]) || pickNestedStringField(source, ["image", "cover", "poster"], ["url", "thumb", "src", "image", "poster"])
+    || pickDeepStringField(source, [
+      ["target", "pic", "normal"],
+      ["target", "pic", "large"],
+      ["target", "pic", "url"],
+      ["target", "cover", "url"],
+      ["target", "cover", "src"],
+      ["subject", "pic", "normal"],
+      ["subject", "pic", "large"],
+      ["subject", "pic", "url"],
+      ["subject", "cover", "url"],
+      ["subject", "cover", "src"],
+      ["item", "pic", "normal"],
+      ["item", "pic", "large"],
+      ["item", "cover", "url"],
+    ]);
+  const vodRemarks = pickStringField(source, [
+    "vod_remarks",
+    "vodRemarks",
+    "remarks",
+    "remark",
+    "note",
+    "vod_note",
+    "vodNote",
+    "conerMemo",
+    "detailMemo",
+    "card_subtitle",
+    "subtitle",
+    "sub_title",
+    "shorthand",
+    "e",
+  ]) || pickDeepStringField(source, [
+    ["target", "card_subtitle"],
+    ["target", "subtitle"],
+    ["target", "sub_title"],
+    ["subject", "card_subtitle"],
+    ["subject", "subtitle"],
+    ["subject", "sub_title"],
+    ["item", "subtitle"],
+    ["item", "sub_title"],
+  ]);
+
+  return {
+    vod_id: vodId || vodName,
+    vod_name: vodName || vodId,
+    vod_pic: vodPic,
+    vod_remarks: vodRemarks,
+  };
+}
+
+function normalizeClassesFromFilters(filters: unknown): TvBoxClass[] {
+  const source = asRecord(filters);
+  if (!source) return [];
+  return Object.entries(source)
+    .map(([key, value]) => {
+      const typeId = key.trim();
+      if (!typeId) return null;
+      const values = Array.isArray(value) ? value : [];
+      const firstOption = values.find((item) => !!asRecord(item)) ?? null;
+      const optionName = firstOption
+        ? pickStringField(asRecord(firstOption)!, ["name", "label", "text", "n", "value", "v"])
+        : "";
+
+      return {
+        type_id: typeId,
+        type_name: optionName || typeId,
+      };
+    })
+    .filter((item): item is TvBoxClass => !!item);
+}
+
+function normalizeVodDetailItemValue(item: unknown): VodDetailItem | null {
+  if (Array.isArray(item)) {
+    return normalizeVodDetailArrayValue(item);
+  }
+
+  const source = asRecord(item);
+  if (!source) return null;
+
+  const vodId = pickStringField(source, ["vod_id", "vodId", "id", "ids", "sid", "b", "a"]);
+  const vodName = pickStringField(source, ["vod_name", "vodName", "name", "title", "vod_title", "vodTitle", "c", "b"]);
+  const vodPic = pickStringField(source, [
+    "vod_pic",
+    "vodPic",
+    "pic",
+    "img",
+    "image",
+    "cover",
+    "thumb",
+    "poster",
+    "vod_pic_thumb",
+    "vodPicThumb",
+    "d",
+  ]) || pickNestedStringField(source, ["image", "cover", "poster"], ["url", "thumb", "src", "image", "poster"]);
+  const vodContent = pickStringField(source, ["vod_content", "vodContent", "content", "desc", "description", "vod_blurb", "vodBlurb"]);
+  const vodPlayFrom = pickStringField(source, ["vod_play_from", "vodPlayFrom", "playFrom"]);
+  const vodPlayUrl = pickStringField(source, ["vod_play_url", "vodPlayUrl", "playUrl"]);
+
+  if (!vodId && !vodName && !vodPlayUrl) return null;
+
+  return {
+    vod_id: vodId || undefined,
+    vod_name: vodName || undefined,
+    vod_pic: vodPic || undefined,
+    vod_year: pickStringField(source, ["vod_year", "vodYear", "year"]) || undefined,
+    vod_area: pickStringField(source, ["vod_area", "vodArea", "area"]) || undefined,
+    vod_actor: pickStringField(source, ["vod_actor", "vodActor", "actor"]) || undefined,
+    vod_director: pickStringField(source, ["vod_director", "vodDirector", "director"]) || undefined,
+    vod_content: vodContent || undefined,
+    vod_play_from: vodPlayFrom || undefined,
+    vod_play_url: vodPlayUrl || undefined,
+  };
+}
+
+function unwrapVodPayload(input: unknown): Record<string, unknown> {
+  let current = input;
+  if (current && typeof current === "object" && "result" in current && ("ok" in current || "className" in current)) {
+    current = (current as { result: unknown }).result;
+  }
+  if (typeof current === "string") {
+    const trimmed = current.trim();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return {};
+    try {
+      current = JSON.parse(trimmed);
+    } catch {
+      return {};
+    }
+  }
+  if (Array.isArray(current)) {
+    current = current[0] ?? {};
+  }
+  if (current && typeof current === "object" && "data" in current) {
+    const source = current as { data?: unknown; class?: unknown; list?: unknown; filters?: unknown };
+    if ((source.class == null && source.list == null && source.filters == null) && source.data) {
+      const nested = unwrapVodPayload(source.data);
+      if (Object.keys(nested).length > 0) return nested;
+    }
+  }
+  return current && typeof current === "object" ? current as Record<string, unknown> : {};
+}
+
+export function parseVodResponse(resp: string | unknown): VodResponse {
+  let data: unknown = resp;
+  if (typeof resp === "string") {
+    try {
+      data = JSON.parse(resp);
+    } catch {
+      return {};
+    }
+  }
+  const root = unwrapVodPayload(data);
+  const classItems = Array.isArray(root.class)
+    ? root.class
+    : Array.isArray(root.a)
+      ? root.a
+      : [];
+  const filterItems = root.filters ?? root.c;
+  const listItems = Array.isArray(root.list)
+    ? root.list
+    : Array.isArray(root.b)
+      ? root.b
+      : [];
+  const parsedClasses = classItems.length > 0
+    ? classItems
+      .map((item) => normalizeVodClassValue(item))
+      .filter((item): item is TvBoxClass => !!item)
+    : [];
+  const parsedList = listItems.length > 0
+    ? listItems
+      .map((item) => normalizeVodItemValue(item))
+      .filter((item): item is TvBoxVodItem => !!item)
+    : [];
+  const classLikeList = parsedClasses.length === 0 && parsedList.length === 0 && listItems.every(looksLikeClassOnlyItem)
+    ? listItems
+      .map((item) => normalizeVodClassValue(item))
+      .filter((item): item is TvBoxClass => !!item)
+    : [];
+  const fallbackClasses = parsedClasses.length > 0
+    ? parsedClasses
+    : classLikeList.length > 0
+      ? classLikeList
+      : normalizeClassesFromFilters(filterItems);
+
+  return {
+    class: fallbackClasses,
+    list: classLikeList.length > 0 ? [] : parsedList,
+    pagecount: pickNumberField(root, ["pagecount", "pageCount", "totalpage", "page_total", "l", "m"]),
+    total: pickNumberField(root, ["total", "totalCount", "recordcount", "recordCount", "n", "m"]),
+  };
+}
+
+export function parseVodDetailResponse(resp: string | unknown): VodDetailResponse {
+  let data: unknown = resp;
+  if (typeof resp === "string") {
+    try {
+      data = JSON.parse(resp);
+    } catch {
+      return {};
+    }
+  }
+  const root = unwrapVodPayload(data);
   if (!root) return {};
   return {
-    list: Array.isArray(root.list) ? root.list as VodDetailItem[] : undefined,
+    list: (Array.isArray(root.list) ? root.list : Array.isArray(root.b) ? root.b : [])
+      .map((item) => normalizeVodDetailItemValue(item))
+      .filter((item): item is VodDetailItem => !!item),
   };
 }
 

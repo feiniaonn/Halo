@@ -2,31 +2,44 @@ mod compat_helper;
 mod db;
 mod icon_extractor;
 mod java_runtime;
+mod media_bootstrap;
 pub mod media_cmds;
 mod music;
 mod music_control;
 mod music_lyrics;
 mod music_settings;
+mod native_player;
 mod settings;
 mod shortcut_launcher;
+mod spider_artifact_download;
+mod spider_bridge_payload;
 mod spider_cmds;
 mod spider_cmds_dex;
+mod spider_daemon;
 mod spider_cmds_exec;
 mod spider_cmds_profile;
 mod spider_cmds_runtime;
 mod spider_compat;
 pub mod spider_diag;
+mod spider_fast_paths;
+mod spider_local_runtime_android;
+mod spider_local_service;
+mod spider_proxy_bridge;
+mod spider_response_contract;
+mod spider_runtime_contract;
+mod spider_task_manager;
 mod system_overview;
 mod updater;
 mod vod_hls_relay;
+mod vod_hls_runtime;
 
 use db::PlayRecord;
 use settings::{
     cancel_migrate_legacy_data, get_app_settings, get_close_behavior, get_migration_progress,
     import_background_asset, migrate_legacy_data, prepare_video_optimizer,
     set_allow_component_download, set_background, set_background_blur, set_close_behavior,
-    set_launch_at_login, set_mini_restore_mode, set_storage_root, start_migrate_legacy_data,
-    MigrationController,
+    set_launch_at_login, set_mini_mode_size, set_mini_restore_mode, set_storage_root,
+    start_migrate_legacy_data, MigrationController,
 };
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -216,6 +229,12 @@ fn show_main_window(app: &AppHandle) {
             }
         }
     }
+}
+
+fn shutdown_background_processes() {
+    tauri::async_runtime::block_on(async {
+        crate::spider_daemon::shutdown_daemon().await;
+    });
 }
 
 #[tauri::command]
@@ -463,6 +482,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_mpv::init())
+        .plugin(tauri_plugin_libmpv::init())
         .manage(current_playing.clone())
         .manage(DashboardOverviewState::default())
         .manage(MigrationController::default())
@@ -490,6 +511,7 @@ pub fn run() {
             set_close_behavior,
             get_close_behavior,
             set_mini_restore_mode,
+            set_mini_mode_size,
             set_allow_component_download,
             set_background,
             set_background_blur,
@@ -504,9 +526,11 @@ pub fn run() {
             updater_check,
             updater_download_and_install,
             updater_probe_endpoint,
+            media_bootstrap::prepare_media_bootstrap,
             media_cmds::fetch_tvbox_config,
             media_cmds::set_media_network_policy,
             media_cmds::get_media_network_policy_status,
+            media_cmds::execute_media_transport,
             media_cmds::probe_stream_kind,
             media_cmds::fetch_vod_home,
             media_cmds::fetch_vod_category,
@@ -514,6 +538,7 @@ pub fn run() {
             media_cmds::fetch_vod_detail,
             media_cmds::proxy_media,
             media_cmds::resolve_jiexi,
+            media_cmds::resolve_wrapped_media_url,
             media_cmds::resolve_jiexi_webview,
             media_cmds::proxy_hls_manifest,
             media_cmds::proxy_hls_segment,
@@ -525,21 +550,35 @@ pub fn run() {
             vod_hls_relay::vod_close_hls_relay_session,
             vod_hls_relay::vod_get_hls_relay_stats,
             spider_cmds::spider_search,
+            spider_cmds::spider_search_v2,
             spider_cmds::spider_home,
+            spider_cmds::spider_home_v2,
             spider_cmds::spider_category,
+            spider_cmds::spider_category_v2,
             spider_cmds::spider_detail,
+            spider_cmds::spider_detail_v2,
             spider_cmds::spider_player,
+            spider_cmds::spider_player_v2,
             spider_cmds::prefetch_spider_jar,
             spider_cmds_profile::profile_spider_site,
             spider_diag::spider_diagnose_source,
             spider_cmds::get_builtin_spider_jar_path,
             spider_cmds::get_bridge_diagnostics,
+            spider_cmds::cancel_spider_tasks,
+            spider_cmds_runtime::clear_spider_execution_report,
             spider_cmds_runtime::get_spider_execution_report,
+            spider_cmds_runtime::get_spider_feature_flags,
             compat_helper::compat_helper_status,
             compat_helper::compat_helper_start,
             compat_helper::compat_helper_stop,
             compat_helper::compat_helper_trace_last_failure,
             get_builtin_mpv_path,
+            native_player::native_player_init_or_attach,
+            native_player::native_player_load,
+            native_player::native_player_command,
+            native_player::native_player_resize,
+            native_player::native_player_status,
+            native_player::native_player_destroy,
             clear_mpv_test_log,
             append_mpv_test_log,
             get_mpv_test_log_path,
@@ -548,7 +587,7 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
 
-            // 闂傚倸鍊搁崐椋庣矆娓氣偓瀹曨垶宕稿Δ鈧崒銊︾節婵犲倻澧曠痪鎯ь煼閺岀喖宕滆鐢盯鏌ｉ幘鍐叉殻闁哄本绋栫粻娑㈠箼閸愨敩锔界箾?Window setup + close behaviour 闂傚倸鍊搁崐椋庣矆娓氣偓瀹曨垶宕稿Δ鈧崒銊︾節婵犲倻澧曠痪鎯ь煼閺岀喖宕滆鐢盯鏌ｉ幘鍐叉殻闁哄本绋栫粻娑㈠箼閸愨敩锔界箾?
+            // 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?Window setup + close behaviour 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?
             if let Some(w) = handle.get_webview_window("main") {
                 let _ = w.set_decorations(false);
                 #[cfg(target_os = "windows")]
@@ -573,6 +612,7 @@ pub fn run() {
                                 }
                             }
                             _ => {
+                                shutdown_background_processes();
                                 std::process::exit(0);
                             }
                         }
@@ -580,7 +620,7 @@ pub fn run() {
                 });
             }
 
-            // 闂傚倸鍊搁崐椋庣矆娓氣偓瀹曨垶宕稿Δ鈧崒銊︾節婵犲倻澧曠痪鎯ь煼閺岀喖宕滆鐢盯鏌ｉ幘鍐叉殻闁哄本绋栫粻娑㈠箼閸愨敩锔界箾?System tray icon 闂傚倸鍊搁崐椋庣矆娓氣偓瀹曨垶宕稿Δ鈧崒銊︾節婵犲倻澧曠痪鎯ь煼閺岀喖宕滆鐢盯鏌ｉ幘鍐叉殻闁哄本绋栫粻娑㈠箼閸愨敩锔界箾?
+            // 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?System tray icon 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?
             // Show main window early to reduce perceived startup delay.
             let args: Vec<String> = std::env::args().collect();
             if args.contains(&"--autostart".to_string()) {
@@ -611,7 +651,10 @@ pub fn run() {
                                 let _ = w.hide();
                             }
                         }
-                        "quit" => std::process::exit(0),
+                        "quit" => {
+                            shutdown_background_processes();
+                            std::process::exit(0);
+                        }
                         _ => {}
                     })
                     .on_tray_icon_event({
@@ -631,7 +674,7 @@ pub fn run() {
                     .ok();
             }
 
-            // 闂傚倸鍊搁崐椋庣矆娓氣偓瀹曨垶宕稿Δ鈧崒銊︾節婵犲倻澧曠痪鎯ь煼閺岀喖宕滆鐢盯鏌ｉ幘鍐叉殻闁哄本绋栫粻娑㈠箼閸愨敩锔界箾?GSMTC music listener (Windows) 闂傚倸鍊搁崐椋庣矆娓氣偓瀹曨垶宕稿Δ鈧崒銊︾節婵犲倻澧曠痪鎯ь煼閺岀喖宕滆鐢盯鏌ｉ幘鍐叉殻闁哄本绋栫粻娑㈠箼閸愨敩锔界箾?
+            // 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?GSMTC music listener (Windows) 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?
             #[cfg(target_os = "windows")]
             {
                 let music_handle = handle.clone();
@@ -642,11 +685,18 @@ pub fn run() {
                 });
             }
 
-            // 闂傚倸鍊搁崐椋庣矆娓氣偓瀹曨垶宕稿Δ鈧崒銊︾節婵犲倻澧曠痪鎯ь煼閺岀喖宕滆鐢盯鏌ｉ幘鍐叉殻闁哄本绋栫粻娑㈠箼閸愨敩锔界箾?System overview sampler 闂傚倸鍊搁崐椋庣矆娓氣偓瀹曨垶宕稿Δ鈧崒銊︾節婵犲倻澧曠痪鎯ь煼閺岀喖宕滆鐢盯鏌ｉ幘鍐叉殻闁哄本绋栫粻娑㈠箼閸愨敩锔界箾?
+            // 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?System overview sampler 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?
             let overview_state = app.state::<DashboardOverviewState>().inner().clone();
             start_system_overview_sampler(handle.clone(), overview_state);
 
-            // 闂傚倸鍊搁崐椋庣矆娓氣偓瀹曨垶宕稿Δ鈧崒銊︾節婵犲倻澧曠痪鎯ь煼閺岀喖宕滆鐢盯鏌ｉ幘鍐叉殻闁哄本绋栫粻娑㈠箼閸愨敩锔界箾?Show / hide based on startup args 闂傚倸鍊搁崐椋庣矆娓氣偓瀹曨垶宕稿Δ鈧崒銊︾節婵犲倻澧曠痪鎯ь煼閺岀喖宕滆鐢盯鏌ｉ幘鍐叉殻闁哄本绋栫粻娑㈠箼閸愨敩锔界箾?
+            {
+                let daemon_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = crate::spider_daemon::warmup_daemon(&daemon_handle).await;
+                });
+            }
+
+            // 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?Show / hide based on startup args 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -13,6 +13,9 @@ export interface VodRelayStats {
     lastAccessMs?: number;
     idleMs?: number;
     upstreamHost?: string;
+    manifestHits: number;
+    segmentHits: number;
+    resourceHits: number;
 }
 
 export async function openVodRelaySession(

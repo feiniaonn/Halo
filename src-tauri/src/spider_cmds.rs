@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -7,7 +8,7 @@ use tokio::fs;
 use sha2::{Digest, Sha256};
 
 use crate::spider_cmds_runtime::{
-    analyze_spider_artifact, build_prefetch_result, PreparedSpiderJar,
+    analyze_spider_artifact, build_prefetch_result, get_method_execution_report, PreparedSpiderJar,
 };
 
 const SPIDER_LOG_DIR_NAME: &str = "logs";
@@ -16,6 +17,59 @@ const SPIDER_LOG_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const SPIDER_LOG_MAX_BACKUPS: usize = 5;
 const SPIDER_LOG_RETENTION_DAYS: u64 = 14;
 static SPIDER_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static PREPARED_SPIDER_CACHE: OnceLock<Mutex<HashMap<String, PreparedSpiderJar>>> = OnceLock::new();
+
+async fn execute_spider_contract(
+    app: &tauri::AppHandle,
+    spider_url: String,
+    site_key: String,
+    api_class: String,
+    ext: String,
+    method: &'static str,
+    args: Vec<(&'static str, String)>,
+) -> Result<crate::spider_response_contract::NormalizedSpiderMethodResponse, String> {
+    let task_key = crate::spider_task_manager::build_task_key(
+        &site_key,
+        method,
+        &ext,
+        &args,
+        crate::media_cmds::current_media_network_policy_generation(),
+    );
+    let app_handle = app.clone();
+    let task_site_key = site_key.clone();
+    crate::spider_task_manager::run_spider_task(&task_site_key, method, task_key, move || {
+        let app_handle = app_handle.clone();
+        let spider_url = spider_url.clone();
+        let site_key = site_key.clone();
+        let api_class = api_class.clone();
+        let ext = ext.clone();
+        let args = args.clone();
+        async move {
+            let raw_payload = crate::spider_cmds_exec::execute_spider_method(
+                &app_handle,
+                &spider_url,
+                &site_key,
+                &api_class,
+                &ext,
+                method,
+                args,
+            )
+            .await?;
+            let report = get_method_execution_report(&site_key, method)
+                .or_else(|| {
+                    crate::spider_cmds_runtime::get_spider_execution_report(site_key.clone())
+                })
+                .ok_or_else(|| format!("missing execution report for {site_key}::{method}"))?;
+            crate::spider_response_contract::build_normalized_method_response(
+                &site_key,
+                method,
+                raw_payload,
+                report,
+            )
+        }
+    })
+    .await
+}
 
 fn looks_like_jar_bytes(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && bytes[0] == 0x50 && bytes[1] == 0x4B
@@ -87,17 +141,256 @@ fn matches_expected_md5(bytes: &[u8], expected_md5: Option<&str>) -> bool {
     }
 }
 
-fn should_fallback_after_prepare_failure(err: &str) -> bool {
+fn should_fallback_after_prepare_failure(err: &str, class_hint: Option<&str>) -> bool {
+    if normalized_class_hint(class_hint) != "default" {
+        return false;
+    }
+
     !err.contains("desktop bridge does not execute dex-only spiders yet")
         && !err.contains("Dex spider transform failed")
         && !err.contains("explicit spider hint not found in JVM classpath")
+}
+
+fn prepared_spider_cache() -> &'static Mutex<HashMap<String, PreparedSpiderJar>> {
+    PREPARED_SPIDER_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn normalized_class_hint(class_hint: Option<&str>) -> String {
+    class_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| "default".to_string())
+}
+
+fn normalize_spider_cache_key(spider_url_raw: &str, class_hint: Option<&str>) -> String {
+    let (spider_url, _) = parse_spider_url_and_md5(spider_url_raw);
+    let normalized_url = spider_url.trim();
+    if normalized_url.is_empty() {
+        return String::new();
+    }
+    format!("{}::{}", normalized_url, normalized_class_hint(class_hint))
+}
+
+fn cached_spider_class_tokens(class_hint: Option<&str>) -> Vec<String> {
+    let normalized = normalized_class_hint(class_hint);
+    if normalized == "default" {
+        return Vec::new();
+    }
+
+    normalized
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .filter_map(|token| {
+            let trimmed = token.trim_matches('_').trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            Some(
+                trimmed
+                    .trim_start_matches("csp_")
+                    .trim_start_matches("CSP_")
+                    .to_ascii_lowercase(),
+            )
+        })
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn artifact_matches_class_hint(
+    artifact: &crate::spider_cmds_runtime::SpiderArtifactAnalysis,
+    class_hint: Option<&str>,
+) -> bool {
+    let expected_tokens = cached_spider_class_tokens(class_hint);
+    if expected_tokens.is_empty() {
+        return false;
+    }
+
+    artifact.class_inventory.iter().any(|class_name| {
+        let simple_name = class_name
+            .rsplit('.')
+            .next()
+            .unwrap_or(class_name)
+            .to_ascii_lowercase();
+        expected_tokens.iter().any(|token| token == &simple_name)
+    })
+}
+
+fn resolve_cached_prepared_jar_path(original_jar: &Path) -> Option<PathBuf> {
+    if !original_jar.is_file() {
+        return None;
+    }
+
+    let parent = original_jar.parent()?;
+    let stem = original_jar.file_stem()?.to_str()?;
+    let desktop_prefix = format!("{stem}.desktop.");
+    let original_name = original_jar.file_name()?.to_str()?;
+
+    let mut desktop_candidates = std::fs::read_dir(parent)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.starts_with(&desktop_prefix) && name.ends_with(".jar"))
+        })
+        .collect::<Vec<_>>();
+    desktop_candidates.sort_by(|left, right| right.cmp(left));
+
+    if let Some(path) = desktop_candidates.into_iter().next() {
+        return Some(path);
+    }
+
+    if original_name.ends_with(".jar") {
+        Some(original_jar.to_path_buf())
+    } else {
+        None
+    }
+}
+
+fn resolve_matching_cached_spider(
+    storage_dir: &Path,
+    class_hint: Option<&str>,
+) -> Option<PreparedSpiderJar> {
+    if cached_spider_class_tokens(class_hint).is_empty() || !storage_dir.is_dir() {
+        return None;
+    }
+
+    let mut candidates = std::fs::read_dir(storage_dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+        })
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| {
+                    !name.contains(".desktop.") && !name.ends_with(".converting.jar")
+                })
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|left, right| {
+        let left_mtime = std::fs::metadata(left)
+            .and_then(|meta| meta.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let right_mtime = std::fs::metadata(right)
+            .and_then(|meta| meta.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        right_mtime.cmp(&left_mtime)
+    });
+
+    for original_jar_path in candidates {
+        let Some(prepared_jar_path) = resolve_cached_prepared_jar_path(&original_jar_path) else {
+            continue;
+        };
+
+        let Ok(artifact) = analyze_spider_artifact(&original_jar_path, &prepared_jar_path) else {
+            continue;
+        };
+        if !artifact_matches_class_hint(&artifact, class_hint) {
+            continue;
+        }
+
+        return Some(PreparedSpiderJar {
+            original_jar_path,
+            prepared_jar_path,
+            artifact,
+        });
+    }
+
+    None
+}
+
+fn cached_prepared_spider(
+    spider_url_raw: &str,
+    class_hint: Option<&str>,
+) -> Option<PreparedSpiderJar> {
+    let cache_key = normalize_spider_cache_key(spider_url_raw, class_hint);
+    if cache_key.is_empty() {
+        return None;
+    }
+
+    let mut guard = match prepared_spider_cache().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let cached = guard.get(&cache_key)?.clone();
+    if cached.original_jar_path.is_file() && cached.prepared_jar_path.is_file() {
+        return Some(cached);
+    }
+    guard.remove(&cache_key);
+    None
+}
+
+fn store_prepared_spider(
+    spider_url_raw: &str,
+    class_hint: Option<&str>,
+    prepared: &PreparedSpiderJar,
+) {
+    let cache_key = normalize_spider_cache_key(spider_url_raw, class_hint);
+    if cache_key.is_empty() {
+        return;
+    }
+
+    let mut guard = match prepared_spider_cache().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.insert(cache_key, prepared.clone());
+}
+
+fn clear_prepared_spider_cache() {
+    let mut guard = match prepared_spider_cache().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.clear();
 }
 
 pub(crate) async fn resolve_spider_jar_with_fallback(
     app: &AppHandle,
     spider_url: &str,
     method: &str,
+    class_hint: Option<&str>,
 ) -> Result<PreparedSpiderJar, String> {
+    if let Some(cached) = cached_prepared_spider(spider_url, class_hint) {
+        let cache_log = format!(
+            "[SpiderBridge] Reusing prepared spider jar from session cache for {} [{}]: {}",
+            method,
+            normalized_class_hint(class_hint),
+            cached.prepared_jar_path.display()
+        );
+        println!("{}", cache_log);
+        append_spider_debug_log(&cache_log);
+        return Ok(cached);
+    }
+
+    if class_hint_prefers_anotherds_primary(class_hint) {
+        if let Some(anotherds_jar) = resolve_anotherds_spider_jar(app) {
+            let prepared = PreparedSpiderJar {
+                original_jar_path: anotherds_jar.clone(),
+                prepared_jar_path: anotherds_jar.clone(),
+                artifact: analyze_spider_artifact(&anotherds_jar, &anotherds_jar)?,
+            };
+            let direct_log = format!(
+                "[SpiderBridge] Using bundled anotherds_spider.jar as primary runtime for {} [{}]",
+                method,
+                normalized_class_hint(class_hint)
+            );
+            println!("{}", direct_log);
+            append_spider_debug_log(&direct_log);
+            store_prepared_spider(spider_url, class_hint, &prepared);
+            return Ok(prepared);
+        }
+    }
+
     let resolved = match ensure_spider_jar(app, spider_url).await {
         Ok(original_jar_path) => {
             let prepared_jar_path =
@@ -113,7 +406,10 @@ pub(crate) async fn resolve_spider_jar_with_fallback(
     };
 
     match resolved {
-        Ok(path) => Ok(path),
+        Ok(path) => {
+            store_prepared_spider(spider_url, class_hint, &path);
+            Ok(path)
+        }
         Err(primary_err) => {
             let primary_log = format!(
                 "[SpiderBridge] Primary spider jar prepare failed for {}: {}",
@@ -121,7 +417,21 @@ pub(crate) async fn resolve_spider_jar_with_fallback(
             );
             eprintln!("{}", primary_log);
             append_spider_debug_log(&primary_log);
-            if should_fallback_after_prepare_failure(&primary_err) {
+            if let Some(cached_match) =
+                resolve_matching_cached_spider(&spider_cache_dir(), class_hint)
+            {
+                let cached_log = format!(
+                    "[SpiderBridge] Reusing cached spider jar after prepare failure for {} [{}]: {}",
+                    method,
+                    normalized_class_hint(class_hint),
+                    cached_match.prepared_jar_path.display()
+                );
+                println!("{}", cached_log);
+                append_spider_debug_log(&cached_log);
+                store_prepared_spider(spider_url, class_hint, &cached_match);
+                return Ok(cached_match);
+            }
+            if should_fallback_after_prepare_failure(&primary_err, class_hint) {
                 if let Some(fallback_jar) = resolve_halo_spider_jar(app) {
                     println!(
                         "[SpiderBridge] Spider jar prepare failed: {}. Fallback to bundled halo_spider.jar for {}",
@@ -132,11 +442,13 @@ pub(crate) async fn resolve_spider_jar_with_fallback(
                         primary_err, method
                     ));
                     let artifact = analyze_spider_artifact(&fallback_jar, &fallback_jar)?;
-                    return Ok(PreparedSpiderJar {
+                    let prepared = PreparedSpiderJar {
                         original_jar_path: fallback_jar.clone(),
                         prepared_jar_path: fallback_jar,
                         artifact,
-                    });
+                    };
+                    store_prepared_spider(spider_url, class_hint, &prepared);
+                    return Ok(prepared);
                 }
             }
             Err(format!(
@@ -170,6 +482,40 @@ pub(crate) fn resolve_resource_jar_dirs(app: &AppHandle) -> Vec<PathBuf> {
     paths
 }
 
+pub(crate) fn resolve_resource_tvbox_dirs(app: &AppHandle) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        paths.push(resource_dir.join("resources").join("TVBox"));
+        paths.push(resource_dir.join("TVBox"));
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        paths.push(cwd.join("src-tauri").join("TVBox"));
+        paths.push(cwd.join("src-tauri").join("resources").join("TVBox"));
+        paths.push(cwd.join("resources").join("TVBox"));
+        paths.push(cwd.join("TVBox"));
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            paths.push(exe_dir.join("resources").join("TVBox"));
+            paths.push(exe_dir.join("TVBox"));
+        }
+    }
+
+    paths
+}
+
+pub(crate) fn resolve_tvbox_runtime_root(app: &AppHandle) -> Option<PathBuf> {
+    resolve_resource_tvbox_dirs(app)
+        .into_iter()
+        .find(|candidate| {
+            candidate.join("js").join("lib").join("http.js").is_file()
+                || candidate.join("parse.html").is_file()
+        })
+}
+
 pub(crate) fn resolve_bridge_jar(app: &AppHandle) -> Result<PathBuf, String> {
     for base_path in resolve_resource_jar_dirs(app) {
         let candidate = base_path.join("bridge.jar");
@@ -180,8 +526,67 @@ pub(crate) fn resolve_bridge_jar(app: &AppHandle) -> Result<PathBuf, String> {
     Err("bridge.jar not found in any candidate path".to_string())
 }
 
+pub(crate) fn resolve_anotherds_spider_jar(app: &AppHandle) -> Option<PathBuf> {
+    for base_path in resolve_resource_jar_dirs(app) {
+        let candidate = base_path.join("fallbacks").join("anotherds_spider.jar");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn class_hint_prefers_anotherds_primary(class_hint: Option<&str>) -> bool {
+    let normalized = normalized_class_hint(class_hint);
+    [
+        "douban",
+        "config",
+        "localfile",
+        "ygp",
+        "apprj",
+        "appget",
+        "appnox",
+        "appqi",
+        "appys",
+        "appysv2",
+        "hxq",
+        "bili",
+        "biliys",
+        "xbpq",
+        "jpys",
+        "wwys",
+        "jianpian",
+        "saohuo",
+        "gz360",
+        "liteapple",
+        "czsapp",
+        "sp360",
+        "kugou",
+    ]
+    .iter()
+    .any(|token| normalized.contains(token))
+}
+
 fn spider_log_lock() -> &'static Mutex<()> {
     SPIDER_LOG_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+pub(crate) fn spider_cache_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|v| v.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("spiders")
+}
+
+pub(crate) fn clear_spider_cached_artifacts() -> Result<(), String> {
+    clear_prepared_spider_cache();
+    crate::spider_cmds_profile::clear_spider_site_profile_cache();
+    let cache_dir = spider_cache_dir();
+    if !cache_dir.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(&cache_dir).map_err(|err| err.to_string())
 }
 
 fn spider_log_dir() -> PathBuf {
@@ -306,6 +711,11 @@ async fn ensure_spider_jar(_app: &AppHandle, spider_url_raw: &str) -> Result<Pat
         return Err("Spider URL is empty after normalization".to_string());
     }
 
+    if spider_url.eq_ignore_ascii_case("builtin://halo_spider.jar") {
+        return resolve_halo_spider_jar(_app)
+            .ok_or_else(|| "Bundled halo_spider.jar not found in any candidate path".to_string());
+    }
+
     if spider_url.starts_with("file://") {
         let mut path = spider_url.trim_start_matches("file:///").to_string();
         #[cfg(target_os = "windows")]
@@ -333,11 +743,7 @@ async fn ensure_spider_jar(_app: &AppHandle, spider_url_raw: &str) -> Result<Pat
         return Ok(local_path);
     }
 
-    let storage_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|v| v.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("spiders");
+    let storage_dir = spider_cache_dir();
     if !storage_dir.exists() {
         fs::create_dir_all(&storage_dir)
             .await
@@ -369,7 +775,6 @@ async fn ensure_spider_jar(_app: &AppHandle, spider_url_raw: &str) -> Result<Pat
         }
     }
 
-    let client = crate::media_cmds::build_client()?;
     let candidate_urls = build_spider_download_candidates(spider_url);
     let mut attempt_errors: Vec<String> = Vec::new();
     let mut downloaded: Option<(Vec<u8>, String)> = None;
@@ -384,28 +789,25 @@ async fn ensure_spider_jar(_app: &AppHandle, spider_url_raw: &str) -> Result<Pat
             append_spider_debug_log(&mirror_log);
         }
 
-        let response = match client.get(&candidate_url).send().await {
-            Ok(response) => response,
-            Err(err) => {
-                attempt_errors.push(format!("{} -> {}", candidate_url, err));
-                continue;
-            }
-        };
+        let artifact =
+            match crate::spider_artifact_download::download_spider_artifact(&candidate_url).await {
+                Ok(artifact) => artifact,
+                Err(err) => {
+                    attempt_errors.push(format!("{} -> {}", candidate_url, err));
+                    continue;
+                }
+            };
 
-        if !response.status().is_success() {
-            attempt_errors.push(format!("{} -> HTTP {}", candidate_url, response.status()));
-            continue;
+        if artifact.used_rescue_transport {
+            let rescue_log = format!(
+                "[SpiderBridge] Spider artifact rescue transport succeeded: {}",
+                candidate_url
+            );
+            println!("{}", rescue_log);
+            append_spider_debug_log(&rescue_log);
         }
 
-        let bytes = match response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                attempt_errors.push(format!("{} -> {}", candidate_url, err));
-                continue;
-            }
-        };
-
-        if !looks_like_jar_bytes(bytes.as_ref()) {
+        if !looks_like_jar_bytes(artifact.bytes.as_ref()) {
             attempt_errors.push(format!(
                 "{} -> downloaded content is not a valid jar",
                 candidate_url
@@ -413,7 +815,7 @@ async fn ensure_spider_jar(_app: &AppHandle, spider_url_raw: &str) -> Result<Pat
             continue;
         }
 
-        if !matches_expected_md5(bytes.as_ref(), expected_md5.as_deref()) {
+        if !matches_expected_md5(artifact.bytes.as_ref(), expected_md5.as_deref()) {
             // MD5 mismatch usually means the server updated the JAR after the config was published.
             // Treat as a soft warning: cache and use the new file anyway instead of rejecting it.
             let warn = format!(
@@ -425,7 +827,7 @@ async fn ensure_spider_jar(_app: &AppHandle, spider_url_raw: &str) -> Result<Pat
             append_spider_debug_log(&warn);
         }
 
-        downloaded = Some((bytes.to_vec(), candidate_url));
+        downloaded = Some((artifact.bytes, candidate_url));
         break;
     }
 
@@ -463,16 +865,18 @@ pub async fn spider_search(
     keyword: String,
     quick: bool,
 ) -> Result<String, String> {
-    crate::spider_cmds_exec::execute_spider_method(
+    Ok(execute_spider_contract(
         &app,
-        &spider_url,
-        &site_key,
-        &api_class,
-        &ext,
+        spider_url,
+        site_key,
+        api_class,
+        ext,
         "searchContent",
         vec![("string", keyword), ("bool", quick.to_string())],
     )
-    .await
+    .await?
+    .normalized_payload
+    .to_string())
 }
 
 /// tauri command to trigger homeContent
@@ -484,16 +888,18 @@ pub async fn spider_home(
     api_class: String,
     ext: String,
 ) -> Result<String, String> {
-    crate::spider_cmds_exec::execute_spider_method(
+    Ok(execute_spider_contract(
         &app,
-        &spider_url,
-        &site_key,
-        &api_class,
-        &ext,
+        spider_url,
+        site_key,
+        api_class,
+        ext,
         "homeContent",
         vec![("bool", "false".to_string())],
     )
-    .await
+    .await?
+    .normalized_payload
+    .to_string())
 }
 
 /// tauri command to trigger categoryContent
@@ -507,12 +913,12 @@ pub async fn spider_category(
     tid: String,
     pg: u32,
 ) -> Result<String, String> {
-    crate::spider_cmds_exec::execute_spider_method(
+    Ok(execute_spider_contract(
         &app,
-        &spider_url,
-        &site_key,
-        &api_class,
-        &ext,
+        spider_url,
+        site_key,
+        api_class,
+        ext,
         "categoryContent",
         vec![
             ("string", tid),
@@ -521,7 +927,9 @@ pub async fn spider_category(
             ("map", "".to_string()),
         ],
     )
-    .await
+    .await?
+    .normalized_payload
+    .to_string())
 }
 
 /// tauri command to trigger detailContent
@@ -537,16 +945,18 @@ pub async fn spider_detail(
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     let encoded_ids: Vec<String> = ids.iter().map(|s| STANDARD.encode(s)).collect();
 
-    crate::spider_cmds_exec::execute_spider_method(
+    Ok(execute_spider_contract(
         &app,
-        &spider_url,
-        &site_key,
-        &api_class,
-        &ext,
+        spider_url,
+        site_key,
+        api_class,
+        ext,
         "detailContent",
         vec![("list", encoded_ids.join(","))],
     )
-    .await
+    .await?
+    .normalized_payload
+    .to_string())
 }
 
 /// tauri command to trigger playerContent
@@ -564,12 +974,135 @@ pub async fn spider_player(
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     let encoded_flags: Vec<String> = vip_flags.iter().map(|s| STANDARD.encode(s)).collect();
 
-    crate::spider_cmds_exec::execute_spider_method(
+    Ok(execute_spider_contract(
         &app,
-        &spider_url,
-        &site_key,
-        &api_class,
-        &ext,
+        spider_url,
+        site_key,
+        api_class,
+        ext,
+        "playerContent",
+        vec![
+            ("string", flag),
+            ("string", id),
+            ("list", encoded_flags.join(",")),
+        ],
+    )
+    .await?
+    .normalized_payload
+    .to_string())
+}
+
+#[tauri::command]
+pub async fn spider_search_v2(
+    app: tauri::AppHandle,
+    spider_url: String,
+    site_key: String,
+    api_class: String,
+    ext: String,
+    keyword: String,
+    quick: bool,
+) -> Result<crate::spider_response_contract::NormalizedSpiderMethodResponse, String> {
+    execute_spider_contract(
+        &app,
+        spider_url,
+        site_key,
+        api_class,
+        ext,
+        "searchContent",
+        vec![("string", keyword), ("bool", quick.to_string())],
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn spider_home_v2(
+    app: tauri::AppHandle,
+    spider_url: String,
+    site_key: String,
+    api_class: String,
+    ext: String,
+) -> Result<crate::spider_response_contract::NormalizedSpiderMethodResponse, String> {
+    execute_spider_contract(
+        &app,
+        spider_url,
+        site_key,
+        api_class,
+        ext,
+        "homeContent",
+        vec![("bool", "false".to_string())],
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn spider_category_v2(
+    app: tauri::AppHandle,
+    spider_url: String,
+    site_key: String,
+    api_class: String,
+    ext: String,
+    tid: String,
+    pg: u32,
+) -> Result<crate::spider_response_contract::NormalizedSpiderMethodResponse, String> {
+    execute_spider_contract(
+        &app,
+        spider_url,
+        site_key,
+        api_class,
+        ext,
+        "categoryContent",
+        vec![
+            ("string", tid),
+            ("string", pg.to_string()),
+            ("bool", "false".to_string()),
+            ("map", "".to_string()),
+        ],
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn spider_detail_v2(
+    app: tauri::AppHandle,
+    spider_url: String,
+    site_key: String,
+    api_class: String,
+    ext: String,
+    ids: Vec<String>,
+) -> Result<crate::spider_response_contract::NormalizedSpiderMethodResponse, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let encoded_ids: Vec<String> = ids.iter().map(|s| STANDARD.encode(s)).collect();
+    execute_spider_contract(
+        &app,
+        spider_url,
+        site_key,
+        api_class,
+        ext,
+        "detailContent",
+        vec![("list", encoded_ids.join(","))],
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn spider_player_v2(
+    app: tauri::AppHandle,
+    spider_url: String,
+    site_key: String,
+    api_class: String,
+    ext: String,
+    flag: String,
+    id: String,
+    vip_flags: Vec<String>,
+) -> Result<crate::spider_response_contract::NormalizedSpiderMethodResponse, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let encoded_flags: Vec<String> = vip_flags.iter().map(|s| STANDARD.encode(s)).collect();
+    execute_spider_contract(
+        &app,
+        spider_url,
+        site_key,
+        api_class,
+        ext,
         "playerContent",
         vec![
             ("string", flag),
@@ -644,11 +1177,14 @@ fn resolve_halo_spider_jar(app: &AppHandle) -> Option<PathBuf> {
 pub async fn prefetch_spider_jar(
     app: tauri::AppHandle,
     spider_url: String,
+    api_class: Option<String>,
 ) -> Result<crate::spider_cmds_runtime::SpiderPrefetchResult, String> {
     if spider_url.is_empty() {
         return Err("spider_url is empty".to_string());
     }
-    let prepared = resolve_spider_jar_with_fallback(&app, &spider_url, "prefetch").await?;
+    let prepared =
+        resolve_spider_jar_with_fallback(&app, &spider_url, "prefetch", api_class.as_deref())
+            .await?;
     println!(
         "[SpiderBridge] prefetch_spider_jar OK: {}",
         prepared.prepared_jar_path.display()
@@ -732,9 +1268,45 @@ pub fn get_bridge_diagnostics(app: tauri::AppHandle) -> serde_json::Value {
     })
 }
 
+#[tauri::command]
+pub async fn cancel_spider_tasks(site_key: Option<String>) -> Result<u32, String> {
+    let cancelled = crate::spider_task_manager::cancel_spider_tasks(site_key.as_deref()).await;
+    Ok(cancelled as u32)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::build_spider_download_candidates;
+    use super::{
+        artifact_matches_class_hint, build_spider_download_candidates, cached_spider_class_tokens,
+        resolve_matching_cached_spider, should_fallback_after_prepare_failure,
+    };
+    use crate::spider_cmds_runtime::{
+        SpiderArtifactAnalysis, SpiderArtifactKind, SpiderExecutionTarget,
+    };
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_cache_dir(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!("halo-spider-cache-{name}-{nanos}"));
+        path
+    }
+
+    fn build_test_jar(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in entries {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
 
     #[test]
     fn jihulab_spider_url_gets_github_mirrors() {
@@ -761,5 +1333,87 @@ mod tests {
             candidates,
             vec!["https://example.com/custom_spider.jar".to_string()]
         );
+    }
+
+    #[test]
+    fn explicit_class_hint_blocks_halo_prepare_fallback() {
+        assert!(!should_fallback_after_prepare_failure(
+            "Failed to download target spider JAR from all candidates",
+            Some("csp_AppJg"),
+        ));
+    }
+
+    #[test]
+    fn unhinted_prepare_failure_can_fallback_to_halo() {
+        assert!(should_fallback_after_prepare_failure(
+            "Failed to download target spider JAR from all candidates",
+            None,
+        ));
+    }
+
+    #[test]
+    fn dex_transform_failure_never_falls_back_to_halo() {
+        assert!(!should_fallback_after_prepare_failure(
+            "Dex spider transform failed",
+            None,
+        ));
+    }
+
+    #[test]
+    fn cached_spider_class_tokens_strip_csp_prefix() {
+        assert_eq!(cached_spider_class_tokens(Some("csp_AppJg")), vec!["appjg"]);
+        assert_eq!(cached_spider_class_tokens(Some("App3Q")), vec!["app3q"]);
+        assert!(cached_spider_class_tokens(None).is_empty());
+    }
+
+    #[test]
+    fn artifact_matching_uses_simple_class_name() {
+        let artifact = SpiderArtifactAnalysis {
+            artifact_kind: SpiderArtifactKind::JvmJar,
+            required_runtime: SpiderExecutionTarget::DesktopDirect,
+            transformable: false,
+            original_jar_path: "demo.jar".to_string(),
+            prepared_jar_path: "demo.jar".to_string(),
+            class_inventory: vec![
+                "com.github.catvod.spider.AppJg".to_string(),
+                "com.github.catvod.spider.Other".to_string(),
+            ],
+            native_libs: Vec::new(),
+        };
+
+        assert!(artifact_matches_class_hint(&artifact, Some("csp_AppJg")));
+        assert!(!artifact_matches_class_hint(&artifact, Some("csp_App3Q")));
+    }
+
+    #[test]
+    fn resolves_newest_matching_cached_spider_by_class_hint() {
+        let cache_dir = temp_cache_dir("match");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let older = cache_dir.join("older.jar");
+        let newer = cache_dir.join("newer.jar");
+        let other = cache_dir.join("other.jar");
+
+        build_test_jar(
+            &older,
+            &[("com/github/catvod/spider/AppJg.class", b"classdata")],
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        build_test_jar(
+            &newer,
+            &[("com/github/catvod/spider/AppJg.class", b"classdata2")],
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        build_test_jar(
+            &other,
+            &[("com/github/catvod/spider/App3Q.class", b"classdata3")],
+        );
+
+        let matched = resolve_matching_cached_spider(&cache_dir, Some("csp_AppJg"))
+            .expect("expected matching cached jar");
+        assert_eq!(matched.original_jar_path, newer);
+        assert_eq!(matched.prepared_jar_path, matched.original_jar_path);
+
+        let _ = std::fs::remove_dir_all(&cache_dir);
     }
 }

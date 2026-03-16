@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 public final class BridgeRunner {
     private static final Base64.Decoder BASE64_DECODER = Base64.getDecoder();
@@ -19,7 +21,7 @@ public final class BridgeRunner {
     private BridgeRunner() {
     }
 
-    private static final class BridgeResponse {
+    static final class BridgeResponse {
         boolean ok;
         String result;
         String className;
@@ -42,9 +44,27 @@ public final class BridgeRunner {
             sb.append("}");
             return sb.toString();
         }
+
+        JSONObject toJsonObject() {
+            JSONObject payload = new JSONObject();
+            payload.put("ok", ok);
+            payload.put("className", className == null ? "" : className);
+            payload.put("error", error == null ? "" : error);
+
+            String resultStr = result == null ? "{}" : result;
+            if (resultStr.startsWith("{") || resultStr.startsWith("[")) {
+                try {
+                    payload.put("result", new org.json.JSONTokener(resultStr).nextValue());
+                    return payload;
+                } catch (Throwable ignored) {
+                }
+            }
+            payload.put("result", resultStr);
+            return payload;
+        }
     }
 
-    private static final class SpiderRuntimeClassLoader extends java.net.URLClassLoader {
+    static final class SpiderRuntimeClassLoader extends java.net.URLClassLoader {
         private final java.util.Set<String> preferredBridgeClasses;
 
         SpiderRuntimeClassLoader(
@@ -92,7 +112,7 @@ public final class BridgeRunner {
                 return super.findClass(name);
             } catch (ClassFormatError | UnsatisfiedLinkError error) {
                 System.err.println(
-                        "DEBUG: Skipping malformed class (ClassFormatError): " + name + " → " + error.getMessage());
+                        "DEBUG: Skipping malformed class (ClassFormatError): " + name + " 鈫?" + error.getMessage());
                 throw new ClassNotFoundException("Skipped due to ClassFormatError: " + name, error);
             }
         }
@@ -110,7 +130,12 @@ public final class BridgeRunner {
             String classHint = readEnv("HALO_CLASS_HINT", "");
             String ext = readEnv("HALO_EXT", "");
             String method = readEnv("HALO_METHOD", "").trim();
+            String proxyBaseUrl = readEnv("HALO_PROXY_BASE_URL", "").trim();
             List<Object> callArgs = readCallArgs();
+
+            if (!proxyBaseUrl.isEmpty()) {
+                System.setProperty("halo.proxy.baseUrl", proxyBaseUrl);
+            }
 
             // Intercept internal logs manually if needed
 
@@ -189,10 +214,11 @@ public final class BridgeRunner {
 
             Object spider;
             ClassLoader loader = null;
+            boolean isJsBridge = jarPath.endsWith(".js");
 
-            if (jarPath.endsWith(".js")) {
+            if (isJsBridge) {
                 String jsContent = new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(jarPath)), StandardCharsets.UTF_8);
-                spider = new JSBridge(jsContent);
+                spider = new JSBridge(jsContent, readEnv("HALO_JS_RUNTIME_ROOT", ""));
                 response.className = "com.halo.spider.JSBridge";
             } else {
                 loader = new SpiderRuntimeClassLoader(
@@ -206,7 +232,7 @@ public final class BridgeRunner {
                             return super.findClass(name);
                         } catch (ClassFormatError | UnsatisfiedLinkError e) {
                             System.err.println(
-                                    "DEBUG: Skipping malformed class (ClassFormatError): " + name + " → " + e.getMessage());
+                                    "DEBUG: Skipping malformed class (ClassFormatError): " + name + " 鈫?" + e.getMessage());
                             throw new ClassNotFoundException("Skipped due to ClassFormatError: " + name, e);
                         }
                     }
@@ -216,9 +242,11 @@ public final class BridgeRunner {
                 response.className = className;
 
                 Class<?> spiderClass = Class.forName(className, true, loader);
+                configureProxyRuntime(loader, proxyBaseUrl);
                 Constructor<?> constructor = spiderClass.getDeclaredConstructor();
                 constructor.setAccessible(true);
                 spider = constructor.newInstance();
+                seedSiteDefaults(spider, classHint, ext);
             }
 
             // Set context classloader so coerceArg can resolve Gson types from the spider JAR
@@ -230,14 +258,23 @@ public final class BridgeRunner {
                 System.setProperty("http.agent", "Mozilla/5.0 (Linux; Android 11; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Mobile Safari/537.36");
                 android.content.Context mockContext = new com.halo.spider.mock.MockContext(siteKey);
                 invokeGlobalInit(loader, mockContext);
+                BridgeRuntimeSetup.ensureDesktopRuntimeFiles(mockContext);
+                ensureMergeC0HttpRuntime(loader);
                 ensureMergeHttpRuntime(loader);
+                BridgeRuntimeSetup.ensureMergeFmHttpRuntime(loader);
+                BridgeRuntimeSetup.ensureMergeKHttpRuntime(loader);
+                BridgeRuntimeSetup.ensureMergeE0HttpRuntime(loader);
+                BridgeRuntimeSetup.ensureMergeA0HttpRuntime(loader);
+                ensureMergeZzHttpRuntime(loader);
                 invokeInitApi(spider);
-                invokeInit(spider, mockContext, ext);
+                invokeInit(spider, mockContext, ext, isJsBridge);
+                invokePrecallMethods(spider, readEnv("HALO_PRECALL_METHODS", ""));
 
-                System.err.println("DEBUG: [Bridge] Invoking " + (spider instanceof JSBridge ? "JSBridge" : spider.getClass().getSimpleName()) + "." + method + "()");
+                String displayName = isJsBridge ? "JSBridge" : spider.getClass().getSimpleName();
+                System.err.println("DEBUG: [Bridge] Invoking " + displayName + "." + method + "()");
                 Object result = "init".equals(method) ? "" : invokeMethod(spider, method, callArgs);
 
-                String resultStr = (result == null) ? "" : String.valueOf(result);
+                String resultStr = BridgeResultSerializer.serialize(result);
 
                 response.ok = true;
                 response.result = resultStr;
@@ -252,7 +289,7 @@ public final class BridgeRunner {
         originalOut.println(">>HALO_RESPONSE<<" + response.toJson() + ">>HALO_RESPONSE<<");
     }
 
-    private static String safeMessage(Throwable throwable) {
+    static String safeMessage(Throwable throwable) {
         StringBuilder sb = new StringBuilder();
         Throwable current = throwable;
         int depth = 0;
@@ -290,7 +327,7 @@ public final class BridgeRunner {
         return "1".equals(value) || "true".equalsIgnoreCase(value) || "yes".equalsIgnoreCase(value);
     }
 
-    private static List<java.net.URL> parseCompatJarUrls(String rawList) {
+    static List<java.net.URL> parseCompatJarUrls(String rawList) {
         if (rawList == null || rawList.trim().isEmpty()) {
             return Collections.emptyList();
         }
@@ -331,7 +368,7 @@ public final class BridgeRunner {
         return result;
     }
 
-    private static Object decodeArg(String type, String encoded) {
+    static Object decodeArg(String type, String encoded) {
         switch (type) {
             case "null":
                 return null;
@@ -424,7 +461,7 @@ public final class BridgeRunner {
         return out;
     }
 
-    private static String pickSpiderClassName(
+    static String pickSpiderClassName(
             String jarPath,
             String siteKey,
             String classHint,
@@ -594,18 +631,33 @@ public final class BridgeRunner {
         return bestClass;
     }
 
-    private static boolean needsAnotherdsFallback(String classHint) {
+    static boolean needsAnotherdsFallback(String classHint) {
         if (classHint == null) {
             return false;
         }
         String lower = classHint.toLowerCase();
         return lower.contains("apprj")
+                || lower.contains("appget")
+                || lower.contains("appnox")
+                || lower.contains("appqi")
+                || lower.contains("appys")
+                || lower.contains("appysv2")
                 || lower.contains("hxq")
                 || lower.contains("jianpian")
                 || lower.contains("jpian")
                 || lower.contains("douban")
+                || lower.contains("ygp")
+                || lower.contains("config")
+                || lower.contains("localfile")
                 || lower.contains("bili")
                 || lower.contains("biliys")
+                || lower.contains("wwys")
+                || lower.contains("saohuo")
+                || lower.contains("gz360")
+                || lower.contains("liteapple")
+                || lower.contains("czsapp")
+                || lower.contains("sp360")
+                || lower.contains("kugou")
                 || lower.contains("xbpq");
     }
 
@@ -624,7 +676,7 @@ public final class BridgeRunner {
         return classHint;
     }
 
-    private static boolean prefersAnotherdsPrimary(String classHint) {
+    static boolean prefersAnotherdsPrimary(String classHint) {
         if (classHint == null) {
             return false;
         }
@@ -641,16 +693,47 @@ public final class BridgeRunner {
                         || name.startsWith("com.github.catvod.utils."));
     }
 
-    private static java.util.Set<String> collectPreferredBridgeClasses(String classHint) {
+    static java.util.Set<String> collectPreferredBridgeClasses(String classHint) {
         if (classHint == null || classHint.trim().isEmpty()) {
             return java.util.Collections.emptySet();
         }
 
         java.util.LinkedHashSet<String> preferred = new java.util.LinkedHashSet<>();
         String lower = classHint.toLowerCase();
+        if (needsAnotherdsFallback(classHint) || lower.contains("xbpq")) {
+            preferred.add("com.github.catvod.spider.Init");
+        }
         if (lower.contains("hxq")) {
             preferred.add("com.github.catvod.crawler.Spider");
             preferred.add("com.github.catvod.spider.BaseSpiderAmns");
+        }
+        if (usesMergeFmHttpRuntimeCompat(lower)) {
+            preferred.add("com.github.catvod.spider.merge.FM.m.c");
+        }
+        if (lower.contains("douban")) {
+            preferred.add("com.github.catvod.spider.merge.k.c");
+            preferred.add("com.github.catvod.spider.merge.k.d");
+        }
+        if (usesAppHttpRuntimeCompat(lower)) {
+            preferred.add("com.github.catvod.spider.merge.k.c");
+            preferred.add("com.github.catvod.spider.merge.k.d");
+        }
+        if (usesAppCryptoRuntimeCompat(lower)) {
+            preferred.add("com.github.catvod.spider.merge.m.a");
+        }
+        if (usesAppMergeCModelCompat(lower)) {
+            preferred.add("com.github.catvod.spider.merge.c.a");
+            preferred.add("com.github.catvod.spider.merge.c.e");
+        }
+        if (usesAppA0RuntimeCompat(lower)) {
+            preferred.add("com.github.catvod.spider.merge.A0.yi");
+        }
+        if (lower.contains("biliys")) {
+            preferred.add("com.github.catvod.crawler.Spider");
+            preferred.add("com.github.catvod.spider.Spider");
+            preferred.add("com.github.catvod.spider.merge.E0.d.c");
+            preferred.add("com.github.catvod.spider.merge.E0.d.d");
+            preferred.add("com.github.catvod.spider.merge.E0.d.e");
         }
         if (lower.contains("jianpian") || lower.contains("jpian")) {
             preferred.add("com.github.catvod.spider.merge.A.h");
@@ -663,11 +746,49 @@ public final class BridgeRunner {
         return preferred;
     }
 
+    private static boolean usesAppHttpRuntimeCompat(String lower) {
+        return lower != null
+                && (lower.contains("appget")
+                        || lower.contains("app3q")
+                        || lower.contains("appjg")
+                        || lower.contains("appqi"));
+    }
+
+    private static boolean usesAppCryptoRuntimeCompat(String lower) {
+        return lower != null
+                && (lower.contains("appget")
+                        || lower.contains("app3q")
+                        || lower.contains("appjg")
+                        || lower.contains("appqi"));
+    }
+
+    private static boolean usesMergeFmHttpRuntimeCompat(String lower) {
+        return lower != null
+                && (lower.contains("douban")
+                        || lower.contains("ygp"));
+    }
+
+    private static boolean usesAppMergeCModelCompat(String lower) {
+        return lower != null
+                && (lower.contains("app3q")
+                        || lower.contains("appjg")
+                        || lower.contains("appqi")
+                        || lower.contains("apprj")
+                        || lower.contains("hxq"));
+    }
+
+    private static boolean usesAppA0RuntimeCompat(String lower) {
+        return lower != null
+                && (lower.contains("appysv2")
+                        || lower.contains("appfox")
+                        || lower.contains("appnox"));
+    }
+
     private static boolean shouldPreferBridgeOverride(String name, java.util.Set<String> preferredBridgeClasses) {
         return name != null && preferredBridgeClasses != null && preferredBridgeClasses.contains(name);
     }
 
-    private static void invokeGlobalInit(ClassLoader loader, android.content.Context context) {
+    static void invokeGlobalInit(ClassLoader loader, android.content.Context context) {
         if (loader == null || context == null) {
             return;
         }
@@ -807,7 +928,7 @@ public final class BridgeRunner {
         return holders;
     }
 
-    private static void ensureMergeHttpRuntime(ClassLoader loader) {
+    static void ensureMergeHttpRuntime(ClassLoader loader) {
         if (loader == null) {
             return;
         }
@@ -858,6 +979,107 @@ public final class BridgeRunner {
         }
     }
 
+    static void ensureMergeC0HttpRuntime(ClassLoader loader) {
+        if (loader == null) {
+            return;
+        }
+
+        try {
+            Class<?> holderClass = Class.forName("com.github.catvod.spider.merge.C0.h.a", true, loader);
+            Class<?> runtimeClass = Class.forName("com.github.catvod.spider.merge.C0.h.b", true, loader);
+            java.lang.reflect.Field holderField = null;
+            for (java.lang.reflect.Field field : holderClass.getDeclaredFields()) {
+                if (Modifier.isStatic(field.getModifiers()) && runtimeClass.isAssignableFrom(field.getType())) {
+                    holderField = field;
+                    break;
+                }
+            }
+            if (holderField == null) {
+                return;
+            }
+
+            holderField.setAccessible(true);
+            if (holderField.get(null) != null) {
+                return;
+            }
+
+            Constructor<?> runtimeCtor = runtimeClass.getDeclaredConstructor();
+            runtimeCtor.setAccessible(true);
+            Object runtime = runtimeCtor.newInstance();
+            Object client = buildRuntimeOkHttpClient(loader);
+            if (client == null) {
+                return;
+            }
+
+            for (java.lang.reflect.Field field : runtimeClass.getDeclaredFields()) {
+                if (!"okhttp3.OkHttpClient".equals(field.getType().getName())) {
+                    continue;
+                }
+                field.setAccessible(true);
+                if (field.get(runtime) == null) {
+                    field.set(runtime, client);
+                }
+            }
+
+            holderField.set(null, runtime);
+            System.err.println("DEBUG: Seeded merge.C0 runtime via " + holderClass.getName() + "." + holderField.getName());
+        } catch (ClassNotFoundException ignored) {
+        } catch (Throwable error) {
+            System.err.println("DEBUG: ensureMergeC0HttpRuntime failed: " + error.getMessage());
+        }
+    }
+
+    static void ensureMergeZzHttpRuntime(ClassLoader loader) {
+        if (loader == null) {
+            return;
+        }
+
+        try {
+            Class<?> holderClass = Class.forName("com.github.catvod.spider.merge.zz.l", true, loader);
+            Class<?> runtimeClass = Class.forName("com.github.catvod.spider.merge.zz.m", true, loader);
+            java.lang.reflect.Field holderField = null;
+            for (java.lang.reflect.Field field : holderClass.getDeclaredFields()) {
+                if (Modifier.isStatic(field.getModifiers()) && runtimeClass.isAssignableFrom(field.getType())) {
+                    holderField = field;
+                    break;
+                }
+            }
+            if (holderField == null) {
+                return;
+            }
+
+            holderField.setAccessible(true);
+            if (holderField.get(null) != null) {
+                return;
+            }
+
+            Constructor<?> runtimeCtor = runtimeClass.getDeclaredConstructor();
+            runtimeCtor.setAccessible(true);
+            Object runtime = runtimeCtor.newInstance();
+            Object client = buildRuntimeOkHttpClient(loader);
+            if (client != null) {
+                for (java.lang.reflect.Field field : runtimeClass.getDeclaredFields()) {
+                    if (!"okhttp3.OkHttpClient".equals(field.getType().getName())) {
+                        continue;
+                    }
+                    field.setAccessible(true);
+                    if (field.get(runtime) == null) {
+                        field.set(runtime, client);
+                    }
+                }
+            }
+            holderField.set(null, runtime);
+            System.err.println("DEBUG: Seeded merge.zz runtime via " + holderClass.getName() + "." + holderField.getName());
+        } catch (ClassNotFoundException ignored) {
+        } catch (Throwable error) {
+            System.err.println("DEBUG: ensureMergeZzHttpRuntime failed: " + error.getMessage());
+        }
+    }
+
+    static void seedSiteDefaults(Object spider, String classHint, String ext) {
+        BridgeSiteStateSeeder.seedDefaults(spider, classHint, ext);
+    }
+
     private static Object buildRuntimeOkHttpClient(ClassLoader loader) {
         try {
             Class<?> builderClass = Class.forName("okhttp3.OkHttpClient$Builder", true, loader);
@@ -898,7 +1120,7 @@ public final class BridgeRunner {
         }
     }
 
-    private static void invokeInitApi(Object spider) throws Exception {
+    static void invokeInitApi(Object spider) throws Exception {
         if (spider == null) {
             return;
         }
@@ -978,7 +1200,44 @@ public final class BridgeRunner {
         return "http://127.0.0.1:9966";
     }
 
-    private static File resolveAnotherdsFallbackJar(File bridgeDir, String jarPath) {
+    static void configureProxyRuntime(ClassLoader loader, String proxyBaseUrl) {
+        if (proxyBaseUrl == null || proxyBaseUrl.trim().isEmpty()) {
+            return;
+        }
+
+        int proxyPort = 9966;
+        try {
+            java.net.URI uri = java.net.URI.create(proxyBaseUrl);
+            if (uri.getPort() > 0) {
+                proxyPort = uri.getPort();
+            }
+        } catch (Throwable ignored) {
+        }
+
+        for (String className : new String[] {
+                "com.github.catvod.spider.Proxy",
+                "com.github.catvod.Proxy"
+        }) {
+            try {
+                Class<?> proxyClass = Class.forName(className, true, loader);
+                try {
+                    Method method = proxyClass.getMethod("setHostPort", String.class);
+                    method.setAccessible(true);
+                    method.invoke(null, proxyBaseUrl);
+                } catch (Throwable ignored) {
+                }
+                try {
+                    Method method = proxyClass.getMethod("set", int.class);
+                    method.setAccessible(true);
+                    method.invoke(null, proxyPort);
+                } catch (Throwable ignored) {
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    static File resolveAnotherdsFallbackJar(File bridgeDir, String jarPath) {
         String hintedPath = readEnv("HALO_FALLBACK_JAR", "").trim();
         if (!hintedPath.isEmpty()) {
             File hinted = new File(hintedPath);
@@ -1021,7 +1280,7 @@ public final class BridgeRunner {
                 || name.endsWith(".Context");
     }
 
-    private static void invokeInit(Object spider, android.content.Context context, String ext) throws Exception {
+    static void invokeInit(Object spider, android.content.Context context, String ext, boolean isJsBridge) throws Exception {
         Method[] methods = spider.getClass().getMethods();
         List<Method> initMethods = new ArrayList<>();
         for (Method method : methods) {
@@ -1031,8 +1290,10 @@ public final class BridgeRunner {
         }
         
         // Short-circuit for JSBridge
-        if (spider instanceof JSBridge) {
-            ((JSBridge) spider).init(context, ext);
+        if (isJsBridge || "com.halo.spider.JSBridge".equals(spider.getClass().getName())) {
+            Method jsInit = spider.getClass().getMethod("init", android.content.Context.class, String.class);
+            jsInit.setAccessible(true);
+            jsInit.invoke(spider, context, ext);
             return;
         }
 
@@ -1060,7 +1321,7 @@ public final class BridgeRunner {
             }
         }
 
-        // Pass 2: 1-param non-Context methods — pass coerced ext
+        // Pass 2: 1-param non-Context methods 鈥?pass coerced ext
         for (Method method : initMethods) {
             Class<?>[] params = method.getParameterTypes();
             if (params.length == 1 && !isContextLikeType(params[0])) {
@@ -1118,7 +1379,7 @@ public final class BridgeRunner {
         System.err.println("DEBUG: No init method found to invoke.");
     }
 
-    private static Object invokeMethod(Object spider, String methodName, List<Object> args)
+    static Object invokeMethod(Object spider, String methodName, List<Object> args)
             throws Exception {
         Method[] methods = spider.getClass().getMethods();
         List<Method> candidates = new ArrayList<>();
@@ -1137,11 +1398,38 @@ public final class BridgeRunner {
                         Math.abs(b.getParameterCount() - args.size())));
 
         Throwable lastError = null;
+        if (isContentMethod(methodName)) {
+            Object preferred = App3QCompat.preferDirectContentIfNeeded(spider, methodName, args);
+            if (preferred != null) {
+                System.err.println(
+                        "DEBUG: invokeMethod result type: "
+                                + (preferred == null ? "null" : preferred.getClass().getName()));
+                System.err.println(
+                        "DEBUG: invokeMethod result value: ["
+                                + (preferred == null ? "" : preferred.toString())
+                                + "]");
+                return preferred;
+            }
+        }
         for (Method method : candidates) {
             try {
                 Object[] callValues = coerceArgs(method.getParameterTypes(), args.toArray());
                 method.setAccessible(true);
                 Object result = method.invoke(spider, callValues);
+                if ("homeContent".equals(methodName)) {
+                    result = AppGetCompat.recoverHomeContentIfNeeded(spider, result);
+                    result = AppQiCompat.recoverHomeContentIfNeeded(spider, result);
+                    result = YgpCompat.recoverHomeContentIfNeeded(spider, result);
+                }
+                if (isContentMethod(methodName)) {
+                    result = App3QCompat.recoverContentIfNeeded(spider, methodName, args, result);
+                }
+                String bridgeHttpError = consumeBridgeHttpError(spider);
+                if (isContentMethod(methodName)
+                        && !bridgeHttpError.isEmpty()
+                        && looksLikeEmptyPayload(result)) {
+                    throw new RuntimeException("bridge HTTP runtime failure: " + bridgeHttpError);
+                }
                 System.err.println(
                         "DEBUG: invokeMethod result type: " + (result == null ? "null" : result.getClass().getName()));
                 System.err.println(
@@ -1154,7 +1442,98 @@ public final class BridgeRunner {
         if (lastError == null) {
             throw new RuntimeException("invoke method failed: " + methodName);
         }
+        if (isContentMethod(methodName)) {
+            Object recovered = App3QCompat.recoverContentAfterFailureIfNeeded(spider, methodName, args, lastError);
+            if (recovered != null) {
+                return recovered;
+            }
+        }
         throw new RuntimeException("invoke method failed: " + methodName, lastError);
+    }
+
+    private static boolean isContentMethod(String methodName) {
+        return "homeContent".equals(methodName)
+                || "categoryContent".equals(methodName)
+                || "searchContent".equals(methodName)
+                || "detailContent".equals(methodName)
+                || "playerContent".equals(methodName);
+    }
+
+    private static boolean looksLikeEmptyPayload(Object result) {
+        if (result == null) {
+            return true;
+        }
+        if (!(result instanceof String)) {
+            return false;
+        }
+
+        String payload = ((String) result).trim();
+        if (payload.isEmpty() || "[]".equals(payload) || "{}".equals(payload)) {
+            return true;
+        }
+        if (!payload.startsWith("{")) {
+            return false;
+        }
+
+        try {
+            JSONObject object = new JSONObject(payload);
+            JSONArray classItems = object.optJSONArray("class");
+            JSONArray listItems = object.optJSONArray("list");
+            return (classItems == null || classItems.length() == 0)
+                    && (listItems == null || listItems.length() == 0);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static String consumeBridgeHttpError(Object spider) {
+        if (spider == null) {
+            return "";
+        }
+
+        for (String className : new String[] {
+                "com.github.catvod.spider.merge.FM.m.c"
+        }) {
+            try {
+                Class<?> runtimeClass = Class.forName(className, true, spider.getClass().getClassLoader());
+                Method method = runtimeClass.getMethod("consumeLastError");
+                method.setAccessible(true);
+                Object value = method.invoke(null);
+                if (value instanceof String) {
+                    String text = ((String) value).trim();
+                    if (!text.isEmpty()) {
+                        return text;
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return "";
+    }
+
+    static void invokePrecallMethods(Object spider, String rawMethods) {
+        if (rawMethods == null || rawMethods.trim().isEmpty()) {
+            return;
+        }
+
+        for (String methodName : rawMethods.split(",")) {
+            String trimmed = methodName == null ? "" : methodName.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+
+            try {
+                System.err.println("DEBUG: [Bridge] Precalling " + spider.getClass().getSimpleName() + "." + trimmed + "()");
+                if ("homeContent".equals(trimmed)) {
+                    invokeMethod(spider, trimmed, java.util.Collections.singletonList(Boolean.FALSE));
+                } else {
+                    invokeMethod(spider, trimmed, java.util.Collections.emptyList());
+                }
+            } catch (Throwable error) {
+                System.err.println("DEBUG: precall " + trimmed + " failed: " + error.getMessage());
+                error.printStackTrace(System.err);
+            }
+        }
     }
 
     private static Object[] coerceArgs(Class<?>[] parameterTypes, Object[] sourceArgs) {
@@ -1294,3 +1673,4 @@ public final class BridgeRunner {
         return sb.toString();
     }
 }
+

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use tauri::AppHandle;
@@ -6,6 +7,7 @@ use tokio::process::Command;
 use zip::ZipArchive;
 
 const DESKTOP_TRANSFORM_VERSION: &str = "v3";
+static DEX_TRANSFORM_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 fn clean_path(path: &Path) -> String {
     let value = path.to_string_lossy().to_string();
@@ -22,6 +24,14 @@ fn desktop_spider_output_path(jar_path: &Path) -> PathBuf {
         .and_then(|value| value.to_str())
         .unwrap_or("spider");
     jar_path.with_file_name(format!("{stem}.desktop.{DESKTOP_TRANSFORM_VERSION}.jar"))
+}
+
+fn desktop_spider_temp_output_path(output_jar: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.converting.jar", output_jar.to_string_lossy()))
+}
+
+fn dex_transform_lock() -> &'static tokio::sync::Mutex<()> {
+    DEX_TRANSFORM_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 fn transformed_jar_is_fresh(app: &AppHandle, input: &Path, output: &Path) -> bool {
@@ -212,13 +222,23 @@ pub(crate) async fn ensure_desktop_spider_jar(
         return Ok(output_jar);
     }
 
+    let _guard = dex_transform_lock().lock().await;
+    if output_jar.is_file() && transformed_jar_is_fresh(app, jar_path, &output_jar) {
+        return Ok(output_jar);
+    }
+
+    let temp_output_jar = desktop_spider_temp_output_path(&output_jar);
+    if temp_output_jar.exists() {
+        let _ = std::fs::remove_file(&temp_output_jar);
+    }
+
     transform_dex_jar(app, jar_path, &output_jar).await?;
     Ok(output_jar)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{jar_is_dex_only, validate_transformed_jar};
+    use super::{desktop_spider_temp_output_path, jar_is_dex_only, validate_transformed_jar};
     use std::io::Write;
     use std::path::PathBuf;
 
@@ -280,5 +300,15 @@ mod tests {
         build_test_jar(&jar, &[("com/example/Test.class", b"classdata")]);
         assert!(validate_transformed_jar(&jar).is_ok());
         let _ = std::fs::remove_file(jar);
+    }
+
+    #[test]
+    fn builds_temp_output_path_next_to_target_jar() {
+        let output = PathBuf::from(r"D:\tmp\demo.desktop.v3.jar");
+        let temp = desktop_spider_temp_output_path(&output);
+        assert_eq!(
+            temp,
+            PathBuf::from(r"D:\tmp\demo.desktop.v3.jar.converting.jar")
+        );
     }
 }

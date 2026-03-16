@@ -8,14 +8,21 @@ mod media_cmds_network;
 mod media_cmds_source_fallbacks;
 #[path = "media_cmds/media_cmds_stream_probe.rs"]
 mod media_cmds_stream_probe;
+#[path = "media_cmds/media_cmds_transport.rs"]
+mod media_cmds_transport;
 #[path = "media_cmds/media_cmds_tvbox.rs"]
 mod media_cmds_tvbox;
 
 pub use media_cmds_hls::LiveProxyMetrics;
-pub(crate) use media_cmds_network::build_rescue_client;
+pub(crate) use media_cmds_network::build_transport_client;
 pub use media_cmds_network::{
     apply_request_headers, build_client, configure_http_client_builder,
     current_media_network_policy_generation, resolve_media_request,
+};
+pub(crate) use media_cmds_network::{build_rescue_client, build_rescue_transport_client};
+pub use media_cmds_transport::{
+    execute_media_transport_request, MediaTransportOptions, MediaTransportRequest,
+    MediaTransportResponse,
 };
 
 #[tauri::command]
@@ -31,6 +38,13 @@ pub fn set_media_network_policy(policy: Option<media_cmds_network::MediaNetworkP
 #[tauri::command]
 pub fn get_media_network_policy_status() -> media_cmds_network::MediaNetworkPolicyStatus {
     media_cmds_network::get_media_network_policy_status()
+}
+
+#[tauri::command]
+pub async fn execute_media_transport(
+    request: media_cmds_transport::MediaTransportRequest,
+) -> Result<media_cmds_transport::MediaTransportResponse, String> {
+    media_cmds_transport::execute_media_transport_request(request).await
 }
 
 #[tauri::command]
@@ -76,6 +90,14 @@ pub async fn resolve_jiexi(
     extra_headers: Option<std::collections::HashMap<String, String>>,
 ) -> Result<String, String> {
     media_cmds_jiexi::resolve_jiexi(jiexi_prefix, video_url, extra_headers).await
+}
+
+#[tauri::command]
+pub async fn resolve_wrapped_media_url(
+    target_url: String,
+    extra_headers: Option<std::collections::HashMap<String, String>>,
+) -> Result<String, String> {
+    media_cmds_jiexi::resolve_wrapped_media_url(target_url, extra_headers).await
 }
 
 #[tauri::command]

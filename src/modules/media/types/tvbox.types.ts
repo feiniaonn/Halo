@@ -79,6 +79,10 @@ export interface RawTvBoxConfig {
   rules?: unknown;
   doh?: unknown;
   proxy?: unknown;
+  proxyRules?: unknown;
+  tlsMode?: unknown;
+  caBundlePath?: unknown;
+  hostnameVerification?: unknown;
   hosts?: unknown;
   ads?: unknown;
   logo?: string;
@@ -89,6 +93,24 @@ export type TvBoxExtKind = "empty" | "text" | "object" | "array" | "url";
 export type TvBoxSiteSourceKind = "cms" | "spider";
 export type SpiderArtifactKind = "JvmJar" | "DexOnly" | "DexNative" | "Unknown";
 export type SpiderExecutionTarget = "desktop-direct" | "desktop-compat-pack" | "desktop-helper";
+export type SpiderExecutionPhase = "prefetch" | "profile" | "execute";
+export type SpiderRuntimeFamily = "fm-anotherds" | "app-merge-c" | "a0-js-heavy" | "pure-js-bridge" | "unknown";
+export type SpiderTransportTarget = "rust-unified" | "java-okhttp" | "java-okhttp-fallback" | "local-helper" | "unknown";
+export type SpiderFailureCode =
+  | "RemoteArtifactFetchFailed"
+  | "ClassSelectionMiss"
+  | "RuntimeInitFailed"
+  | "RuntimeMethodFailed"
+  | "TransportTlsFailed"
+  | "TransportProxyFailed"
+  | "TransportTimeout"
+  | "UpstreamForbidden"
+  | "UpstreamMalformedPayload"
+  | "PayloadSchemaInvalid"
+  | "DependencyMissing"
+  | "CapabilityUnsupported"
+  | "Unknown";
+export type SpiderSourceHealthImpact = "none" | "soft" | "hard";
 export type SpiderFailureKind =
   | "FetchError"
   | "TransformError"
@@ -112,6 +134,34 @@ export type SpiderRuntimeStatus =
   | "missing-dependency"
   | "site-error"
   | "temporarily-disabled";
+
+export type TvBoxTlsMode = "strict" | "allow_invalid";
+export type TvBoxHostnameVerificationMode = "strict" | "allow_invalid";
+
+export interface TvBoxProxyRule {
+  host: string;
+  proxyUrl: string;
+}
+
+export interface SpiderFeatureFlags {
+  unifiedRequestPolicyV1: boolean;
+  spiderExecutionEnvelopeV1: boolean;
+  normalizedPayloadV1: boolean;
+  spiderTaskManagerV1: boolean;
+}
+
+export interface SpiderExecutionTimings {
+  startedAtMs: number;
+  finishedAtMs: number;
+  durationMs: number;
+}
+
+export interface SpiderExecutionDiagnostics {
+  requestId: string;
+  rootCause?: string | null;
+  fallbackUsed: boolean;
+  schemaVersion: number;
+}
 
 export interface SpiderArtifactAnalysis {
   artifactKind: SpiderArtifactKind;
@@ -143,14 +193,48 @@ export interface SpiderExecutionReport {
   ok: boolean;
   siteKey: string;
   method: string;
+  phase?: SpiderExecutionPhase;
+  runtimeFamily?: SpiderRuntimeFamily;
   executionTarget: SpiderExecutionTarget;
+  transportTarget?: SpiderTransportTarget;
   className?: string | null;
   failureKind?: SpiderFailureKind | null;
+  failureCode?: SpiderFailureCode | null;
   failureMessage?: string | null;
   missingDependency?: string | null;
+  retryable?: boolean;
+  sourceHealthImpact?: SpiderSourceHealthImpact;
+  requestId?: string;
   checkedAtMs: number;
+  timings?: SpiderExecutionTimings;
+  diagnostics?: SpiderExecutionDiagnostics;
+  featureFlags?: SpiderFeatureFlags;
   artifact?: SpiderArtifactAnalysis | null;
   siteProfile?: SpiderSiteProfile | null;
+}
+
+export interface NormalizedSpiderMethodResponse<T = unknown> {
+  schemaVersion: number;
+  siteKey: string;
+  method: string;
+  rawPayload: string;
+  normalizedPayload: T;
+  report: SpiderExecutionReport;
+  envelope: {
+    ok: boolean;
+    siteKey: string;
+    method: string;
+    phase: SpiderExecutionPhase;
+    runtimeFamily: SpiderRuntimeFamily;
+    executionTarget: SpiderExecutionTarget | string;
+    transportTarget: SpiderTransportTarget;
+    failureCode?: SpiderFailureCode | null;
+    retryable: boolean;
+    sourceHealthImpact: SpiderSourceHealthImpact;
+    timings: SpiderExecutionTimings;
+    payload?: T | null;
+    diagnostics: SpiderExecutionDiagnostics;
+  };
 }
 
 export interface SpiderPrefetchResult {
@@ -163,7 +247,9 @@ export interface SpiderSiteRuntimeState {
   runtimeStatus: SpiderRuntimeStatus;
   executionTarget: SpiderExecutionTarget;
   healthCheckedAt: number | null;
+  lastReportMethod?: string;
   lastFailureKind?: SpiderFailureKind;
+  lastFailureCode?: SpiderFailureCode;
   lastFailureMessage?: string;
   missingDependency?: string;
   failureCount: number;
@@ -241,6 +327,10 @@ export interface NormalizedTvBoxConfig {
   rules: TvBoxPlaybackRule[];
   doh: TvBoxDoH[];
   proxy: string[];
+  proxyRules: TvBoxProxyRule[];
+  tlsMode: TvBoxTlsMode;
+  caBundlePath: string;
+  hostnameVerification: TvBoxHostnameVerificationMode;
   hosts: TvBoxHostMapping[];
   ads: string[];
   logo: string;

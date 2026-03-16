@@ -16,15 +16,21 @@ public class SSLCompat extends SSLSocketFactory {
     private final SSLSocketFactory delegate;
 
     public SSLCompat() {
-        SSLSocketFactory factory;
+        this(buildDefaultFactory());
+    }
+
+    public SSLCompat(SSLSocketFactory delegate) {
+        this.delegate = delegate == null ? buildDefaultFactory() : delegate;
+    }
+
+    private static SSLSocketFactory buildDefaultFactory() {
         try {
             SSLContext sslContext = SSLContext.getInstance("TLS");
             sslContext.init(null, null, new SecureRandom());
-            factory = sslContext.getSocketFactory();
+            return sslContext.getSocketFactory();
         } catch (Exception e) {
-            factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+            return (SSLSocketFactory) SSLSocketFactory.getDefault();
         }
-        this.delegate = factory;
     }
 
     @Override
@@ -64,7 +70,20 @@ public class SSLCompat extends SSLSocketFactory {
 
     private Socket enableTLS(Socket socket) {
         if (socket instanceof SSLSocket) {
-            ((SSLSocket) socket).setEnabledProtocols(new String[]{"TLSv1", "TLSv1.1", "TLSv1.2"});
+            SSLSocket sslSocket = (SSLSocket) socket;
+            String[] protocols = new String[] { "TLSv1.3", "TLSv1.2", "TLSv1.1", "TLSv1" };
+            java.util.List<String> supportedProtocols =
+                    java.util.Arrays.asList(sslSocket.getSupportedProtocols());
+            java.util.List<String> enabledProtocols = new java.util.ArrayList<>();
+            for (String protocol : protocols) {
+                if (supportedProtocols.contains(protocol)) {
+                    enabledProtocols.add(protocol);
+                }
+            }
+            if (!enabledProtocols.isEmpty()) {
+                sslSocket.setEnabledProtocols(enabledProtocols.toArray(new String[0]));
+            }
+            sslSocket.setEnabledCipherSuites(sslSocket.getSupportedCipherSuites());
         }
         return socket;
     }

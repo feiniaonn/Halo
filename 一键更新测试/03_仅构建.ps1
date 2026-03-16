@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 
 $exitCode = 0
 try {
-  Write-Host '=== Halo 仅构建（签名包）===' -ForegroundColor Magenta
+  Write-Host '=== Halo 仅构建（NSIS 安装包 + 签名）===' -ForegroundColor Magenta
   $ctx = Get-PublishContext
 
   $currentVersion = Get-CurrentVersion -ctx $ctx
@@ -27,7 +27,6 @@ try {
   $artifacts = Prepare-ReleaseArtifacts @prepareArgs
 
   Write-Ok "构建完成：$($artifacts.InstallerPath)"
-  Write-Ok "MSI 安装包：$($artifacts.MsiPath)"
   Write-Ok "签名文件：$($artifacts.SigPath)"
   Write-Ok "更新元数据：$($artifacts.LatestPath)"
 } catch {

@@ -1,6 +1,7 @@
-import { AppWindow, MonitorSmartphone, Power } from 'lucide-react';
+import { AppWindow, MonitorSmartphone, Power, Maximize } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
+import { Slider } from '@/components/ui/slider';
 import { cn } from '@/lib/utils';
 import type { CloseBehavior, MiniRestoreMode } from '@/modules/settings/types/settings.types';
 
@@ -8,16 +9,22 @@ export function WindowSettingsSection({
   launchAtLogin,
   closeBehavior,
   miniRestoreMode,
+  miniModeWidth,
+  miniModeHeight,
   onLaunchAtLoginChange,
   onCloseBehaviorChange,
   onMiniRestoreModeChange,
+  onMiniModeSizeChange,
 }: {
   launchAtLogin: boolean;
   closeBehavior: CloseBehavior;
   miniRestoreMode: MiniRestoreMode;
+  miniModeWidth: number;
+  miniModeHeight: number;
   onLaunchAtLoginChange: (enabled: boolean) => void;
   onCloseBehaviorChange: (behavior: CloseBehavior) => void;
   onMiniRestoreModeChange: (mode: MiniRestoreMode) => void;
+  onMiniModeSizeChange: (width: number, height: number) => void;
 }) {
   const closeOptions: Array<{
     id: CloseBehavior;
@@ -141,6 +148,49 @@ export function WindowSettingsSection({
                 <span className="text-xs text-muted-foreground">{option.description}</span>
               </div>
             ))}
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* 迷你模式尺寸设置 */}
+        <div className="flex flex-col gap-4 py-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Maximize className="size-4 text-primary" />
+              <h3 className="text-sm font-medium leading-none">迷你窗口尺寸</h3>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              自定义迷你窗口（灵动岛）的宽度和高度。
+            </p>
+          </div>
+          <div className="space-y-6 pt-2">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">宽度 ({miniModeWidth}px)</span>
+                <span className="text-xs text-muted-foreground">400px - 1000px</span>
+              </div>
+              <Slider
+                value={[miniModeWidth]}
+                min={400}
+                max={1000}
+                step={10}
+                onValueChange={(vals) => onMiniModeSizeChange(vals[0] ?? 700, miniModeHeight)}
+              />
+            </div>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">高度 ({miniModeHeight}px)</span>
+                <span className="text-xs text-muted-foreground">20px - 50px</span>
+              </div>
+              <Slider
+                value={[miniModeHeight]}
+                min={20}
+                max={50}
+                step={2}
+                onValueChange={(vals) => onMiniModeSizeChange(miniModeWidth, vals[0] ?? 50)}
+              />
+            </div>
           </div>
         </div>
       </section>

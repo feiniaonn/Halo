@@ -8,6 +8,18 @@ import type {
 } from "@/modules/media/types/tvbox.types";
 
 const SOFT_DISABLE_THRESHOLD = 3;
+const PREFLIGHT_METHODS = new Set(["prefetch", "profile"]);
+
+function isPreflightMethod(method?: string | null): boolean {
+  return PREFLIGHT_METHODS.has((method ?? "").trim());
+}
+
+function isImmediateSourceFailure(report: SpiderExecutionReport): boolean {
+  if (report.ok || report.method !== "homeContent") return false;
+
+  if (report.sourceHealthImpact === "hard") return true;
+  return report.failureCode === "ClassSelectionMiss" || report.failureKind === "ClassSelectionError";
+}
 
 function statusFromExecutionTarget(target: SpiderExecutionTarget): SpiderRuntimeStatus {
   switch (target) {
@@ -48,6 +60,37 @@ function statusFromFailure(kind?: SpiderFailureKind | null): SpiderRuntimeStatus
   }
 }
 
+function fallbackStatusFromPreflight(
+  previous: SpiderSiteRuntimeState | null | undefined,
+  report: SpiderExecutionReport,
+): SpiderRuntimeStatus {
+  const preferredTarget = report.siteProfile?.recommendedTarget ?? report.executionTarget;
+  if (preferredTarget !== "desktop-direct") {
+    return statusFromExecutionTarget(preferredTarget);
+  }
+  if (report.artifact) {
+    return statusFromArtifact(report.artifact);
+  }
+  if (previous?.artifact) {
+    return statusFromArtifact(previous.artifact);
+  }
+  return statusFromExecutionTarget(preferredTarget);
+}
+
+function mergeSupplementalState(
+  previous: SpiderSiteRuntimeState,
+  report: SpiderExecutionReport,
+): SpiderSiteRuntimeState {
+  return {
+    ...previous,
+    healthCheckedAt: Math.max(previous.healthCheckedAt ?? 0, report.checkedAtMs) || null,
+    artifact: report.artifact ?? previous.artifact,
+    siteProfile: report.siteProfile ?? previous.siteProfile,
+    requiredCompatPacks: report.siteProfile?.requiredCompatPacks ?? previous.requiredCompatPacks,
+    requiredHelperPorts: report.siteProfile?.requiredHelperPorts ?? previous.requiredHelperPorts,
+  };
+}
+
 export function buildCheckingSpiderRuntimeState(
   previous?: SpiderSiteRuntimeState | null,
 ): SpiderSiteRuntimeState {
@@ -55,7 +98,9 @@ export function buildCheckingSpiderRuntimeState(
     runtimeStatus: "checking",
     executionTarget: previous?.executionTarget ?? "desktop-direct",
     healthCheckedAt: previous?.healthCheckedAt ?? null,
+    lastReportMethod: previous?.lastReportMethod,
     lastFailureKind: previous?.lastFailureKind,
+    lastFailureCode: previous?.lastFailureCode,
     lastFailureMessage: previous?.lastFailureMessage,
     missingDependency: previous?.missingDependency,
     failureCount: previous?.failureCount ?? 0,
@@ -75,7 +120,9 @@ export function mergePrefetchArtifactState(
     runtimeStatus: previous?.softDisabled ? "temporarily-disabled" : statusFromArtifact(artifact),
     executionTarget: artifact.requiredRuntime,
     healthCheckedAt: previous?.healthCheckedAt ?? null,
+    lastReportMethod: "prefetch",
     lastFailureKind: previous?.lastFailureKind,
+    lastFailureCode: previous?.lastFailureCode,
     lastFailureMessage: previous?.lastFailureMessage,
     missingDependency: previous?.missingDependency,
     failureCount: previous?.failureCount ?? 0,
@@ -91,20 +138,52 @@ export function mergeSpiderExecutionReport(
   previous: SpiderSiteRuntimeState | null | undefined,
   report: SpiderExecutionReport,
 ): SpiderSiteRuntimeState {
-  const repeatedFailure = !report.ok && report.failureKind && previous?.lastFailureKind === report.failureKind;
-  const failureCount = report.ok ? 0 : repeatedFailure ? (previous?.failureCount ?? 0) + 1 : 1;
-  const softDisabled = !report.ok && failureCount >= SOFT_DISABLE_THRESHOLD;
-  const baseStatus = report.ok
+  if (previous?.healthCheckedAt && report.checkedAtMs < previous.healthCheckedAt) {
+    return previous;
+  }
+
+  const incomingStatus = report.ok
     ? statusFromExecutionTarget(report.executionTarget)
     : statusFromFailure(report.failureKind);
+  const incomingPreflight = isPreflightMethod(report.method);
+  const hasAuthoritativeContentState = !!previous?.lastReportMethod && !isPreflightMethod(previous.lastReportMethod);
+  if (incomingPreflight && previous && hasAuthoritativeContentState) {
+    return mergeSupplementalState(previous, report);
+  }
+
+  const suppressPreflightSiteError = incomingPreflight && !report.ok && incomingStatus === "site-error";
+  const immediateDisable = !suppressPreflightSiteError && isImmediateSourceFailure(report);
+  const repeatedFailure = !suppressPreflightSiteError
+    && !report.ok
+    && (
+      (report.failureCode && previous?.lastFailureCode === report.failureCode)
+      || (report.failureKind && previous?.lastFailureKind === report.failureKind)
+    );
+  const failureCount = report.ok
+    ? 0
+    : suppressPreflightSiteError
+      ? previous?.failureCount ?? 0
+      : immediateDisable
+      ? SOFT_DISABLE_THRESHOLD
+      : repeatedFailure
+        ? (previous?.failureCount ?? 0) + 1
+        : 1;
+  const softDisabled = suppressPreflightSiteError
+    ? previous?.softDisabled ?? false
+    : !report.ok && (immediateDisable || failureCount >= SOFT_DISABLE_THRESHOLD);
+  const baseStatus = suppressPreflightSiteError
+    ? fallbackStatusFromPreflight(previous, report)
+    : incomingStatus;
 
   return {
     runtimeStatus: softDisabled ? "temporarily-disabled" : baseStatus,
     executionTarget: report.executionTarget,
     healthCheckedAt: report.checkedAtMs,
-    lastFailureKind: report.failureKind ?? undefined,
-    lastFailureMessage: report.failureMessage ?? undefined,
-    missingDependency: report.missingDependency ?? undefined,
+    lastReportMethod: report.method,
+    lastFailureKind: suppressPreflightSiteError ? previous?.lastFailureKind : report.failureKind ?? undefined,
+    lastFailureCode: suppressPreflightSiteError ? previous?.lastFailureCode : report.failureCode ?? undefined,
+    lastFailureMessage: suppressPreflightSiteError ? previous?.lastFailureMessage : report.failureMessage ?? undefined,
+    missingDependency: suppressPreflightSiteError ? previous?.missingDependency : report.missingDependency ?? undefined,
     failureCount,
     softDisabled,
     artifact: report.artifact ?? previous?.artifact,
@@ -216,6 +295,10 @@ export function buildSpiderFailureNotice(
   fallbackMessage: string,
 ): string {
   if (!report) return fallbackMessage;
+
+  if (isImmediateSourceFailure(report)) {
+    return "当前接口疑似已失效或上游返回已变，本次会话已暂时隔离，避免重复拖慢页面。";
+  }
 
   if (report.failureKind === "MissingDependency" && report.missingDependency) {
     return `Spider 缺少运行依赖: ${report.missingDependency}`;
