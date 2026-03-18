@@ -23,6 +23,8 @@ interface MediaDetailModalProps {
   vodId: string;
   site: NormalizedTvBoxSite;
   spider: string;
+  sourceKey?: string;
+  repoUrl?: string;
   runtimeSessionKey?: string;
   policyGeneration?: number;
   fallbackTitle?: string;
@@ -75,6 +77,8 @@ export function MediaDetailModal({
   vodId,
   site,
   spider,
+  sourceKey,
+  repoUrl,
   runtimeSessionKey,
   policyGeneration,
   fallbackTitle = "",
@@ -102,7 +106,7 @@ export function MediaDetailModal({
     setError(null);
     setPlayWarning(null);
 
-    fetchVodDetail({ site, spider, runtimeSessionKey, policyGeneration }, vodId)
+    fetchVodDetail({ site, spider, sourceKey, repoUrl, runtimeSessionKey, policyGeneration }, vodId)
       .then((result) => {
         if (!mounted) return;
         setDetail(result.detail);
@@ -124,7 +128,7 @@ export function MediaDetailModal({
     return () => {
       mounted = false;
     };
-  }, [policyGeneration, runtimeSessionKey, site, spider, vodId]);
+  }, [policyGeneration, repoUrl, runtimeSessionKey, site, sourceKey, spider, vodId]);
 
   useEffect(() => {
     const keyword = fallbackTitle.trim() || detail?.vod_name?.trim() || "";

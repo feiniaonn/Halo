@@ -275,13 +275,15 @@ export function MediaPage() {
           vodId={vod.selectedVodId}
           site={vod.selectedVodSite ?? vod.activeVodSite!}
           spider={vod.config?.spider ?? ''}
+          sourceKey={vod.source}
+          repoUrl={vod.activeRepoUrl}
           runtimeSessionKey={vod.runtimeSessionKey}
           policyGeneration={vod.networkPolicyGeneration}
           fallbackTitle={vod.selectedVodTitle ?? ''}
           onClose={vod.clearSelectedVod}
           onPlay={() => vod.clearSelectedVod()}
           onPlayWithDetail={(detail, routes, routeIdx, episodeIdx, extInput) => {
-            const site = vod.activeVodSite;
+            const site = vod.selectedVodSite ?? vod.activeVodSite;
             if (!site) return;
             vod.clearSelectedVod();
             void vod.openVodFromDetail(site, extInput, detail, routes, routeIdx, episodeIdx);

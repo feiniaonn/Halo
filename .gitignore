@@ -76,23 +76,16 @@ USER.md
 MEMORY.md
 memory/
 plans/
+docs/
+tests/github_origin_snapshot/
 
 # Research / scratch outputs
 apk/
 apk/work/
-docs/github_origin_snapshot/
-docs/CMS单仓样本.json
-docs/其他Ai搜寻的网络资源.md
-docs/总测试报告.md
-docs/所有源.txt
-docs/点播模块优化执行提示.md
-docs/计划.md
-docs/豆包-removebg-preview.png
 javac_log.txt
 findings.md
 progress.md
 task_plan.md
-docs/log_txt.md
 src/components/test_write_probe.txt
 ggg.txt
 

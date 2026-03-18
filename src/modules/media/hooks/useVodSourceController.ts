@@ -47,6 +47,10 @@ import {
 import { sortVodSitesByRanking } from "@/modules/media/services/vodSourceRanking";
 import { useVodSiteRankings } from "@/modules/media/hooks/useVodSiteRankings";
 import {
+  loadPersistedAggregateSearchCache,
+  savePersistedAggregateSearchCache,
+} from "@/modules/media/services/vodPersistentCache";
+import {
   deleteTimedCacheByPrefix,
   readTimedCache,
   writeTimedCache,
@@ -540,6 +544,8 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       maxMatches,
       config,
       activeSiteKey,
+      sourceKey: sourceRef.current,
+      repoUrl: activeRepoUrlRef.current,
       runtimeSessionKey: runtimeSessionKeyRef.current,
       policyGeneration: networkPolicyGenerationRef.current,
       concurrency: VOD_AGGREGATE_SEARCH_CONCURRENCY,
@@ -1088,6 +1094,37 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         return;
       }
 
+      const persistedAggregate = await loadPersistedAggregateSearchCache(
+        sourceRef.current,
+        activeRepoUrlRef.current,
+        keyword,
+        siteKeys,
+      );
+      if (persistedAggregate) {
+        writeTimedCache(
+          aggregateCacheRef.current,
+          buildVodAggregateCacheKey(runtimeSessionKeyRef.current, keyword, siteKeys),
+          persistedAggregate,
+          VOD_AGGREGATE_CACHE_TTL_MS,
+        );
+        setVodList(persistedAggregate.items);
+        setAggregateSessionState(buildAggregateSessionState(keyword, persistedAggregate.statuses, false));
+        setLoadingVod(false);
+        searchInFlightRef.current = "";
+        for (const status of persistedAggregate.statuses) {
+          if (status.resultCount > 0) {
+            recordSiteSuccess(status.siteKey);
+          }
+        }
+        notify({
+          kind: persistedAggregate.items.length > 0 ? "success" : "warning",
+          text: persistedAggregate.items.length > 0
+            ? `已从持久缓存恢复 ${persistedAggregate.items.length} 条聚合结果。`
+            : "聚合缓存已命中，但没有可展示结果。",
+        });
+        return;
+      }
+
       let statuses: VodAggregateSessionState["statuses"] = [];
       let aggregateItems: VodAggregateResultItem[] = [];
 
@@ -1126,6 +1163,18 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
           },
           VOD_AGGREGATE_CACHE_TTL_MS,
         );
+        void savePersistedAggregateSearchCache(
+          sourceRef.current,
+          activeRepoUrlRef.current,
+          keyword,
+          siteKeys,
+          {
+            items: aggregateItems,
+            statuses,
+          },
+        ).catch(() => {
+          // Ignore persistence failures and keep the in-memory cache.
+        });
 
         for (const status of statuses) {
           if (status.resultCount > 0) {

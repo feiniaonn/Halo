@@ -59,6 +59,78 @@ pub fn record_vod_site_success(
 }
 
 #[tauri::command]
+pub fn load_vod_aggregate_search_cache(
+    source: String,
+    repo_url: Option<String>,
+    keyword: String,
+    site_set_key: String,
+) -> Result<Option<crate::vod_source_stats::VodCachedPayloadRecord>, String> {
+    crate::vod_source_stats::load_vod_aggregate_search_cache(
+        &source,
+        repo_url.as_deref(),
+        &keyword,
+        &site_set_key,
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+#[tauri::command]
+pub fn save_vod_aggregate_search_cache(
+    source: String,
+    repo_url: Option<String>,
+    keyword: String,
+    site_set_key: String,
+    payload_json: String,
+    ttl_ms: i64,
+) -> Result<(), String> {
+    crate::vod_source_stats::save_vod_aggregate_search_cache(
+        &source,
+        repo_url.as_deref(),
+        &keyword,
+        &site_set_key,
+        &payload_json,
+        chrono::Utc::now().timestamp_millis(),
+        ttl_ms,
+    )
+}
+
+#[tauri::command]
+pub fn load_vod_detail_cache(
+    source: String,
+    repo_url: Option<String>,
+    site_key: String,
+    vod_id: String,
+) -> Result<Option<crate::vod_source_stats::VodCachedPayloadRecord>, String> {
+    crate::vod_source_stats::load_vod_detail_cache(
+        &source,
+        repo_url.as_deref(),
+        &site_key,
+        &vod_id,
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+#[tauri::command]
+pub fn save_vod_detail_cache(
+    source: String,
+    repo_url: Option<String>,
+    site_key: String,
+    vod_id: String,
+    payload_json: String,
+    ttl_ms: i64,
+) -> Result<(), String> {
+    crate::vod_source_stats::save_vod_detail_cache(
+        &source,
+        repo_url.as_deref(),
+        &site_key,
+        &vod_id,
+        &payload_json,
+        chrono::Utc::now().timestamp_millis(),
+        ttl_ms,
+    )
+}
+
+#[tauri::command]
 pub fn set_media_network_policy(policy: Option<media_cmds_network::MediaNetworkPolicyInput>) {
     media_cmds_network::set_media_network_policy(policy);
 }

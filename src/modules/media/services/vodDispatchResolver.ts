@@ -22,6 +22,8 @@ interface ResolveVodDispatchMatchesArgs {
   maxMatches?: number;
   config: NormalizedTvBoxConfig;
   activeSiteKey: string;
+  sourceKey: string;
+  repoUrl: string;
   runtimeSessionKey: string;
   policyGeneration: number;
   concurrency: number;
@@ -39,6 +41,8 @@ export async function resolveVodDispatchMatches({
   maxMatches = 4,
   config,
   activeSiteKey,
+  sourceKey,
+  repoUrl,
   runtimeSessionKey,
   policyGeneration,
   concurrency,
@@ -124,6 +128,8 @@ export async function resolveVodDispatchMatches({
           {
             site,
             spider: config.spider,
+            sourceKey,
+            repoUrl,
             runtimeSessionKey,
             policyGeneration,
           },

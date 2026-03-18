@@ -2,6 +2,10 @@
 
 import { invokeSpiderDetailV2 } from "@/modules/media/services/spiderV2";
 import { parseVodDetailResponse, resolveSiteSpiderUrl } from "@/modules/media/services/tvboxConfig";
+import {
+  loadPersistedVodDetailCache,
+  savePersistedVodDetailCache,
+} from "@/modules/media/services/vodPersistentCache";
 import { resolveSiteExtInput } from "@/modules/media/services/tvboxRuntime";
 import type { NormalizedTvBoxSite } from "@/modules/media/types/tvbox.types";
 import type { VodDetail, VodEpisode, VodRoute } from "@/modules/media/types/vodWindow.types";
@@ -9,8 +13,11 @@ import type { VodDetail, VodEpisode, VodRoute } from "@/modules/media/types/vodW
 export interface VodDetailContext {
   site: NormalizedTvBoxSite;
   spider: string;
+  sourceKey?: string;
+  repoUrl?: string;
   runtimeSessionKey?: string;
   policyGeneration?: number;
+  forceRefresh?: boolean;
 }
 
 export function parseVodRoutes(playFrom?: string, playUrl?: string): VodRoute[] {
@@ -48,6 +55,16 @@ export async function fetchVodDetail(
   vodId: string,
 ): Promise<{ detail: VodDetail; routes: VodRoute[]; extInput: string; }> {
   const { site, spider } = context;
+  const sourceKey = context.sourceKey?.trim() ?? "";
+  const repoUrl = context.repoUrl?.trim() ?? "";
+  const normalizedVodId = String(vodId).trim();
+  if (!context.forceRefresh && sourceKey) {
+    const persisted = await loadPersistedVodDetailCache(sourceKey, repoUrl, site.key, normalizedVodId);
+    if (persisted) {
+      return persisted;
+    }
+  }
+
   const extInput = await resolveSiteExtInput(site, {
     sessionKey: context.runtimeSessionKey,
     policyGeneration: context.policyGeneration,
@@ -82,9 +99,17 @@ export async function fetchVodDetail(
     throw new Error("未获取到影视详情。");
   }
 
-  return {
+  const result = {
     detail,
     routes: parseVodRoutes(detail.vod_play_from, detail.vod_play_url),
     extInput,
   };
+
+  if (sourceKey && normalizedVodId) {
+    void savePersistedVodDetailCache(sourceKey, repoUrl, site.key, normalizedVodId, result).catch(() => {
+      // Ignore cache persistence failures and keep the fresh result.
+    });
+  }
+
+  return result;
 }
