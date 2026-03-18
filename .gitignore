@@ -64,6 +64,7 @@ src-tauri/spider-bridge/javac_log.txt
 # Local workspace / agent files
 .codex/
 .openclaw/
+.claude/
 .playwright-cli/
 AGENTS.md
 BOOTSTRAP.md
@@ -93,3 +94,9 @@ progress.md
 task_plan.md
 docs/log_txt.md
 src/components/test_write_probe.txt
+ggg.txt
+
+# Local publish secrets / one-off release notes
+一键更新测试/.publish-secrets.json
+一键更新测试/密钥.txt
+一键更新测试/更新公告.txt

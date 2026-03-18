@@ -1,2 +1,0 @@
-Summary for D:\Development\Projects\Halo\src-tauri\resources\jar\bridge.jar
-Decompiled with CFR 0.152

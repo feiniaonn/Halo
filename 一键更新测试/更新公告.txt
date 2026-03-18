@@ -1,4 +1,0 @@
-[Halo 0.3.100]
-1. 重构点播模块主链路，统一接入 headers、hosts、proxy、ads、rules、DoH 等网络策略。
-2. 新增流类型探测与浏览器解析动作白名单，提升 m3u8 / flv / mp4 判型与解析成功率。
-3. 优化 Spider、CMS、HLS 请求一致性，修复部分点播播放与更新链路问题。
