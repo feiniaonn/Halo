@@ -312,7 +312,7 @@ setCustomBgFailed(false);
         <SidebarInset
           className={cn(
             "bg-transparent flex-1 m-0 shadow-none border-none min-w-0 transition-all duration-300",
-            "overflow-y-auto overflow-x-hidden",
+            currentPage === "media" ? "overflow-hidden" : "overflow-y-auto overflow-x-hidden",
             "px-8 pt-1 pb-3",
           )}
         >

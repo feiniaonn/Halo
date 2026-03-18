@@ -396,6 +396,10 @@ fn validate_semantic_payload(method: &str, payload: &str) -> Result<(), String> 
 
     Ok(())
 }
+pub fn summarize_daemon_stderr_payload(payload: &str) -> String {
+    summarize_text_payload_for_log(payload)
+}
+
 fn summarize_text_payload_for_log(payload: &str) -> String {
     let trimmed = payload.trim();
     if trimmed.is_empty() {

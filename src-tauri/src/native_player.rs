@@ -752,11 +752,11 @@ pub fn native_player_status(
             let duration = get_mpv_property(&app, &effective_label, "duration", "double")
                 .ok()
                 .and_then(|value| value.as_f64());
-            let width = get_mpv_property(&app, &effective_label, "width", "int64")
+            let _width = get_mpv_property(&app, &effective_label, "width", "int64")
                 .ok()
                 .and_then(|value| value.as_i64())
                 .and_then(|value| u32::try_from(value).ok());
-            let height = get_mpv_property(&app, &effective_label, "height", "int64")
+            let _height = get_mpv_property(&app, &effective_label, "height", "int64")
                 .ok()
                 .and_then(|value| value.as_i64())
                 .and_then(|value| u32::try_from(value).ok());
@@ -778,7 +778,7 @@ pub fn native_player_status(
                 .unwrap_or(false);
 
             let first_frame_rendered = time_pos.unwrap_or(0.0) > 0.05
-                || (vo_configured && width.unwrap_or(0) > 0 && height.unwrap_or(0) > 0);
+                || vo_configured;
             let state = if session.error_code.is_some() {
                 "error"
             } else if idle_active {

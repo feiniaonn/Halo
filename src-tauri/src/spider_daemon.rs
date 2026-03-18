@@ -296,15 +296,27 @@ async fn spawn_daemon_process(app: &AppHandle) -> Result<Arc<SpiderDaemonProcess
     {
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
+            let mut next_line_is_debug_result = false;
             while let Ok(Some(line)) = lines.next_line().await {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
-                eprintln!("[SpiderDaemon:Log] {}", trimmed);
+                let output = if next_line_is_debug_result {
+                    next_line_is_debug_result = false;
+                    format!("SPIDER_DEBUG: result [{}]", crate::spider_cmds_exec::summarize_daemon_stderr_payload(trimmed))
+                } else if trimmed == "SPIDER_DEBUG: result" {
+                    next_line_is_debug_result = true;
+                    continue;
+                } else if let Some(payload) = trimmed.strip_prefix("DEBUG: invokeMethod result value: [").and_then(|s| s.strip_suffix(']')) {
+                    format!("DEBUG: invokeMethod result value: [{}]", crate::spider_cmds_exec::summarize_daemon_stderr_payload(payload))
+                } else {
+                    trimmed.to_string()
+                };
+                eprintln!("[SpiderDaemon:Log] {}", output);
                 crate::spider_cmds::append_spider_debug_log(&format!(
                     "[SpiderDaemon] {}",
-                    trimmed
+                    output
                 ));
             }
         });

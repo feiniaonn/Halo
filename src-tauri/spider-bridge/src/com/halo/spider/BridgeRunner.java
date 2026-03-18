@@ -1404,9 +1404,10 @@ public final class BridgeRunner {
                 System.err.println(
                         "DEBUG: invokeMethod result type: "
                                 + (preferred == null ? "null" : preferred.getClass().getName()));
+                String preferredStr = preferred == null ? "" : preferred.toString();
                 System.err.println(
                         "DEBUG: invokeMethod result value: ["
-                                + (preferred == null ? "" : preferred.toString())
+                                + (preferredStr.length() > 200 ? preferredStr.substring(0, 200) + "...(truncated len=" + preferredStr.length() + ")" : preferredStr)
                                 + "]");
                 return preferred;
             }
@@ -1432,8 +1433,11 @@ public final class BridgeRunner {
                 }
                 System.err.println(
                         "DEBUG: invokeMethod result type: " + (result == null ? "null" : result.getClass().getName()));
+                String resultStr = result == null ? "" : result.toString();
                 System.err.println(
-                        "DEBUG: invokeMethod result value: [" + (result == null ? "" : result.toString()) + "]");
+                        "DEBUG: invokeMethod result value: ["
+                                + (resultStr.length() > 200 ? resultStr.substring(0, 200) + "...(truncated len=" + resultStr.length() + ")" : resultStr)
+                                + "]");
                 return result;
             } catch (Throwable error) {
                 lastError = error;

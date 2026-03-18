@@ -7,11 +7,11 @@ use url::Url;
 
 const SEGMENT_CACHE_TTL_MS: u64 = 120_000;
 const SEGMENT_CACHE_MAX_ENTRIES: usize = 768;
-const SEGMENT_FETCH_MAX_ATTEMPTS: usize = 3;
-const MANIFEST_FETCH_MAX_ATTEMPTS: usize = 3;
-const FETCH_RETRY_BASE_DELAY_MS: u64 = 140;
-const INFLIGHT_WAIT_RETRY: usize = 6;
-const INFLIGHT_WAIT_MS: u64 = 40;
+const SEGMENT_FETCH_MAX_ATTEMPTS: usize = 2;
+const MANIFEST_FETCH_MAX_ATTEMPTS: usize = 2;
+const FETCH_RETRY_BASE_DELAY_MS: u64 = 100;
+const INFLIGHT_WAIT_RETRY: usize = 3;
+const INFLIGHT_WAIT_MS: u64 = 20;
 
 static VOD_SEGMENT_CACHE: LazyLock<Mutex<HashMap<String, SegmentCacheEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -414,7 +414,15 @@ async fn fetch_media_manifest(
             continue;
         }
 
-        return Ok(rewrite_manifest_content(&normalized, &final_url));
+        let rewritten = rewrite_manifest_content(&normalized, &final_url);
+        let preview_lines: Vec<&str> = rewritten.lines().take(8).collect();
+        eprintln!(
+            "[VodHlsRuntime] manifest fetched for {} (base={}), preview:\n{}",
+            url,
+            final_url,
+            preview_lines.join("\n")
+        );
+        return Ok(rewritten);
     }
 
     Err(format!(

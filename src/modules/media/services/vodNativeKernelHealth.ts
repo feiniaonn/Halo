@@ -59,9 +59,10 @@ export async function waitForNativePlayerReady(
   sessionId: string | null,
   timeoutMs: number,
 ): Promise<string> {
-  const deadline = Date.now() + timeoutMs;
+  let deadline = Date.now() + timeoutMs;
   let lastRelaySummary = 'relay=none';
   let lastNativeSummary = 'native=unknown';
+  let deadlineExtended = false;
 
   while (Date.now() < deadline) {
     const [status, relayStats] = await Promise.all([
@@ -102,6 +103,18 @@ export async function waitForNativePlayerReady(
       throw new Error(
         `native player ended before rendering (${lastNativeSummary} ${lastRelaySummary})`,
       );
+    }
+
+    // If mpv is actively loading segments, extend the deadline generously
+    if (
+      !deadlineExtended &&
+      engine === 'mpv' &&
+      status.state === 'loading' &&
+      relayStats &&
+      hasRelayPlaybackTraffic(relayStats)
+    ) {
+      deadline = Date.now() + 15_000;
+      deadlineExtended = true;
     }
 
     await sleep(POLL_INTERVAL_MS);

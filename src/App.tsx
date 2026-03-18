@@ -693,11 +693,10 @@ function App() {
             />
           ) : (
             <>
-              {page === "music" ? (
-                <MusicPage />
-              ) : page === "media" ? (
-                <MediaPage />
-              ) : page === "settings" ? (
+              <div className={page === "dashboard" ? "h-full" : "hidden"}><HomePage onNavigate={setPage} /></div>
+              <div className={page === "media" ? "flex flex-col h-full" : "hidden"}><MediaPage /></div>
+              <div className={page === "music" ? "flex flex-col h-full" : "hidden"}><MusicPage /></div>
+              <div className={page === "settings" ? "flex flex-col h-full" : "hidden"}>
                 <SettingsPage
                   bgType={bgType}
                   bgFsPath={bgFsPath}
@@ -711,9 +710,7 @@ function App() {
                   onMiniModeWidthChange={setMiniModeWidth}
                   onMiniModeHeightChange={setMiniModeHeight}
                 />
-              ) : page === "dashboard" ? (
-                <HomePage onNavigate={setPage} />
-              ) : null}
+              </div>
             </>
           )}
         </Suspense>

@@ -1,4 +1,4 @@
-﻿export type VodKernelMode = 'proxy' | 'direct' | 'mpv';
+﻿export type VodKernelMode = 'proxy' | 'direct' | 'mpv' | 'potplayer';
 export type VodSourceKind = 'cms' | 'spider';
 
 export interface TvBoxRequestHeaderRule {
