@@ -8,9 +8,9 @@ import {
   buildVodKernelPlan,
   type VodKernelDisplay,
   VOD_KERNEL_LABELS,
-  VOD_KERNEL_MAX_ATTEMPTS,
 } from '@/modules/media/services/vodKernelStateMachine';
 import {
+  clearSpiderPlayerPayloadCache,
   formatPlaybackTime,
   getVodPlaybackDiagnostics,
   resolveEpisodePlayback,
@@ -67,11 +67,11 @@ import type {
 
 const VOD_WINDOW_LABEL = 'vod_player';
 const NATIVE_PLAYER_STATUS_POLL_MS = 300;
-const NATIVE_PLAYER_STARTUP_TIMEOUT_MS = 12_000;
-const HLS_STARTUP_TIMEOUT_MS = 9_000;
-const DIRECT_STARTUP_TIMEOUT_MS = 7_000;
+const NATIVE_PLAYER_STARTUP_TIMEOUT_MS = 20_000;
+const HLS_STARTUP_TIMEOUT_MS = 15_000;
+const DIRECT_STARTUP_TIMEOUT_MS = 12_000;
 const VIDEO_ELEMENT_WAIT_TIMEOUT_MS = 1_500;
-const PLAYBACK_RESOLVE_TIMEOUT_MS = 30_000;
+const PLAYBACK_RESOLVE_TIMEOUT_MS = 12_000;
 
 interface KernelAttemptResult {
   ok: boolean;
@@ -95,6 +95,7 @@ const KERNEL_MODE_OPTIONS: Array<{ value: VodKernelMode; label: string }> = [
   { value: 'direct', label: 'HLS 直连' },
   { value: 'proxy', label: 'HLS 代理' },
   { value: 'mpv', label: 'MPV 内核' },
+  { value: 'potplayer', label: 'PotPlayer' },
 ];
 
 export interface VodPlayerProps {
@@ -612,6 +613,16 @@ export function VodPlayer({
       const lowerUrl = url.toLowerCase();
       const isM3u8 = streamKindHint === 'hls' || lowerUrl.includes('.m3u8');
 
+      if (forcedKernel === 'potplayer') {
+        try {
+          await invoke('launch_potplayer', { url, headers });
+          return { ok: true, retryable: false };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return { ok: false, retryable: false, reason: message };
+        }
+      }
+
       if (forcedKernel === 'mpv') {
         let relaySessionId: string | null = null;
         try {
@@ -1098,7 +1109,6 @@ export function VodPlayer({
       }
 
       const kernelPlan = buildVodKernelPlan(kernelModeRef.current);
-      const selectedKernel = kernelPlan[0];
       const resolveLog = buildPlaybackResolutionLog({
         routeName,
         episodeName: episode.name,
@@ -1111,74 +1121,53 @@ export function VodPlayer({
       appendMpvTestLog(resolveLog.replace('[VodPlayer]', '[vod]'));
       termLog(`[VodPlayer] kernel_plan=[${kernelPlan.join(',')}]`, 'info');
 
+      let lastFailReason = '未知错误';
       try {
-        termLog(
-          `[VodPlayer] kernel_attempt start kernel=${selectedKernel} attempt=1/${VOD_KERNEL_MAX_ATTEMPTS} next_action=fetch_url`,
-          'info',
-        );
-        if (selectedKernel === 'mpv') {
-          appendMpvTestLog(
-            `[vod][mpv] kernel=mpv attempt=1/${VOD_KERNEL_MAX_ATTEMPTS} next_action=fetch_url`,
-          );
-        }
-        showPlaybackNotice(`正在启动 ${VOD_KERNEL_LABELS[selectedKernel]}...`);
-
-        const result = await attemptPlayUrl(
-          stream.url,
-          stream.headers,
-          selectedKernel,
-          routeName,
-          streamKind,
-        );
-        if (requestId !== playRequestIdRef.current) {
-          return;
-        }
-
-        if (result.ok) {
+        for (let ki = 0; ki < kernelPlan.length; ki++) {
+          const selectedKernel = kernelPlan[ki];
+          const isLast = ki === kernelPlan.length - 1;
           termLog(
-            `[VodPlayer] kernel_attempt success kernel=${selectedKernel} attempt=1/${VOD_KERNEL_MAX_ATTEMPTS} next_action=playing`,
+            `[VodPlayer] kernel_attempt start kernel=${selectedKernel} attempt=${ki + 1}/${kernelPlan.length} next_action=fetch_url`,
             'info',
           );
-          setError(null);
-          showPlaybackNotice(null);
-          return;
+          if (selectedKernel === 'mpv') {
+            appendMpvTestLog(`[vod][mpv] kernel=mpv attempt=${ki + 1}/${kernelPlan.length} next_action=fetch_url`);
+          }
+          showPlaybackNotice(`正在启动 ${VOD_KERNEL_LABELS[selectedKernel]}...`);
+
+          let result: KernelAttemptResult;
+          try {
+            result = await attemptPlayUrl(stream.url, stream.headers, selectedKernel, routeName, streamKind);
+          } catch (err) {
+            result = { ok: false, retryable: true, reason: err instanceof Error ? err.message : String(err) };
+          }
+
+          if (requestId !== playRequestIdRef.current) return;
+
+          if (result.ok) {
+            termLog(`[VodPlayer] kernel_attempt success kernel=${selectedKernel} attempt=${ki + 1}/${kernelPlan.length} next_action=playing`, 'info');
+            setError(null);
+            showPlaybackNotice(null);
+            return;
+          }
+
+          lastFailReason = result.reason ?? '未知错误';
+          const reasonCode = inferReasonCode(lastFailReason);
+          termLog(
+            `[VodPlayer] kernel_attempt fail kernel=${selectedKernel} attempt=${ki + 1}/${kernelPlan.length} reason_code=${reasonCode} reason=${lastFailReason} next_action=${isLast ? 'manual_switch' : 'try_next_kernel'}`,
+            'warn',
+          );
+          if (selectedKernel === 'mpv') {
+            appendMpvTestLog(`[vod][mpv] kernel=mpv attempt=${ki + 1}/${kernelPlan.length} reason_code=${reasonCode} reason=${lastFailReason} next_action=${isLast ? 'manual_switch' : 'try_next_kernel'}`);
+          }
+          if (!isLast) {
+            showPlaybackNotice(`${VOD_KERNEL_LABELS[selectedKernel]} 失败，尝试 ${VOD_KERNEL_LABELS[kernelPlan[ki + 1]]}...`);
+          }
         }
 
-        const lastReason = result.reason ?? '未知错误';
-        const reasonCode = inferReasonCode(lastReason);
-        termLog(
-          `[VodPlayer] kernel_attempt fail kernel=${selectedKernel} attempt=1/${VOD_KERNEL_MAX_ATTEMPTS} reason_code=${reasonCode} reason=${lastReason} next_action=manual_switch`,
-          'warn',
-        );
-        if (selectedKernel === 'mpv') {
-          appendMpvTestLog(
-            `[vod][mpv] kernel=mpv attempt=1/${VOD_KERNEL_MAX_ATTEMPTS} reason_code=${reasonCode} reason=${lastReason} next_action=manual_switch`,
-          );
-        }
-        setError(`当前内核播放失败：${lastReason}`);
-        showPlaybackNotice('当前内核播放失败，请手动切换内核重试');
-        termLog(
-          `[VodPlayer] single kernel attempt failed kernel=${selectedKernel} reason=${lastReason}`,
-          'error',
-        );
-      } catch (error) {
-        const lastReason = error instanceof Error ? error.message : String(error);
-        const reasonCode = inferReasonCode(lastReason);
-        termLog(
-          `[VodPlayer] kernel_attempt fail kernel=${selectedKernel} attempt=1/${VOD_KERNEL_MAX_ATTEMPTS} reason_code=${reasonCode} reason=${lastReason} next_action=manual_switch`,
-          'warn',
-        );
-        if (selectedKernel === 'mpv') {
-          appendMpvTestLog(
-            `[vod][mpv] kernel=mpv attempt=1/${VOD_KERNEL_MAX_ATTEMPTS} reason_code=${reasonCode} reason=${lastReason} next_action=manual_switch`,
-          );
-        }
-        setError(`当前内核播放失败：${lastReason}`);
-        showPlaybackNotice('当前内核播放失败，请手动切换内核重试');
-        termLog(
-          `[VodPlayer] single kernel attempt threw kernel=${selectedKernel} reason=${lastReason}`,
-          'error',
-        );
+        setError(`所有内核播放失败：${lastFailReason}`);
+        showPlaybackNotice('所有内核均失败，请手动切换内核重试');
+        termLog(`[VodPlayer] all kernel attempts failed reason=${lastFailReason}`, 'error');
       } finally {
         releaseVodPlaybackLock(playbackLockKey, playbackLock.token);
         if (
@@ -1324,6 +1313,7 @@ export function VodPlayer({
     (nextMode: VodKernelMode) => {
       setKernelMode(nextMode);
       kernelModeRef.current = nextMode;
+      clearSpiderPlayerPayloadCache();
       if (activeEpisode && activeRoute) {
         void playEpisode(activeEpisode, activeRoute.sourceName);
       }

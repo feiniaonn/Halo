@@ -23,6 +23,43 @@ export interface TvBoxVodItem {
   vod_remarks: string;
 }
 
+export type VodBrowseMode = "site" | "aggregate";
+
+export interface VodAggregateSourceRef {
+  siteKey: string;
+  siteName: string;
+  sourceKind: TvBoxSiteSourceKind;
+  order: number;
+}
+
+export interface VodAggregateResultItem extends TvBoxVodItem {
+  aggregateSource: VodAggregateSourceRef;
+  aggregateKeyword: string;
+}
+
+export type VodBrowseItem = TvBoxVodItem | VodAggregateResultItem;
+
+export type VodAggregateSiteState = "idle" | "loading" | "success" | "empty" | "timeout" | "error";
+
+export interface VodAggregateSiteStatus {
+  siteKey: string;
+  siteName: string;
+  state: VodAggregateSiteState;
+  order: number;
+  resultCount: number;
+  message?: string;
+  updatedAt: number;
+}
+
+export interface VodAggregateSessionState {
+  keyword: string;
+  siteCount: number;
+  completedCount: number;
+  successCount: number;
+  isRunning: boolean;
+  statuses: VodAggregateSiteStatus[];
+}
+
 export interface VodResponse {
   class?: TvBoxClass[];
   list?: TvBoxVodItem[];

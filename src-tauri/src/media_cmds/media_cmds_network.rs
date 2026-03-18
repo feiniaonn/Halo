@@ -101,6 +101,7 @@ pub struct ResolvedMediaRequest {
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct MediaNetworkPolicyStatus {
+    pub generation: u64,
     pub request_header_rule_count: usize,
     pub host_mapping_count: usize,
     pub doh_entry_count: usize,
@@ -148,6 +149,7 @@ pub fn get_media_network_policy_status() -> MediaNetworkPolicyStatus {
     let state = current_media_network_policy();
     let doh_config = build_doh_config(&state.doh);
     MediaNetworkPolicyStatus {
+        generation: current_media_network_policy_generation(),
         request_header_rule_count: state.request_headers.len(),
         host_mapping_count: state.host_mappings.len(),
         doh_entry_count: state.doh.len(),

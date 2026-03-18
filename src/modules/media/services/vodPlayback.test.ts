@@ -16,6 +16,9 @@ describe("vodPlayback", () => {
       looksLikeDirectPlayableUrl("http://example.com/api/get?url=wrapped-video.m3u8"),
     ).toBe(false);
     expect(
+      looksLikeDirectPlayableUrl("http://wrapper.example.com/getM3u8?name=test&url=wrapped-video.m3u8"),
+    ).toBe(false);
+    expect(
       looksLikeDirectPlayableUrl("http://example.com/api/get?type=m3u8&token=123"),
     ).toBe(true);
   });

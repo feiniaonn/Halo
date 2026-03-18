@@ -402,6 +402,10 @@ pub fn get_music_data_dir() -> PathBuf {
     app_data_dir().join("music")
 }
 
+pub fn get_vod_data_dir() -> PathBuf {
+    app_data_dir().join("vod")
+}
+
 pub fn ensure_parent(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;

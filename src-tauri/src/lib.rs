@@ -32,6 +32,7 @@ mod system_overview;
 mod updater;
 mod vod_hls_relay;
 mod vod_hls_runtime;
+mod vod_source_stats;
 
 use db::PlayRecord;
 use settings::{
@@ -528,6 +529,9 @@ pub fn run() {
             updater_probe_endpoint,
             media_bootstrap::prepare_media_bootstrap,
             media_cmds::fetch_tvbox_config,
+            media_cmds::fetch_text_resource,
+            media_cmds::list_vod_site_rankings,
+            media_cmds::record_vod_site_success,
             media_cmds::set_media_network_policy,
             media_cmds::get_media_network_policy_status,
             media_cmds::execute_media_transport,
@@ -546,6 +550,7 @@ pub fn run() {
             media_cmds::reset_live_proxy_metrics,
             media_cmds::release_live_stream,
             media_cmds::note_live_buffer_anomaly,
+            media_cmds::launch_potplayer,
             vod_hls_relay::vod_open_hls_relay_session,
             vod_hls_relay::vod_close_hls_relay_session,
             vod_hls_relay::vod_get_hls_relay_stats,

@@ -9,7 +9,6 @@ import {
   resetSpiderRuntimeIsolation,
   shouldBlockAutoLoad,
 } from "@/modules/media/services/spiderRuntime";
-import { humanizeVodError } from "@/modules/media/services/mediaError";
 import {
   isSupportedSourceTarget,
   loadVodRepoSource,
@@ -18,13 +17,41 @@ import {
   readSpiderExecutionReport,
 } from "@/modules/media/services/mediaSourceLoader";
 import {
+  buildAggregateSessionState,
+  getDefaultVodBrowseMode,
+} from "@/modules/media/services/vodAggregateSearch";
+import { executeAggregateVodSearch } from "@/modules/media/services/vodAggregateExecutor";
+import {
+  buildVodAggregateCacheKey,
+  buildVodBrowseSessionCachePrefix,
+  buildVodCategoryCacheKey,
+  buildVodHomeCacheKey,
+} from "@/modules/media/services/vodBrowseCacheKeys";
+import {
+  mergeVodBrowseItems,
+  normalizeVodRequestErrorMessage,
+  runWithConcurrencyLimit,
+  withVodInterfaceTimeout,
+} from "@/modules/media/services/vodBrowseRuntime";
+import { resolveVodDispatchMatches } from "@/modules/media/services/vodDispatchResolver";
+import {
+  getSpiderRuntimeWarmupPromise as getWarmupPromiseFromMap,
+  triggerSpiderRuntimeWarmup,
+} from "@/modules/media/services/vodSpiderWarmup";
+import {
   clearVodSourceSelectionSnapshot,
   pickStoredSiteKey,
   readVodSourceSelectionSnapshot,
   writeVodSourceSelectionSnapshot,
 } from "@/modules/media/services/vodSourceSelection";
+import { sortVodSitesByRanking } from "@/modules/media/services/vodSourceRanking";
+import { useVodSiteRankings } from "@/modules/media/hooks/useVodSiteRankings";
+import {
+  deleteTimedCacheByPrefix,
+  readTimedCache,
+  writeTimedCache,
+} from "@/modules/media/services/vodSourceCache";
 import { clearVodImageProxyCache } from "@/modules/media/services/vodImageProxy";
-import { pickBestVodDispatchCandidate } from "@/modules/media/services/vodDispatchSearch";
 import {
   buildPresetClasses,
   parseSingleSource,
@@ -32,8 +59,7 @@ import {
   resolveSiteSpiderUrl,
 } from "@/modules/media/services/tvboxConfig";
 import { openVodPlayerWindow } from "@/modules/media/services/vodPlayerWindow";
-import { clearTvBoxRuntimeCaches, resolveSiteExtInput } from "@/modules/media/services/tvboxRuntime";
-import { fetchVodDetail } from "@/modules/media/services/vodDetail";
+import { clearTvBoxRuntimeCaches, prefetchSiteExtInputs, resolveSiteExtInput } from "@/modules/media/services/tvboxRuntime";
 import type { MediaNotice } from "@/modules/media/types/mediaPage.types";
 import type {
   CompatHelperStatus,
@@ -41,55 +67,32 @@ import type {
   SpiderExecutionReport,
   SpiderPrefetchResult,
   SpiderSiteRuntimeState,
+  VodAggregateResultItem,
+  VodAggregateSessionState,
+  VodBrowseItem,
+  VodBrowseMode,
   TvBoxClass,
   TvBoxRepoUrl,
-  TvBoxVodItem,
 } from "@/modules/media/types/tvbox.types";
 import type { VodDispatchCandidate } from "@/modules/media/types/vodDispatch.types";
+import type {
+  AggregateCacheEntry,
+  CategoryCacheEntry,
+  HomeCacheEntry,
+  MediaNetworkPolicyStatus,
+} from "@/modules/media/types/vodSourceController.types";
 import type { VodDetail, VodRoute } from "@/modules/media/types/vodWindow.types";
 
 const MEDIA_VOD_SOURCE_KEY = "halo_media_source_vod_single";
 const MEDIA_VOD_SITE_KEY = "halo_media_active_site_key";
-const VOD_INTERFACE_TIMEOUT_MS = 5000;
-const VOD_INTERFACE_TIMEOUT_CODE = `vod_interface_timeout_${VOD_INTERFACE_TIMEOUT_MS}ms`;
-
-function withVodInterfaceTimeout<T>(promise: Promise<T>, stage: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      reject(new Error(`${VOD_INTERFACE_TIMEOUT_CODE}:${stage}`));
-    }, VOD_INTERFACE_TIMEOUT_MS);
-
-    promise.then(
-      (value) => {
-        window.clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        window.clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
-
-function normalizeVodRequestErrorMessage(reason: unknown): string {
-  const message = reason instanceof Error ? reason.message : String(reason);
-  if (message.includes(VOD_INTERFACE_TIMEOUT_CODE) || /execution timeout exceeded after\s+\d+s/i.test(message)) {
-    return "接口解析超时（5秒）";
-  }
-  return humanizeVodError(message);
-}
+const VOD_BROWSE_CACHE_TTL_MS = 5 * 60 * 1000;
+const VOD_AGGREGATE_CACHE_TTL_MS = 2 * 60 * 1000;
+const VOD_EXT_PREFETCH_CONCURRENCY = 6;
+const VOD_AGGREGATE_SEARCH_CONCURRENCY = 8;
+const VOD_BACKGROUND_WARMUP_CONCURRENCY = 2;
+const VOD_BACKGROUND_WARMUP_MAX_SITES = 4;
 
 type SpiderJarStatus = "idle" | "loading" | "ready" | "error";
-
-interface MediaNetworkPolicyStatus {
-  request_header_rule_count: number;
-  host_mapping_count: number;
-  doh_entry_count: number;
-  supports_doh_resolver: boolean;
-  active_doh_provider_name?: string | null;
-  unsupported_doh_entry_count?: number;
-}
 
 interface UseVodSourceControllerOptions {
   notify: (notice: MediaNotice) => void;
@@ -107,27 +110,36 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [spiderJarStatus, setSpiderJarStatus] = useState<SpiderJarStatus>("idle");
   const [siteReloadToken, setSiteReloadToken] = useState(0);
+  const [networkPolicyGeneration, setNetworkPolicyGeneration] = useState(1);
+  const [browseMode, setBrowseMode] = useState<VodBrowseMode>("site");
+  const [aggregateSessionState, setAggregateSessionState] = useState<VodAggregateSessionState | null>(null);
 
   const [classFilterKeyword, setClassFilterKeyword] = useState("");
   const [vodSearchKeyword, setVodSearchKeyword] = useState("");
   const [activeSearchKeyword, setActiveSearchKeyword] = useState("");
   const [vodClasses, setVodClasses] = useState<TvBoxClass[]>([]);
   const [activeClassId, setActiveClassId] = useState("");
-  const [vodList, setVodList] = useState<TvBoxVodItem[]>([]);
+  const [vodList, setVodList] = useState<VodBrowseItem[]>([]);
   const [loadingVod, setLoadingVod] = useState(false);
   const [vodPage, setVodPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [selectedVodId, setSelectedVodId] = useState<string | null>(null);
   const [selectedVodTitle, setSelectedVodTitle] = useState<string | null>(null);
+  const [selectedVodSiteKey, setSelectedVodSiteKey] = useState<string | null>(null);
 
   const activeSiteKeyRef = useRef("");
   const activeRepoUrlRef = useRef("");
   const sourceRef = useRef(source);
   const activeClassIdRef = useRef("");
-  const prefetchInFlightRef = useRef("");
+  const runtimeSessionKeyRef = useRef("");
+  const browseModeRef = useRef<VodBrowseMode>("site");
+  const networkPolicyGenerationRef = useRef(1);
   const prefetchPromiseRef = useRef<Promise<SpiderPrefetchResult | null> | null>(null);
-  const prefetchPromiseKeyRef = useRef("");
+  const runtimeWarmupPromisesRef = useRef(new Map<string, Promise<SpiderPrefetchResult | null>>());
+  const homeCacheRef = useRef(new Map<string, { value: HomeCacheEntry; expiresAt: number }>());
+  const categoryCacheRef = useRef(new Map<string, { value: CategoryCacheEntry; expiresAt: number }>());
+  const aggregateCacheRef = useRef(new Map<string, { value: AggregateCacheEntry; expiresAt: number }>());
   const homeRequestRef = useRef(0);
   const homeInFlightRef = useRef("");
   const categoryRequestRef = useRef(0);
@@ -153,9 +165,28 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     sourceRef.current = source;
   }, [source]);
 
+  const { siteRankings, recordSiteSuccess } = useVodSiteRankings(source, activeRepoUrl);
+
   useEffect(() => {
     activeClassIdRef.current = activeClassId;
   }, [activeClassId]);
+
+  useEffect(() => {
+    browseModeRef.current = browseMode;
+  }, [browseMode]);
+
+  useEffect(() => {
+    networkPolicyGenerationRef.current = networkPolicyGeneration;
+  }, [networkPolicyGeneration]);
+
+  const runtimeSessionKey = useMemo(
+    () => [source.trim(), activeRepoUrl.trim() || "__root__", String(networkPolicyGeneration)].join("::"),
+    [activeRepoUrl, networkPolicyGeneration, source],
+  );
+
+  useEffect(() => {
+    runtimeSessionKeyRef.current = runtimeSessionKey;
+  }, [runtimeSessionKey]);
 
   const invalidateVodRequests = useCallback(() => {
     homeRequestRef.current += 1;
@@ -165,7 +196,6 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     homeInFlightRef.current = "";
     categoryInFlightRef.current = "";
     searchInFlightRef.current = "";
-    prefetchInFlightRef.current = "";
     void invoke<number>("cancel_spider_tasks", { siteKey: null }).catch(() => {
       // Ignore best-effort cancellation failures and let generation guards discard stale results.
     });
@@ -207,16 +237,26 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     });
   }, []);
 
+  const clearBrowseCaches = useCallback((siteKey?: string) => {
+    const prefix = buildVodBrowseSessionCachePrefix(runtimeSessionKeyRef.current, siteKey);
+    deleteTimedCacheByPrefix(homeCacheRef.current, prefix);
+    deleteTimedCacheByPrefix(categoryCacheRef.current, prefix);
+    deleteTimedCacheByPrefix(aggregateCacheRef.current, buildVodBrowseSessionCachePrefix(runtimeSessionKeyRef.current));
+  }, []);
+
   const resetVodRuntimeState = useCallback(() => {
     invalidateVodRequests();
     clearSpiderExecutionReport();
-    clearTvBoxRuntimeCaches();
+    clearTvBoxRuntimeCaches(runtimeSessionKeyRef.current);
+    runtimeWarmupPromisesRef.current.clear();
+    clearBrowseCaches();
     clearVodImageProxyCache();
     setSiteRuntimeStates({});
     setSpiderJarStatus("idle");
+    setAggregateSessionState(null);
     setLoadingVod(false);
     setLoadingMore(false);
-  }, [clearSpiderExecutionReport, invalidateVodRequests]);
+  }, [clearBrowseCaches, clearSpiderExecutionReport, invalidateVodRequests]);
 
   const persistSelection = useCallback((next: {
     source?: string;
@@ -243,6 +283,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     setClassFilterKeyword("");
     setVodSearchKeyword("");
     setActiveSearchKeyword("");
+    setAggregateSessionState(null);
     setVodClasses([]);
     setActiveClassId("");
     setVodList([]);
@@ -250,17 +291,24 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     setHasMore(true);
     setSelectedVodId(null);
     setSelectedVodTitle(null);
+    setSelectedVodSiteKey(null);
   }, []);
 
-  const selectVodItem = useCallback((item: TvBoxVodItem | null) => {
+  const selectVodItem = useCallback((item: VodBrowseItem | null) => {
     setSelectedVodId(item?.vod_id ?? null);
     setSelectedVodTitle(item?.vod_name?.trim() || null);
+    setSelectedVodSiteKey(
+      item && "aggregateSource" in item
+        ? item.aggregateSource.siteKey
+        : activeSiteKeyRef.current || null,
+    );
   }, []);
 
   const clearSelectedVod = useCallback(() => {
     invalidateVodRequests();
     setSelectedVodId(null);
     setSelectedVodTitle(null);
+    setSelectedVodSiteKey(null);
   }, [invalidateVodRequests]);
 
   useEffect(() => () => {
@@ -274,20 +322,20 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     return vodClasses.filter((item) => item.type_name.toLowerCase().includes(keyword));
   }, [classFilterKeyword, vodClasses]);
 
-  const activeVodSite = useMemo(
-    () => config?.sites.find((site) => site.key === activeSiteKey) ?? null,
-    [activeSiteKey, config],
-  );
+  const activeVodSite = useMemo(() => config?.sites.find((site) => site.key === activeSiteKey) ?? null, [activeSiteKey, config]);
 
-  const activeSiteRuntime = useMemo(
-    () => (activeSiteKey ? siteRuntimeStates[activeSiteKey] ?? null : null),
-    [activeSiteKey, siteRuntimeStates],
-  );
+  const activeSiteRuntime = useMemo(() => (activeSiteKey ? siteRuntimeStates[activeSiteKey] ?? null : null), [activeSiteKey, siteRuntimeStates]);
 
-  const activeSiteAutoLoadBlocked = useMemo(
-    () => shouldBlockAutoLoad(activeSiteRuntime),
-    [activeSiteRuntime],
-  );
+  const prioritizedSites = useMemo(() => (config ? sortVodSitesByRanking(config.sites, siteRankings, activeSiteKey) : []), [activeSiteKey, config, siteRankings]);
+
+  const aggregateEligibleSites = useMemo(() => prioritizedSites.filter((site) => site.capability.canSearch), [prioritizedSites]);
+
+  const supportsAggregateBrowse = aggregateEligibleSites.length > 1;
+  const effectiveBrowseMode = supportsAggregateBrowse ? browseMode : "site";
+
+  const selectedVodSite = useMemo(() => config?.sites.find((site) => site.key === selectedVodSiteKey) ?? activeVodSite, [activeVodSite, config, selectedVodSiteKey]);
+
+  const activeSiteAutoLoadBlocked = useMemo(() => shouldBlockAutoLoad(activeSiteRuntime), [activeSiteRuntime]);
 
   const detailEnabled = !!activeVodSite?.capability.supportsDetail;
 
@@ -308,6 +356,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
 
     invoke<MediaNetworkPolicyStatus>("get_media_network_policy_status")
       .then((status) => {
+        setNetworkPolicyGeneration(status.generation || 1);
         if (status.doh_entry_count > 0 && !status.supports_doh_resolver) {
           notify({
             kind: "warning",
@@ -327,6 +376,15 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         console.warn("[Media] Failed to read network policy status:", error);
       });
   }, [config, notify]);
+
+  useEffect(() => {
+    if (supportsAggregateBrowse) {
+      return;
+    }
+    if (browseModeRef.current !== "site") {
+      setBrowseMode("site");
+    }
+  }, [supportsAggregateBrowse]);
 
   const syncDraft = useCallback(() => {
     setDraft(source);
@@ -371,83 +429,52 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     }
   }, []);
 
-  const triggerJarPrefetch = useCallback((siteKey: string, spiderUrl: string, apiClass: string, ext: string) => {
-    if (!spiderUrl) return;
-    if (/app3q/i.test(apiClass)) {
-      setSpiderJarStatus("ready");
-      return Promise.resolve(null);
-    }
-    const generation = controllerGenerationRef.current;
-    const requestKey = [siteKey, spiderUrl, apiClass, ext].join("::");
-    if (prefetchPromiseKeyRef.current === requestKey && prefetchPromiseRef.current) {
-      return prefetchPromiseRef.current;
-    }
-    if (prefetchInFlightRef.current === requestKey) return prefetchPromiseRef.current;
-    prefetchInFlightRef.current = requestKey;
-    prefetchPromiseKeyRef.current = requestKey;
-    clearSpiderExecutionReport(siteKey);
+  const resolveSiteExt = useCallback((
+    site: Pick<NonNullable<NormalizedTvBoxConfig["sites"][number]>, "api" | "extKind" | "extValue">,
+    options?: { forceRefresh?: boolean },
+  ) => {
+    return resolveSiteExtInput(site, {
+      sessionKey: runtimeSessionKeyRef.current,
+      policyGeneration: networkPolicyGenerationRef.current,
+      forceRefresh: options?.forceRefresh,
+    });
+  }, []);
 
-    setSpiderJarStatus("loading");
-    if (siteKey) {
-      setSiteRuntimeStates((current) => ({
-        ...current,
-        [siteKey]: buildCheckingSpiderRuntimeState(current[siteKey]),
-      }));
-    }
+  const getSpiderRuntimeWarmupPromise = useCallback((spiderUrl: string, apiClass: string) => {
+    return getWarmupPromiseFromMap(runtimeWarmupPromisesRef.current, spiderUrl, apiClass);
+  }, []);
 
-    const prefetchPromise = invoke<SpiderPrefetchResult>("prefetch_spider_jar", { spiderUrl, apiClass })
-      .then(async (result) => {
-        if (isStaleControllerGeneration(generation)) return null;
-        setSpiderJarStatus("ready");
-        if (!siteKey) return result;
-
-        applySpiderPrefetchState(siteKey, result);
-        const profileReport = await invoke<SpiderExecutionReport>("profile_spider_site", {
-          spiderUrl,
-          siteKey,
-          apiClass,
-          ext,
-        });
-        if (isStaleControllerGeneration(generation)) return null;
-        applySpiderExecutionState(siteKey, profileReport);
-        if (profileReport.executionTarget === "desktop-helper") {
-          await syncCompatHelperStatus();
-        }
-        return result;
-      })
-      .catch((reason) => {
-        if (isStaleControllerGeneration(generation)) return null;
-        console.warn("[Spider] JAR pre-fetch failed:", reason);
-        setSpiderJarStatus("error");
-
-        const message = reason instanceof Error ? reason.message : String(reason);
-        if (siteKey) {
-          applySpiderExecutionState(siteKey, {
-            ok: false,
-            siteKey,
-            method: "prefetch",
-            executionTarget: "desktop-direct",
-            failureKind: "FetchError",
-            failureMessage: message,
-            checkedAtMs: Date.now(),
-            artifact: null,
-            siteProfile: null,
-          });
-        }
-        notify({ kind: "warning", text: humanizeVodError(message) });
-        return null;
-      })
-      .finally(() => {
-        if (prefetchInFlightRef.current === requestKey) {
-          prefetchInFlightRef.current = "";
-        }
-        if (prefetchPromiseKeyRef.current === requestKey) {
-          prefetchPromiseKeyRef.current = "";
-          prefetchPromiseRef.current = null;
-        }
-      });
-    prefetchPromiseRef.current = prefetchPromise;
-    return prefetchPromise;
+  const triggerJarPrefetch = useCallback((
+    siteKey: string,
+    spiderUrl: string,
+    apiClass: string,
+    ext: string,
+    options?: { trackAsActive?: boolean; profileSite?: boolean },
+  ) => {
+    return triggerSpiderRuntimeWarmup({
+      siteKey,
+      spiderUrl,
+      apiClass,
+      ext,
+      generation: controllerGenerationRef.current,
+      runtimeWarmupPromises: runtimeWarmupPromisesRef.current,
+      activePrefetchPromiseRef: prefetchPromiseRef,
+      isStaleControllerGeneration,
+      clearSpiderExecutionReport,
+      applySpiderPrefetchState,
+      applySpiderExecutionState,
+      syncCompatHelperStatus,
+      onSetSiteChecking: (nextSiteKey) => {
+        setSiteRuntimeStates((current) => ({
+          ...current,
+          [nextSiteKey]: buildCheckingSpiderRuntimeState(current[nextSiteKey]),
+        }));
+      },
+      onSetSpiderJarStatus: setSpiderJarStatus,
+      onNotifyWarning: (message) => notify({ kind: "warning", text: message }),
+      shouldTrackAsActive: options?.trackAsActive,
+      shouldProfileSite: options?.profileSite,
+    });
   }, [
     applySpiderExecutionState,
     applySpiderPrefetchState,
@@ -507,121 +534,31 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
 
     const generation = controllerGenerationRef.current;
     const sessionId = beginDispatchSearchSession();
-    const normalizedKeyword = keyword.trim() || fallbackTitle.trim();
-    if (!normalizedKeyword) {
-      return [];
+    const matches = await resolveVodDispatchMatches({
+      keyword,
+      fallbackTitle,
+      maxMatches,
+      config,
+      activeSiteKey,
+      runtimeSessionKey: runtimeSessionKeyRef.current,
+      policyGeneration: networkPolicyGenerationRef.current,
+      concurrency: VOD_AGGREGATE_SEARCH_CONCURRENCY,
+      isStale: () => isStaleDispatchSearchSession(generation, sessionId),
+      resolveSiteExt,
+      getSpiderRuntimeWarmupPromise,
+    });
+    for (const siteKey of new Set(matches.map((item) => item.siteKey))) {
+      recordSiteSuccess(siteKey);
     }
-    const cappedMaxMatches = Math.max(1, Math.min(maxMatches, 12));
-    const isStale = () => isStaleDispatchSearchSession(generation, sessionId);
-
-    const active = config.sites.find((site) => site.key === activeSiteKey) ?? null;
-    const orderedSites = [
-      ...(active ? [active] : []),
-      ...config.sites.filter((site) => site.key !== activeSiteKey),
-    ]
-      .filter((site) => site.capability.canSearch)
-      .slice(0, 12);
-
-    if (!orderedSites.length) {
-      return [];
-    }
-
-    const matches: Array<{ order: number; value: VodDispatchCandidate }> = [];
-    let cursor = 0;
-    const concurrency = Math.min(3, orderedSites.length);
-
-    const worker = async () => {
-      while (!isStale()) {
-        if (matches.length >= cappedMaxMatches) {
-          return;
-        }
-        const currentIndex = cursor;
-        cursor += 1;
-        if (currentIndex >= orderedSites.length) {
-          return;
-        }
-
-        const site = orderedSites[currentIndex];
-        const spiderUrl = resolveSiteSpiderUrl(site, config.spider);
-        if (site.capability.requiresSpider && !spiderUrl) {
-          continue;
-        }
-
-        try {
-          const extInput = site.capability.requiresSpider
-            ? await withVodInterfaceTimeout(
-              resolveSiteExtInput(site),
-              `dispatch_ext:${site.key}`,
-            )
-            : site.extValue;
-          if (isStale()) {
-            return;
-          }
-
-          const searchResponse = site.capability.requiresSpider
-            ? await invoke<string>("spider_search", {
-              spiderUrl,
-              siteKey: site.key,
-              apiClass: site.api,
-              ext: extInput,
-              keyword: normalizedKeyword,
-              quick: site.quickSearch,
-            })
-            : await withVodInterfaceTimeout(invoke<string>("fetch_vod_search", {
-              apiUrl: site.api,
-              keyword: normalizedKeyword,
-            }), `dispatch_search:${site.key}`);
-          if (isStale()) {
-            return;
-          }
-
-          const candidateList = parseVodResponse(searchResponse).list ?? [];
-          const bestCandidate = pickBestVodDispatchCandidate(normalizedKeyword, candidateList);
-          if (!bestCandidate?.vod_id) {
-            continue;
-          }
-
-          const detailResult = await fetchVodDetail({ site, spider: config.spider }, bestCandidate.vod_id);
-          if (isStale()) {
-            return;
-          }
-          if (!detailResult.routes.length) {
-            continue;
-          }
-
-          matches.push({
-            order: currentIndex,
-            value: {
-              siteKey: site.key,
-              siteName: site.name,
-              sourceKind: site.capability.sourceKind,
-              vodId: bestCandidate.vod_id,
-              matchTitle: bestCandidate.vod_name,
-              remarks: bestCandidate.vod_remarks,
-              detail: detailResult.detail,
-              routes: detailResult.routes,
-              extInput: detailResult.extInput,
-            },
-          });
-        } catch {
-          // Continue with the next site.
-        }
-      }
-    };
-
-    await Promise.all(Array.from({ length: concurrency }, () => worker()));
-    if (isStale()) {
-      return [];
-    }
-    return matches
-      .sort((left, right) => left.order - right.order)
-      .slice(0, cappedMaxMatches)
-      .map((item) => item.value);
+    return matches;
   }, [
     activeSiteKey,
     beginDispatchSearchSession,
     config,
+    getSpiderRuntimeWarmupPromise,
     isStaleDispatchSearchSession,
+    recordSiteSuccess,
+    resolveSiteExt,
   ]);
 
   const resolveMsearchAndPlay = useCallback(async (keyword: string, fallbackTitle = "") => {
@@ -662,6 +599,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       const normalized = await loadVodRepoSource(repo.url);
       if (isStaleControllerGeneration(generation)) return;
       setConfig(normalized);
+      setBrowseMode(getDefaultVodBrowseMode(normalized.sites));
       const legacySiteKey = localStorage.getItem(MEDIA_VOD_SITE_KEY) ?? "";
       const preferredSiteKey = storedSelection?.source === sourceRef.current && storedSelection.repoUrl === repo.url
         ? storedSelection.siteKey
@@ -710,6 +648,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       setRepoUrls(loaded.repoUrls);
       setActiveRepoUrl(loaded.activeRepoUrl);
       setConfig(loaded.config);
+      setBrowseMode(getDefaultVodBrowseMode(loaded.config.sites));
       const legacySiteKey = localStorage.getItem(MEDIA_VOD_SITE_KEY) ?? "";
       const preferredSiteKey = storedSelection?.source === url && storedSelection.repoUrl === loaded.activeRepoUrl
         ? storedSelection.siteKey
@@ -757,6 +696,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       setActiveRepoUrl("");
       setConfig(null);
       setActiveSiteKey("");
+      setBrowseMode("site");
       resetVodRuntimeState();
       resetVodBrowseState();
       return;
@@ -765,13 +705,58 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
   }, [loadSourceConfig, resetVodBrowseState, resetVodRuntimeState, source]);
 
   useEffect(() => {
+    if (!config?.sites.length || !runtimeSessionKey) {
+      return;
+    }
+    void prefetchSiteExtInputs(config.sites, {
+      sessionKey: runtimeSessionKey,
+      policyGeneration: networkPolicyGeneration,
+    }, VOD_EXT_PREFETCH_CONCURRENCY).catch(() => {
+      // Ignore best-effort prefetch failures and resolve ext lazily on demand.
+    });
+  }, [config, networkPolicyGeneration, runtimeSessionKey]);
+
+  useEffect(() => {
+    if (!config?.sites.length || !activeSiteKey) {
+      return;
+    }
+
+    const warmupCandidates = prioritizedSites
+      .filter((site) => site.capability.requiresSpider)
+      .slice(0, VOD_BACKGROUND_WARMUP_MAX_SITES);
+
+    void runWithConcurrencyLimit(
+      warmupCandidates,
+      VOD_BACKGROUND_WARMUP_CONCURRENCY,
+      async (site) => {
+        const spiderUrl = resolveSiteSpiderUrl(site, config.spider);
+        if (!spiderUrl) {
+          return;
+        }
+        const extInput = await resolveSiteExt(site);
+        await triggerJarPrefetch(site.key, spiderUrl, site.api, extInput, {
+          trackAsActive: site.key === activeSiteKey,
+          profileSite: true,
+        });
+      },
+    ).catch(() => {
+      // Ignore best-effort warmup failures.
+    });
+  }, [activeSiteKey, config?.sites.length, prioritizedSites, resolveSiteExt, siteReloadToken, triggerJarPrefetch]);
+
+  useEffect(() => {
     if (!activeVodSite || !config || !activeVodSite.capability.requiresSpider) {
       return;
     }
     const spiderUrl = resolveSiteSpiderUrl(activeVodSite, config.spider);
     if (!spiderUrl) return;
-    triggerJarPrefetch(activeVodSite.key, spiderUrl, activeVodSite.api, activeVodSite.extValue);
-  }, [activeVodSite, config, siteReloadToken, triggerJarPrefetch]);
+    void resolveSiteExt(activeVodSite).then((extInput) => {
+      void triggerJarPrefetch(activeVodSite.key, spiderUrl, activeVodSite.api, extInput, {
+        trackAsActive: true,
+        profileSite: true,
+      });
+    });
+  }, [activeVodSite, config, resolveSiteExt, siteReloadToken, triggerJarPrefetch]);
 
   useEffect(() => {
     if (activeSiteRuntime?.executionTarget === "desktop-helper") {
@@ -809,20 +794,37 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       }
       homeInFlightRef.current = flightKey;
 
+      const cachedHome = readTimedCache(
+        homeCacheRef.current,
+        buildVodHomeCacheKey(runtimeSessionKeyRef.current, site.key),
+      );
+      if (cachedHome) {
+        skipInitialCategoryFetchRef.current = cachedHome.shouldSkipInitialCategoryFetch
+          ? { siteKey: site.key, classId: cachedHome.activeClassId }
+          : null;
+        setVodPage(1);
+        setHasMore(true);
+        setVodClasses(cachedHome.classes);
+        setActiveClassId(cachedHome.activeClassId);
+        setVodList(cachedHome.list);
+        homeInFlightRef.current = "";
+        setLoadingVod(false);
+        return;
+      }
+
       setLoadingVod(true);
       setVodPage(1);
       setHasMore(true);
 
       try {
         const extInput = site.capability.requiresSpider
-          ? await withVodInterfaceTimeout(resolveSiteExtInput(site), `home_ext:${site.key}`)
+          ? await withVodInterfaceTimeout(resolveSiteExt(site), `home_ext:${site.key}`)
           : site.extValue;
-        if (
-          site.capability.requiresSpider
-          && spiderJarStatus === "loading"
-          && prefetchPromiseRef.current
-        ) {
-          await prefetchPromiseRef.current;
+        const runtimeWarmup = site.capability.requiresSpider && spiderUrl
+          ? getSpiderRuntimeWarmupPromise(spiderUrl, site.api)
+          : null;
+        if (runtimeWarmup) {
+          await runtimeWarmup;
           if (isStale()) return;
         }
         const response = site.capability.requiresSpider
@@ -848,6 +850,12 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         skipInitialCategoryFetchRef.current = nextClassId && homeList.length > 0 && site.capability.canCategory
           ? { siteKey: site.key, classId: nextClassId }
           : null;
+        writeTimedCache(homeCacheRef.current, buildVodHomeCacheKey(runtimeSessionKeyRef.current, site.key), {
+          classes,
+          activeClassId: nextClassId,
+          list: homeList,
+          shouldSkipInitialCategoryFetch: Boolean(skipInitialCategoryFetchRef.current),
+        }, VOD_BROWSE_CACHE_TTL_MS);
         setVodClasses(classes);
         setActiveClassId(nextClassId);
         setVodList(homeList);
@@ -870,7 +878,17 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     };
 
     void fetchHomeContent();
-  }, [activeSearchKeyword, activeSiteAutoLoadBlocked, activeSiteKey, config, notify, siteReloadToken, syncSpiderExecutionState]);
+  }, [
+    activeSearchKeyword,
+    activeSiteAutoLoadBlocked,
+    activeSiteKey,
+    config,
+    getSpiderRuntimeWarmupPromise,
+    notify,
+    resolveSiteExt,
+    siteReloadToken,
+    syncSpiderExecutionState,
+  ]);
 
   useEffect(() => {
     const fetchCategoryPage = async (isLoadMore: boolean) => {
@@ -907,6 +925,19 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       }
       categoryInFlightRef.current = flightKey;
 
+      const cachedCategory = readTimedCache(
+        categoryCacheRef.current,
+        buildVodCategoryCacheKey(runtimeSessionKeyRef.current, site.key, activeClassId, vodPage),
+      );
+      if (cachedCategory) {
+        setVodList((current) => (isLoadMore ? [...current, ...cachedCategory.list] : cachedCategory.list));
+        setHasMore(cachedCategory.hasMore);
+        categoryInFlightRef.current = "";
+        setLoadingVod(false);
+        setLoadingMore(false);
+        return;
+      }
+
       if (!isLoadMore) {
         setLoadingVod(true);
       } else {
@@ -915,14 +946,13 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
 
       try {
         const extInput = site.capability.requiresSpider
-          ? await withVodInterfaceTimeout(resolveSiteExtInput(site), `category_ext:${site.key}`)
+          ? await withVodInterfaceTimeout(resolveSiteExt(site), `category_ext:${site.key}`)
           : site.extValue;
-        if (
-          site.capability.requiresSpider
-          && spiderJarStatus === "loading"
-          && prefetchPromiseRef.current
-        ) {
-          await prefetchPromiseRef.current;
+        const runtimeWarmup = site.capability.requiresSpider && spiderUrl
+          ? getSpiderRuntimeWarmupPromise(spiderUrl, site.api)
+          : null;
+        if (runtimeWarmup) {
+          await runtimeWarmup;
           if (isStale()) return;
         }
         const response = site.capability.requiresSpider
@@ -947,12 +977,20 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         if (isStale()) return;
 
         if (Array.isArray(data.list) && data.list.length > 0) {
+          const nextHasMore = data.pagecount && vodPage >= data.pagecount
+            ? false
+            : data.list.length >= 10;
+          writeTimedCache(
+            categoryCacheRef.current,
+            buildVodCategoryCacheKey(runtimeSessionKeyRef.current, site.key, activeClassId, vodPage),
+            {
+              list: data.list,
+              hasMore: nextHasMore,
+            },
+            VOD_BROWSE_CACHE_TTL_MS,
+          );
           setVodList((current) => (isLoadMore ? [...current, ...data.list!] : data.list!));
-          if (data.pagecount && vodPage >= data.pagecount) {
-            setHasMore(false);
-          } else {
-            setHasMore(data.list.length >= 10);
-          }
+          setHasMore(nextHasMore);
         } else {
           if (!isLoadMore) setVodList([]);
           setHasMore(false);
@@ -984,7 +1022,9 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     activeSiteAutoLoadBlocked,
     activeSiteKey,
     config,
+    getSpiderRuntimeWarmupPromise,
     notify,
+    resolveSiteExt,
     siteReloadToken,
     syncSpiderExecutionState,
     vodPage,
@@ -993,6 +1033,126 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
   const handleVodSearch = useCallback(async () => {
     const keyword = vodSearchKeyword.trim();
     if (!keyword || !config || !activeVodSite) return;
+    if (effectiveBrowseMode === "aggregate" && aggregateEligibleSites.length > 1) {
+      const orderedSites = aggregateEligibleSites.filter((site) => {
+        if (!site.capability.canSearch) {
+          return false;
+        }
+        if (site.capability.requiresSpider) {
+          return !shouldBlockAutoLoad(siteRuntimeStates[site.key] ?? null);
+        }
+        return true;
+      });
+      if (!orderedSites.length) {
+        notify({ kind: "warning", text: "当前分仓没有可用于聚合搜索的接口。" });
+        return;
+      }
+
+      invalidateVodRequests();
+      skipInitialCategoryFetchRef.current = null;
+      const generation = controllerGenerationRef.current;
+      const requestId = ++searchRequestRef.current;
+      const siteKeys = orderedSites.map((site) => site.key);
+      const flightKey = ["aggregate", keyword, siteKeys.join(",")].join("::");
+      if (searchInFlightRef.current === flightKey) {
+        return;
+      }
+      searchInFlightRef.current = flightKey;
+
+      const isStale = () =>
+        requestId !== searchRequestRef.current
+        || isStaleControllerGeneration(generation);
+
+      const cachedAggregate = readTimedCache(
+        aggregateCacheRef.current,
+        buildVodAggregateCacheKey(runtimeSessionKeyRef.current, keyword, siteKeys),
+      );
+
+      setActiveSearchKeyword(keyword);
+      setLoadingVod(true);
+      setHasMore(false);
+      setVodPage(1);
+      setVodList([]);
+
+      if (cachedAggregate) {
+        setVodList(cachedAggregate.items);
+        setAggregateSessionState(buildAggregateSessionState(keyword, cachedAggregate.statuses, false));
+        setLoadingVod(false);
+        searchInFlightRef.current = "";
+        notify({
+          kind: cachedAggregate.items.length > 0 ? "success" : "warning",
+          text: cachedAggregate.items.length > 0
+            ? `已从缓存恢复 ${cachedAggregate.items.length} 条聚合结果。`
+            : "聚合搜索缓存已命中，但没有可展示结果。",
+        });
+        return;
+      }
+
+      let statuses: VodAggregateSessionState["statuses"] = [];
+      let aggregateItems: VodAggregateResultItem[] = [];
+
+      try {
+        const result = await executeAggregateVodSearch({
+          keyword,
+          sites: orderedSites,
+          spider: config.spider,
+          concurrency: VOD_AGGREGATE_SEARCH_CONCURRENCY,
+          isStale,
+          resolveSiteExt,
+          getSpiderRuntimeWarmupPromise,
+          syncSpiderExecutionState,
+          onItems: (items) => {
+            aggregateItems = [...aggregateItems, ...items];
+            setVodList((current) => mergeVodBrowseItems(current, items));
+          },
+          onStatusesChange: (nextStatuses, running) => {
+            statuses = nextStatuses;
+            setAggregateSessionState(buildAggregateSessionState(keyword, nextStatuses, running));
+          },
+        });
+        aggregateItems = result.items;
+        statuses = result.statuses;
+
+        if (isStale()) {
+          return;
+        }
+
+        writeTimedCache(
+          aggregateCacheRef.current,
+          buildVodAggregateCacheKey(runtimeSessionKeyRef.current, keyword, siteKeys),
+          {
+            items: aggregateItems,
+            statuses,
+          },
+          VOD_AGGREGATE_CACHE_TTL_MS,
+        );
+
+        for (const status of statuses) {
+          if (status.resultCount > 0) {
+            recordSiteSuccess(status.siteKey);
+          }
+        }
+
+        setAggregateSessionState(buildAggregateSessionState(keyword, statuses, false));
+        notify({
+          kind: aggregateItems.length > 0 ? "success" : "warning",
+          text: aggregateItems.length > 0
+            ? `聚合搜索完成，已从 ${orderedSites.length} 个接口收集 ${aggregateItems.length} 条结果。`
+            : "聚合搜索完成，但没有接口返回可展示结果。",
+        });
+      } finally {
+        if (searchInFlightRef.current === flightKey) {
+          searchInFlightRef.current = "";
+        }
+        if (!isStale()) {
+          setLoadingVod(false);
+          setAggregateSessionState(buildAggregateSessionState(keyword, statuses, false));
+        }
+      }
+      return;
+    }
+
+    setAggregateSessionState(null);
     if (!activeVodSite.capability.canSearch) {
       notify({ kind: "warning", text: "当前站点未声明搜索能力。" });
       return;
@@ -1025,8 +1185,15 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     try {
       const spiderUrl = resolveSiteSpiderUrl(activeVodSite, config.spider);
       const extInput = activeVodSite.capability.requiresSpider
-        ? await withVodInterfaceTimeout(resolveSiteExtInput(activeVodSite), `search_ext:${activeVodSite.key}`)
+        ? await withVodInterfaceTimeout(resolveSiteExt(activeVodSite), `search_ext:${activeVodSite.key}`)
         : activeVodSite.extValue;
+      const runtimeWarmup = activeVodSite.capability.requiresSpider && spiderUrl
+        ? getSpiderRuntimeWarmupPromise(spiderUrl, activeVodSite.api)
+        : null;
+      if (runtimeWarmup) {
+        await runtimeWarmup;
+        if (isStale()) return;
+      }
       const response = activeVodSite.capability.requiresSpider
         ? await invoke<string>("spider_search", {
           spiderUrl,
@@ -1046,7 +1213,11 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         await syncSpiderExecutionState(activeVodSite.key);
       }
       if (isStale()) return;
-      setVodList(Array.isArray(data.list) ? data.list : []);
+      const nextList = Array.isArray(data.list) ? data.list : [];
+      if (nextList.length > 0) {
+        recordSiteSuccess(activeVodSite.key);
+      }
+      setVodList(nextList);
       notify({
         kind: data.list?.length ? "success" : "warning",
         text: data.list?.length
@@ -1070,11 +1241,18 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       }
     }
   }, [
+    aggregateEligibleSites,
+    effectiveBrowseMode,
+    getSpiderRuntimeWarmupPromise,
     activeSiteAutoLoadBlocked,
     activeVodSite,
     config,
     invalidateVodRequests,
+    isStaleControllerGeneration,
     notify,
+    recordSiteSuccess,
+    resolveSiteExt,
+    siteRuntimeStates,
     syncSpiderExecutionState,
     vodSearchKeyword,
   ]);
@@ -1084,6 +1262,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     skipInitialCategoryFetchRef.current = null;
     setVodSearchKeyword("");
     setActiveSearchKeyword("");
+    setAggregateSessionState(null);
     setVodList([]);
     setVodPage(1);
     setHasMore(true);
@@ -1099,7 +1278,9 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
   const handleSiteSelect = useCallback((siteKey: string) => {
     const generation = advanceControllerGeneration();
     if (activeSiteKey === siteKey) {
-      clearTvBoxRuntimeCaches();
+      clearTvBoxRuntimeCaches(runtimeSessionKeyRef.current);
+      clearBrowseCaches(siteKey);
+      runtimeWarmupPromisesRef.current.clear();
       invalidateVodRequests();
       clearSpiderExecutionReport(siteKey);
       clearSelectedVod();
@@ -1113,9 +1294,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       }
       return;
     }
-    clearTvBoxRuntimeCaches();
     invalidateVodRequests();
-    clearSpiderExecutionReport(siteKey);
     resetVodBrowseState();
     clearSelectedVod();
     setActiveSiteKey(siteKey);
@@ -1123,6 +1302,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
   }, [
     activeSiteKey,
     advanceControllerGeneration,
+    clearBrowseCaches,
     clearSelectedVod,
     clearSpiderExecutionReport,
     invalidateVodRequests,
@@ -1179,8 +1359,16 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     config,
     activeSiteKey,
     activeVodSite,
+    selectedVodSite,
+    runtimeSessionKey,
+    networkPolicyGeneration,
     activeSiteRuntime,
     siteRuntimeStates,
+    browseMode: effectiveBrowseMode,
+    setBrowseMode,
+    supportsAggregateBrowse,
+    aggregateSessionState,
+    aggregateEligibleSites,
     filteredVodClasses,
     classFilterKeyword,
     vodSearchKeyword,

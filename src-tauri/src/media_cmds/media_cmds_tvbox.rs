@@ -903,6 +903,26 @@ pub async fn fetch_tvbox_config(url: String) -> Result<String, String> {
     Ok(text)
 }
 
+pub async fn fetch_text_resource(url: String) -> Result<String, String> {
+    let source = url.trim().to_string();
+    if source.is_empty() {
+        return Err("source url is empty".to_string());
+    }
+
+    if source.starts_with("file://") {
+        let mut path = source.trim_start_matches("file:///").to_string();
+        #[cfg(target_os = "windows")]
+        {
+            path = path.replace("/", "\\");
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("read local resource failed: {e}"))?;
+        return Ok(decode_text_bytes(&bytes));
+    }
+
+    let client = build_client()?;
+    fetch_remote_text(&client, &source).await
+}
+
 pub async fn fetch_vod_home(api_url: String) -> Result<String, String> {
     let url = if api_url.contains("ac=") {
         api_url.clone()

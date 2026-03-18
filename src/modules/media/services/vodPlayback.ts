@@ -73,7 +73,7 @@ export interface VodResolvedStream {
 
 const SPIDER_PLAYER_EMPTY_RETRY_DELAYS_MS = [300];
 const SPIDER_PLAYER_PAYLOAD_CACHE_TTL_MS = 2 * 60 * 1000;
-const WRAPPED_PARSE_FALLBACK_TIMEOUT_MS = 8000;
+const WRAPPED_PARSE_FALLBACK_TIMEOUT_MS = 5000;
 
 interface CachedSpiderPayloadEntry {
   payload: PlayerPayload;
@@ -361,6 +361,10 @@ export function looksLikeDirectPlayableUrl(url: string): boolean {
       return true;
     }
 
+    if (/\/m3u8\//i.test(pathname)) {
+      return true;
+    }
+
     const typeHint = parsed.searchParams.get('type')?.toLowerCase() ?? '';
     const mimeHint = parsed.searchParams.get('mime')?.toLowerCase() ?? '';
     const contentTypeHint = parsed.searchParams.get('contenttype')?.toLowerCase() ?? '';
@@ -498,12 +502,11 @@ export function shouldUseSpiderParseChain(
   payload: PlayerPayload,
   hasDirectPayloadUrl: boolean,
 ): boolean {
-  const requiresJiexi = Number(payload.jx ?? 0) === 1;
-  if (requiresJiexi) {
+  if (Number(payload.jx ?? 0) === 1) {
     return true;
   }
   if (!hasDirectPayloadUrl) {
-    return Number(payload.parse ?? 0) === 1;
+    return true;
   }
   return false;
 }

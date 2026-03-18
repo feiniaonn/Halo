@@ -177,6 +177,9 @@ export function MediaPage() {
                 <div className="flex flex-1 overflow-hidden pt-1">
                   <VodWorkbenchPanel
                     activeSite={vod.activeVodSite}
+                    browseMode={vod.browseMode}
+                    supportsAggregateBrowse={vod.supportsAggregateBrowse}
+                    aggregateSessionState={vod.aggregateSessionState}
                     activeClassId={vod.activeClassId}
                     filteredVodClasses={vod.filteredVodClasses}
                     classFilterKeyword={vod.classFilterKeyword}
@@ -190,6 +193,7 @@ export function MediaPage() {
                     onClassFilterChange={vod.setClassFilterKeyword}
                     onVodSearchKeywordChange={vod.setVodSearchKeyword}
                     onClassClick={vod.handleClassClick}
+                    onBrowseModeChange={vod.setBrowseMode}
                     onSearchSubmit={() => {
                       void vod.handleVodSearch();
                     }}
@@ -266,11 +270,13 @@ export function MediaPage() {
         }}
       />
 
-      {vod.selectedVodId && vod.activeSiteKey && vod.activeVodSite && (
+      {vod.selectedVodId && vod.activeSiteKey && (vod.selectedVodSite ?? vod.activeVodSite) && (
         <MediaDetailModal
           vodId={vod.selectedVodId}
-          site={vod.activeVodSite}
+          site={vod.selectedVodSite ?? vod.activeVodSite!}
           spider={vod.config?.spider ?? ''}
+          runtimeSessionKey={vod.runtimeSessionKey}
+          policyGeneration={vod.networkPolicyGeneration}
           fallbackTitle={vod.selectedVodTitle ?? ''}
           onClose={vod.clearSelectedVod}
           onPlay={() => vod.clearSelectedVod()}

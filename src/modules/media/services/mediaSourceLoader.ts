@@ -16,6 +16,7 @@ export interface LoadedVodSource {
   config: NormalizedTvBoxConfig;
   repoUrls: TvBoxRepoUrl[];
   activeRepoUrl: string;
+  aggregateSiteKeys: string[];
 }
 
 function buildFileUrlFromPath(path: string): string {
@@ -45,8 +46,17 @@ export async function fetchTvboxConfigText(url: string): Promise<string> {
   return invoke<string>("fetch_tvbox_config", { url });
 }
 
+export async function fetchTextResource(url: string): Promise<string> {
+  return invoke<string>("fetch_text_resource", { url });
+}
+
 export async function fetchTvboxPayload(url: string): Promise<unknown> {
   const response = await fetchTvboxConfigText(url);
+  return parseTvboxJsonLoose(response);
+}
+
+export async function fetchTvboxLeafPayload(url: string): Promise<unknown> {
+  const response = await fetchTextResource(url);
   return parseTvboxJsonLoose(response);
 }
 
@@ -83,23 +93,27 @@ export async function loadVodSource(url: string, preferredRepoUrl = ""): Promise
   const repoUrls = normalizeRepoUrls(payload);
   if (repoUrls.length > 0) {
     const activeRepoUrl = repoUrls.find((repo) => repo.url === preferredRepoUrl)?.url ?? repoUrls[0].url;
-    const subPayload = await fetchTvboxPayload(activeRepoUrl);
+    const subPayload = await fetchTvboxLeafPayload(activeRepoUrl);
+    const config = await hydrateTvBoxConfig(subPayload);
     return {
-      config: await hydrateTvBoxConfig(subPayload),
+      config,
       repoUrls,
       activeRepoUrl,
+      aggregateSiteKeys: config.sites.filter((site) => site.capability.canSearch).map((site) => site.key),
     };
   }
 
+  const config = await hydrateTvBoxConfig(payload);
   return {
-    config: await hydrateTvBoxConfig(payload),
+    config,
     repoUrls: [],
     activeRepoUrl: "",
+    aggregateSiteKeys: config.sites.filter((site) => site.capability.canSearch).map((site) => site.key),
   };
 }
 
 export async function loadVodRepoSource(url: string): Promise<NormalizedTvBoxConfig> {
-  return hydrateTvBoxConfig(await fetchTvboxPayload(url));
+  return hydrateTvBoxConfig(await fetchTvboxLeafPayload(url));
 }
 
 export async function loadLiveSourceText(url: string): Promise<string> {
@@ -108,7 +122,7 @@ export async function loadLiveSourceText(url: string): Promise<string> {
     const payload = parseTvboxJsonLoose(text) as { urls?: Array<{ url?: string }> };
     const firstSubUrl = payload?.urls?.[0]?.url?.trim();
     if (firstSubUrl) {
-      text = await fetchTvboxConfigText(firstSubUrl);
+      text = await fetchTextResource(firstSubUrl);
     }
   } catch {
     // Ignore repo-wrapper parsing failures and treat the payload as raw live text.

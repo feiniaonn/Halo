@@ -5,11 +5,16 @@ import { cn } from '@/lib/utils';
 import type {
   NormalizedTvBoxSite,
   TvBoxClass,
-  TvBoxVodItem,
+  VodAggregateSessionState,
+  VodBrowseItem,
+  VodBrowseMode,
 } from '@/modules/media/types/tvbox.types';
 
 interface VodWorkbenchPanelProps {
   activeSite: NormalizedTvBoxSite | null;
+  browseMode: VodBrowseMode;
+  supportsAggregateBrowse: boolean;
+  aggregateSessionState: VodAggregateSessionState | null;
   activeClassId: string;
   filteredVodClasses: TvBoxClass[];
   classFilterKeyword: string;
@@ -17,17 +22,18 @@ interface VodWorkbenchPanelProps {
   activeSearchKeyword: string;
   loadingVod: boolean;
   loadingMore: boolean;
-  vodList: TvBoxVodItem[];
+  vodList: VodBrowseItem[];
   hasMore: boolean;
   detailEnabled: boolean;
   onClassFilterChange: (value: string) => void;
   onVodSearchKeywordChange?: (value: string) => void;
   onClassClick: (id: string) => void;
+  onBrowseModeChange?: (mode: VodBrowseMode) => void;
   onSearchSubmit?: () => void;
   onSearchReset?: () => void;
   onLoadMore: () => void;
-  onSelectVod: (item: TvBoxVodItem) => void;
-  renderVodImage: (item: TvBoxVodItem) => ReactNode;
+  onSelectVod: (item: VodBrowseItem) => void;
+  renderVodImage: (item: VodBrowseItem) => ReactNode;
 }
 
 function EmptyState({
@@ -54,6 +60,9 @@ function EmptyState({
 
 export function VodWorkbenchPanel({
   activeSite,
+  browseMode,
+  supportsAggregateBrowse,
+  aggregateSessionState,
   activeClassId,
   filteredVodClasses,
   classFilterKeyword,
@@ -67,6 +76,7 @@ export function VodWorkbenchPanel({
   onClassFilterChange,
   onVodSearchKeywordChange,
   onClassClick,
+  onBrowseModeChange,
   onSearchSubmit,
   onSearchReset,
   onLoadMore,
@@ -77,6 +87,10 @@ export function VodWorkbenchPanel({
   const canSearch = activeSite?.capability.canSearch ?? false;
   const isSearchOnly = activeSite?.capability.searchOnly ?? false;
   const isSearchMode = Boolean(activeSearchKeyword);
+  const isAggregateMode = browseMode === 'aggregate';
+  const aggregateProgressText = aggregateSessionState
+    ? `${aggregateSessionState.completedCount}/${aggregateSessionState.siteCount}`
+    : null;
 
   return (
     <div className="flex h-full w-full min-h-0 flex-col bg-transparent relative overflow-hidden">
@@ -85,10 +99,39 @@ export function VodWorkbenchPanel({
         <h2 className="text-base font-semibold tracking-tight text-foreground shrink-0">影视资源点播</h2>
         {activeSite && (
           <span className="truncate text-xs text-muted-foreground">
-            源: {activeSite.name}
+            {isAggregateMode ? `当前优先接口: ${activeSite.name}` : `源: ${activeSite.name}`}
           </span>
         )}
+        {supportsAggregateBrowse && (
+          <div className="flex shrink-0 items-center gap-1 rounded-full border border-border/60 bg-background/70 p-1">
+            <button
+              type="button"
+              onClick={() => onBrowseModeChange?.('aggregate')}
+              className={cn(
+                'rounded-full px-3 py-1 text-[11px] font-medium transition-colors',
+                isAggregateMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              全源聚合
+            </button>
+            <button
+              type="button"
+              onClick={() => onBrowseModeChange?.('site')}
+              className={cn(
+                'rounded-full px-3 py-1 text-[11px] font-medium transition-colors',
+                !isAggregateMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              单接口
+            </button>
+          </div>
+        )}
         <div className="flex shrink-0 gap-1.5 ml-auto">
+          {isAggregateMode && aggregateProgressText && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+              聚合进度: {aggregateProgressText}
+            </span>
+          )}
           {isSearchMode && (
             <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
               搜索中: {activeSearchKeyword}
@@ -116,7 +159,13 @@ export function VodWorkbenchPanel({
                     onSearchSubmit?.();
                   }
                 }}
-                placeholder={isSearchOnly ? '输入片名后按回车搜索' : '搜索当前接口影视'}
+                placeholder={
+                  isAggregateMode
+                    ? '搜索当前分仓全部接口'
+                    : isSearchOnly
+                      ? '输入片名后按回车搜索'
+                      : '搜索当前接口影视'
+                }
                 className="h-10 w-full rounded-xl border border-border/60 bg-background/86 pl-10 pr-4 text-sm outline-none transition-colors focus:border-primary"
               />
             </div>
@@ -194,7 +243,9 @@ export function VodWorkbenchPanel({
             
             <div className="flex items-center justify-between outline-none">
                <h3 className="text-sm font-semibold text-foreground/80 flex items-center gap-2">
-                 {isSearchMode ? "相关搜索结果" : activeClassId ? "分类影片" : "推荐影片"}
+                 {isSearchMode
+                   ? isAggregateMode ? '聚合搜索结果' : '相关搜索结果'
+                   : activeClassId ? '分类影片' : '推荐影片'}
                  {vodList.length > 0 && (
                    <span className="text-xs font-normal text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
                      已加载 {vodList.length} 部
@@ -204,7 +255,7 @@ export function VodWorkbenchPanel({
             </div>
 
             <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-7 xl:grid-cols-8 2xl:grid-cols-10 gap-x-3 gap-y-4">
-              {loadingVod ? (
+              {loadingVod && vodList.length === 0 ? (
                 Array.from({ length: 12 }).map((_, index) => (
                   <div key={index} className="flex flex-col gap-1.5">
                     <div className="aspect-[0.72] w-full animate-pulse rounded-md bg-muted" />
@@ -214,7 +265,7 @@ export function VodWorkbenchPanel({
               ) : vodList.length > 0 ? (
                 vodList.map((item) => (
                   <div
-                    key={item.vod_id}
+                    key={'aggregateSource' in item ? `${item.aggregateSource.siteKey}::${item.vod_id}` : item.vod_id}
                     className="group relative flex cursor-pointer flex-col gap-2 outline-none"
                     onClick={() => onSelectVod(item)}
                     role="button"
@@ -234,9 +285,16 @@ export function VodWorkbenchPanel({
 
                       {/* Top Badges */}
                       <div className="absolute top-1.5 left-1.5 right-1.5 flex justify-between items-start gap-1 pointer-events-none">
-                        <span className="rounded-full bg-black/60 text-white font-semibold text-[9px] px-1.5 py-0.5 leading-none">
-                          {item.vod_remarks || '高清'}
-                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          {'aggregateSource' in item && (
+                            <span className="rounded-full bg-primary/90 text-primary-foreground font-semibold text-[9px] px-1.5 py-0.5 leading-none">
+                              {item.aggregateSource.siteName}
+                            </span>
+                          )}
+                          <span className="rounded-full bg-black/60 text-white font-semibold text-[9px] px-1.5 py-0.5 leading-none">
+                            {item.vod_remarks || '高清'}
+                          </span>
+                        </div>
                         {!detailEnabled && (
                           <span className="rounded-full bg-destructive text-destructive-foreground text-[9px] px-1.5 py-0.5 leading-none">
                             无详情
@@ -264,7 +322,11 @@ export function VodWorkbenchPanel({
                 <div className="col-span-full py-10">
                   <EmptyState
                     title="没有找到结果"
-                    description={`未找到关于 "${activeSearchKeyword}" 的影视资源。`}
+                    description={
+                      isAggregateMode
+                        ? `未在当前分仓聚合结果中找到 "${activeSearchKeyword}"。`
+                        : `未找到关于 "${activeSearchKeyword}" 的影视资源。`
+                    }
                     icon={Clapperboard}
                   />
                 </div>

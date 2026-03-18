@@ -9,6 +9,8 @@ import type { VodDetail, VodEpisode, VodRoute } from "@/modules/media/types/vodW
 export interface VodDetailContext {
   site: NormalizedTvBoxSite;
   spider: string;
+  runtimeSessionKey?: string;
+  policyGeneration?: number;
 }
 
 export function parseVodRoutes(playFrom?: string, playUrl?: string): VodRoute[] {
@@ -46,7 +48,10 @@ export async function fetchVodDetail(
   vodId: string,
 ): Promise<{ detail: VodDetail; routes: VodRoute[]; extInput: string; }> {
   const { site, spider } = context;
-  const extInput = await resolveSiteExtInput(site);
+  const extInput = await resolveSiteExtInput(site, {
+    sessionKey: context.runtimeSessionKey,
+    policyGeneration: context.policyGeneration,
+  });
   let rawResponse = "";
   let normalizedPayload: unknown;
   if (site.capability.requiresSpider) {
