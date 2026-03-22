@@ -8,6 +8,7 @@ export interface PlayerPayloadLike {
 }
 
 const PLAYABLE_URL_MATCHER = /https?:\/\/[^\s"'<>]+/gi;
+const NESTED_MEDIA_PARAM_KEYS = ["url", "v", "vid", "play", "target", "source"];
 const ENCODED_URL_TAIL_MARKERS = [
   "%22%20",
   "%22%3e",
@@ -272,13 +273,50 @@ export function looksLikeWrappedMediaUrl(url: string): boolean {
   try {
     const parsed = new URL(normalized);
     const pathname = parsed.pathname.toLowerCase();
-    const hasNestedTarget = ["url", "v", "vid", "play", "target", "source"]
+    const hasNestedTarget = NESTED_MEDIA_PARAM_KEYS
       .some((key) => Boolean(parsed.searchParams.get(key)?.trim()));
     return hasNestedTarget && /(getm3u8|parse|parser|player|jx|analysis|playm3u8)/i.test(pathname);
   } catch {
     return /(getm3u8|parse|parser|player|jx|analysis|playm3u8).*?[?&](?:url|v|vid|play|target|source)=/i
       .test(normalized);
   }
+}
+
+export function extractWrappedMediaTargetUrl(url: string): string {
+  const normalized = sanitizeMediaUrlCandidate(url) || url.trim();
+  if (!looksLikeWrappedMediaUrl(normalized)) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    for (const key of NESTED_MEDIA_PARAM_KEYS) {
+      const rawValue = parsed.searchParams.get(key)?.trim() ?? "";
+      if (!rawValue) {
+        continue;
+      }
+      const candidate = sanitizeMediaUrlCandidate(rawValue);
+      if (!candidate || candidate === normalized) {
+        continue;
+      }
+      if (looksLikeDirectPlayableUrl(candidate)) {
+        return candidate;
+      }
+    }
+  } catch {
+    for (const key of NESTED_MEDIA_PARAM_KEYS) {
+      const match = normalized.match(new RegExp(`[?&]${key}=([^#]+)`, "i"));
+      const candidate = sanitizeMediaUrlCandidate(match?.[1] ?? "");
+      if (!candidate || candidate === normalized) {
+        continue;
+      }
+      if (looksLikeDirectPlayableUrl(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return "";
 }
 
 export function looksLikeDirectPlayableUrl(url: string): boolean {
@@ -288,7 +326,7 @@ export function looksLikeDirectPlayableUrl(url: string): boolean {
   try {
     const parsed = new URL(normalized);
     const pathname = parsed.pathname.toLowerCase();
-    const nestedMediaParam = ['url', 'v', 'vid', 'play', 'target', 'source']
+    const nestedMediaParam = NESTED_MEDIA_PARAM_KEYS
       .map((key) => parsed.searchParams.get(key)?.trim() ?? '')
       .find((value) => /\.(m3u8|mp4|flv|mpd|m4s|ts|webm|mkv|mov)(?:$|[?#&])/i.test(value));
     if (

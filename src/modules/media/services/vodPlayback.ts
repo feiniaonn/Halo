@@ -22,6 +22,7 @@ import {
 import {
   buildNoUrlMessage,
   delayMs,
+  extractWrappedMediaTargetUrl,
   extractPlayerHeaders,
   hasResolvablePlayerPayload,
   isHttpUrl,
@@ -298,6 +299,10 @@ async function resolveWrappedPayloadUrl(
 ): Promise<string | null> {
   if (!isHttpUrl(targetUrl)) {
     return null;
+  }
+  const nestedTarget = extractWrappedMediaTargetUrl(targetUrl);
+  if (nestedTarget) {
+    return nestedTarget;
   }
   try {
     const resolved = await invoke<string>('resolve_wrapped_media_url', {
