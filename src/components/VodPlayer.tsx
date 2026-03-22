@@ -4,6 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import Hls, { type HlsConfig } from 'hls.js';
 import { cn } from '@/lib/utils';
 import { VodProxyImage } from '@/components/VodProxyImage';
+import { VodPlaybackDiagnosticsPanel } from '@/modules/media/components/VodPlaybackDiagnosticsPanel';
 import {
   buildVodKernelPlan,
   type VodKernelDisplay,
@@ -21,6 +22,7 @@ import {
   buildPlaybackResolutionFailureLog,
   buildPlaybackResolutionLog,
 } from '@/modules/media/services/vodPlaybackLogging';
+import type { VodPlaybackDiagnosticsReport } from '@/modules/media/services/vodPlaybackDiagnosticsView';
 import {
   acquireVodPlaybackLock,
   buildVodPlaybackLockKey,
@@ -99,6 +101,8 @@ const KERNEL_MODE_OPTIONS: Array<{ value: VodKernelMode; label: string }> = [
 ];
 
 export interface VodPlayerProps {
+  sourceKey?: string;
+  repoUrl?: string;
   sourceKind: VodSourceKind;
   spiderUrl: string;
   siteName?: string;
@@ -124,6 +128,8 @@ export interface VodPlayerProps {
 }
 
 export function VodPlayer({
+  sourceKey,
+  repoUrl,
   sourceKind,
   spiderUrl,
   siteName,
@@ -180,6 +186,8 @@ export function VodPlayer({
   const [aspectRatioIdx, setAspectRatioIdx] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [playbackDiagnosticsReport, setPlaybackDiagnosticsReport] =
+    useState<VodPlaybackDiagnosticsReport | null>(null);
 
   const ASPECT_RATIOS = useMemo(
     () => [
@@ -235,6 +243,15 @@ export function VodPlayer({
         noticeTimeoutRef.current = null;
       }, 3200);
     }
+  }, []);
+
+  const updatePlaybackDiagnosticsReport = useCallback((
+    report: Omit<VodPlaybackDiagnosticsReport, 'updatedAt'>,
+  ) => {
+    setPlaybackDiagnosticsReport({
+      ...report,
+      updatedAt: Date.now(),
+    });
   }, []);
 
   const TauriHlsLoader = useMemo(() => {
@@ -541,6 +558,8 @@ export function VodPlayer({
       return withTimeout(
         resolveEpisodePlayback(
           {
+            sourceKey,
+            repoUrl,
             sourceKind,
             spiderUrl,
             siteName,
@@ -572,8 +591,10 @@ export function VodPlayer({
       playUrl,
       playerType,
       requestHeaders,
+      repoUrl,
       siteKey,
       siteName,
+      sourceKey,
       sourceKind,
       spiderUrl,
     ],
@@ -615,7 +636,20 @@ export function VodPlayer({
 
       if (forcedKernel === 'potplayer') {
         try {
-          await invoke('launch_potplayer', { url, headers });
+          let launchUrl = url;
+          let launchHeaders = headers;
+
+          if (isM3u8) {
+            const relaySession = await openVodRelaySession(url, headers, sourceHint);
+            launchUrl = relaySession.localManifestUrl;
+            launchHeaders = null;
+            termLog(
+              `[VodPlayer] potplayer relay open session=${relaySession.sessionId} local_manifest=${relaySession.localManifestUrl}`,
+              'info',
+            );
+          }
+
+          await invoke('launch_potplayer', { url: launchUrl, headers: launchHeaders });
           return { ok: true, retryable: false };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1050,6 +1084,13 @@ export function VodPlayer({
         });
         termLog(resolveFailLog, 'error');
         appendMpvTestLog(resolveFailLog.replace('[VodPlayer]', '[vod]'));
+        updatePlaybackDiagnosticsReport({
+          routeName,
+          episodeName: episode.name,
+          status: 'error',
+          reason,
+          diagnostics,
+        });
         setError(`解析播放地址失败：${reason}`);
         showPlaybackNotice(null);
         setLoading(false);
@@ -1108,7 +1149,11 @@ export function VodPlayer({
         }
       }
 
-      const kernelPlan = buildVodKernelPlan(kernelModeRef.current);
+      const plannedStreamKind =
+        streamKind !== 'unknown' ? streamKind : inferVodStreamKind(stream.url);
+      const kernelPlan = buildVodKernelPlan(kernelModeRef.current, {
+        streamKind: plannedStreamKind,
+      });
       const resolveLog = buildPlaybackResolutionLog({
         routeName,
         episodeName: episode.name,
@@ -1120,6 +1165,14 @@ export function VodPlayer({
       termLog(resolveLog, 'info');
       appendMpvTestLog(resolveLog.replace('[VodPlayer]', '[vod]'));
       termLog(`[VodPlayer] kernel_plan=[${kernelPlan.join(',')}]`, 'info');
+      updatePlaybackDiagnosticsReport({
+        routeName,
+        episodeName: episode.name,
+        status: 'success',
+        resolvedBy: stream.resolvedBy,
+        finalUrl: stream.url,
+        diagnostics: getVodPlaybackDiagnostics(stream),
+      });
 
       let lastFailReason = '未知错误';
       try {
@@ -1188,6 +1241,7 @@ export function VodPlayer({
       probeResolvedStream,
       showPlaybackNotice,
       termLog,
+      updatePlaybackDiagnosticsReport,
     ],
   );
 
@@ -1637,6 +1691,11 @@ export function VodPlayer({
               </button>
             </div>
           )}
+
+          <VodPlaybackDiagnosticsPanel
+            report={playbackDiagnosticsReport}
+            loading={loading}
+          />
         </div>
       </div>
     </div>

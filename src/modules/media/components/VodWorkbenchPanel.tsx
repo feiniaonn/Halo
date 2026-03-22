@@ -86,6 +86,7 @@ export function VodWorkbenchPanel({
   const canCategory = activeSite?.capability.canCategory ?? false;
   const canSearch = activeSite?.capability.canSearch ?? false;
   const isSearchOnly = activeSite?.capability.searchOnly ?? false;
+  const isDisplayOnlySite = activeSite?.capability.dispatchRole === 'origin-metadata';
   const isSearchMode = Boolean(activeSearchKeyword);
   const isAggregateMode = browseMode === 'aggregate';
   const aggregateProgressText = aggregateSessionState
@@ -100,6 +101,11 @@ export function VodWorkbenchPanel({
         {activeSite && (
           <span className="truncate text-xs text-muted-foreground">
             {isAggregateMode ? `当前优先接口: ${activeSite.name}` : `源: ${activeSite.name}`}
+          </span>
+        )}
+        {isDisplayOnlySite && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-sky-500/25 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-700 dark:text-sky-300">
+            只展示，播放会换接口
           </span>
         )}
         {supportsAggregateBrowse && (
@@ -286,6 +292,11 @@ export function VodWorkbenchPanel({
                       {/* Top Badges */}
                       <div className="absolute top-1.5 left-1.5 right-1.5 flex justify-between items-start gap-1 pointer-events-none">
                         <div className="flex flex-wrap gap-1">
+                          {isDisplayOnlySite && !('aggregateSource' in item) && (
+                            <span className="rounded-full bg-sky-500/90 text-white font-semibold text-[9px] px-1.5 py-0.5 leading-none">
+                              只展示
+                            </span>
+                          )}
                           {'aggregateSource' in item && (
                             <span className="rounded-full bg-primary/90 text-primary-foreground font-semibold text-[9px] px-1.5 py-0.5 leading-none">
                               {item.aggregateSource.siteName}

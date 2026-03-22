@@ -103,6 +103,13 @@ export function sortVodSitesByRanking(
 
   const rankingMap = new Map(records.map((record) => [record.siteKey, record]));
   return [...sites].sort((left, right) => {
+    if (left.key === activeSiteKey && right.key !== activeSiteKey) {
+      return -1;
+    }
+    if (right.key === activeSiteKey && left.key !== activeSiteKey) {
+      return 1;
+    }
+
     const leftRank = rankingMap.get(left.key);
     const rightRank = rankingMap.get(right.key);
     const leftScore = leftRank?.successCount ?? 0;
@@ -116,13 +123,6 @@ export function sortVodSitesByRanking(
     if (rightTime !== leftTime) {
       return rightTime - leftTime;
     }
-
-    if (left.key === activeSiteKey && right.key !== activeSiteKey) {
-      return -1;
-    }
-    if (right.key === activeSiteKey && left.key !== activeSiteKey) {
-      return 1;
-    }
-    return 0;
+    return left.key.localeCompare(right.key);
   });
 }

@@ -24,6 +24,7 @@ export interface TvBoxVodItem {
 }
 
 export type VodBrowseMode = "site" | "aggregate";
+export type TvBoxSiteRole = "origin-metadata" | "resource-backend" | "search-only-backend";
 
 export interface VodAggregateSourceRef {
   siteKey: string;
@@ -321,6 +322,7 @@ export interface CompatHelperTrace {
 
 export interface TvBoxSiteCapability {
   sourceKind: TvBoxSiteSourceKind;
+  dispatchRole: TvBoxSiteRole;
   canHome: boolean;
   canCategory: boolean;
   canSearch: boolean;

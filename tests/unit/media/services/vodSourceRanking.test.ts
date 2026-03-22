@@ -25,6 +25,7 @@ function createSite(key: string): NormalizedTvBoxSite {
     categories: [],
     capability: {
       sourceKind: "spider",
+      dispatchRole: "resource-backend",
       canHome: true,
       canCategory: true,
       canSearch: true,
@@ -56,7 +57,7 @@ describe("vodSourceRanking", () => {
     ]);
   });
 
-  it("prioritizes persisted successful sites ahead of the default order", () => {
+  it("keeps the active site ahead of persisted rankings", () => {
     const sorted = sortVodSitesByRanking(
       [createSite("alpha"), createSite("beta"), createSite("gamma")],
       [
@@ -66,6 +67,6 @@ describe("vodSourceRanking", () => {
       "alpha",
     );
 
-    expect(sorted.map((site) => site.key)).toEqual(["gamma", "beta", "alpha"]);
+    expect(sorted.map((site) => site.key)).toEqual(["alpha", "gamma", "beta"]);
   });
 });

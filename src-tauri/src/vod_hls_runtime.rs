@@ -164,12 +164,6 @@ fn should_retry_fetch_error(message: &str) -> bool {
 }
 
 fn detect_segment_payload_anomaly(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.len() >= 8 && bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
-        return Some("segment payload is PNG signature");
-    }
-    if bytes.len() >= 6 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) {
-        return Some("segment payload is GIF signature");
-    }
     let head_len = bytes.len().min(96);
     if head_len > 0 {
         let head = String::from_utf8_lossy(&bytes[..head_len]).to_ascii_lowercase();
@@ -178,6 +172,28 @@ fn detect_segment_payload_anomaly(bytes: &[u8]) -> Option<&'static str> {
         }
     }
     None
+}
+
+fn strip_image_header(bytes: Vec<u8>) -> Vec<u8> {
+    if bytes.len() < 10 {
+        return bytes;
+    }
+    let is_png = bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+    let is_gif = bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a");
+    let is_bmp = bytes.starts_with(b"BM");
+    let is_jpeg = bytes.starts_with(&[0xFF, 0xD8, 0xFF]);
+
+    if !is_png && !is_gif && !is_bmp && !is_jpeg {
+        return bytes;
+    }
+
+    for i in 0..bytes.len().saturating_sub(188) {
+        if bytes[i] == 0x47 && bytes[i + 188] == 0x47 {
+            return bytes[i..].to_vec();
+        }
+    }
+
+    bytes
 }
 
 fn apply_hls_like_headers(
@@ -271,6 +287,46 @@ fn extract_single_variant(manifest: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn looks_like_image_manifest_uri(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    if lower.is_empty() || lower.starts_with('#') {
+        return false;
+    }
+
+    [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico"]
+        .iter()
+        .any(|token| lower.contains(token))
+}
+
+fn detect_manifest_payload_anomaly(manifest: &str) -> Option<&'static str> {
+    let mut media_lines = 0usize;
+    let mut image_lines = 0usize;
+    let mut html_lines = 0usize;
+
+    for raw_line in manifest.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        media_lines += 1;
+        if looks_like_image_manifest_uri(line) {
+            image_lines += 1;
+        }
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("<!doctype html") || lower.starts_with("<html") {
+            html_lines += 1;
+        }
+    }
+
+    if media_lines > 0 && image_lines == media_lines {
+        return Some("manifest payload only contains image segments");
+    }
+    if media_lines > 0 && html_lines == media_lines {
+        return Some("manifest payload only contains html bodies");
+    }
+    None
 }
 
 fn rewrite_manifest_content(manifest: &str, base_url: &Url) -> String {
@@ -400,6 +456,12 @@ async fn fetch_media_manifest(
         let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
         if !normalized.trim_start().starts_with("#EXTM3U") {
             return Err(format!("manifest response is not m3u8 for {current_url}"));
+        }
+        if let Some(anomaly) = detect_manifest_payload_anomaly(&normalized) {
+            return Err(format!(
+                "manifest payload anomaly detected for {}: {}",
+                current_url, anomaly
+            ));
         }
 
         if let Some(variant) = extract_single_variant(&normalized) {
@@ -627,16 +689,23 @@ pub(crate) async fn serve_segment(
                 anomaly, source_url
             ));
         }
+        
+        // Strip image headers from TS segments if present
+        let cleaned_bytes = strip_image_header(response.bytes);
+
         put_segment_cache(
             cache_key.clone(),
             SegmentCacheEntry {
                 stored_at_ms: now_ms(),
-                bytes: response.bytes.clone(),
+                bytes: cleaned_bytes.clone(),
                 content_type: response.content_type.clone(),
             },
         );
         track_session_cache_key(session_id, &cache_key);
-        return Ok(response);
+        return Ok(VodHlsBinaryResponse {
+            bytes: cleaned_bytes,
+            content_type: response.content_type,
+        });
     }
 
     Err(format!(
@@ -662,7 +731,9 @@ pub(crate) fn release_session(session_id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{rewrite_manifest_for_local, rewrite_tag_uri_to_local};
+    use super::{
+        detect_manifest_payload_anomaly, rewrite_manifest_for_local, rewrite_tag_uri_to_local,
+    };
 
     #[test]
     fn rewrites_key_uri_to_local_proxy() {
@@ -681,5 +752,15 @@ mod tests {
             .contains("/vod-hls/resource/session-2?url=https%3A%2F%2Fexample.com%2Fkey.bin"));
         assert!(rewritten.contains("http://127.0.0.1:9978/vod-hls/segment/session-2/"));
         assert!(rewritten.contains(".bin"));
+    }
+
+    #[test]
+    fn detects_image_only_manifest_payload() {
+        let manifest =
+            "#EXTM3U\n#EXTINF:2.7,\nhttps://cdn.example.com/frame-1.png\n#EXTINF:3.2,\nhttps://cdn.example.com/frame-2.jpg\n";
+        assert_eq!(
+            detect_manifest_payload_anomaly(manifest),
+            Some("manifest payload only contains image segments")
+        );
     }
 }

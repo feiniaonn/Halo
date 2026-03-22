@@ -42,6 +42,7 @@ interface TriggerSpiderRuntimeWarmupArgs {
   onNotifyWarning: (message: string) => void;
   shouldTrackAsActive?: boolean;
   shouldProfileSite?: boolean;
+  notifyOnFailure?: boolean;
 }
 
 export function buildSpiderRuntimeWarmupKey(spiderUrl: string, apiClass: string): string {
@@ -106,6 +107,7 @@ export function triggerSpiderRuntimeWarmup({
   onNotifyWarning,
   shouldTrackAsActive = true,
   shouldProfileSite = true,
+  notifyOnFailure = false,
 }: TriggerSpiderRuntimeWarmupArgs): Promise<SpiderPrefetchResult | null> {
   if (!spiderUrl) {
     return Promise.resolve(null);
@@ -183,7 +185,9 @@ export function triggerSpiderRuntimeWarmup({
           siteProfile: null,
         });
       }
-      onNotifyWarning(humanizeVodError(message));
+      if (notifyOnFailure) {
+        onNotifyWarning(humanizeVodError(message));
+      }
       return null;
     })
     .finally(() => {

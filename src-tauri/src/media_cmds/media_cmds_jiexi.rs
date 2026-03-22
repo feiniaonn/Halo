@@ -49,6 +49,112 @@ fn looks_like_direct_media_url(url: &str) -> bool {
         || lower.contains("video/mp2t")
 }
 
+fn trim_url_punctuation(value: &str) -> String {
+    value
+        .trim()
+        .trim_end_matches(&['\\', '"', '\'', ',', ';', ')', ']'][..])
+        .to_string()
+}
+
+fn strip_encoded_url_tail(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    let markers = [
+        "%22%20",
+        "%22%3e",
+        "%22>",
+        "%27%20",
+        "%3ciframe",
+        "%3cscript",
+        "%3c/html",
+        "%3c/body",
+        "%20width=",
+        "%20height=",
+        "%20frameborder=",
+        "%20allowfullscreen",
+        "%20sandbox=",
+        "%20scrolling=",
+        "%24%28%27",
+        "%24%28%22",
+        "%3bfunction%20",
+    ];
+    let cut_idx = markers.iter().filter_map(|marker| lower.find(marker)).min();
+    if let Some(index) = cut_idx {
+        value[..index].to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn extract_first_http_url(text: &str) -> Option<String> {
+    let re = Regex::new(r#"https?://[^\s"'<>]+"#).ok()?;
+    let matched = re
+        .find_iter(text)
+        .map(|m| trim_url_punctuation(m.as_str()))
+        .find(|candidate| candidate.starts_with("http"));
+    matched
+}
+
+fn sanitize_playable_url_candidate(value: String) -> String {
+    let normalized = value
+        .trim()
+        .replace("\\/", "/")
+        .replace("&amp;", "&")
+        .replace("\\u0026", "&");
+    let direct = extract_first_http_url(&normalized).unwrap_or_else(|| trim_url_punctuation(&normalized));
+    trim_url_punctuation(&strip_encoded_url_tail(&direct))
+}
+
+fn decode_playable_url_candidate(mut cand: String) -> String {
+    if let Some(stripped) = cand.strip_prefix("url=") {
+        cand = stripped.to_string();
+    } else if let Some(stripped) = cand.strip_prefix("v=") {
+        cand = stripped.to_string();
+    } else if let Some(idx) = cand.find("url=") {
+        cand = cand[idx + 4..].to_string();
+    }
+
+    if cand.starts_with("aHR0c") {
+        use base64::Engine;
+        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(cand.as_bytes()) {
+            if let Ok(utf8) = String::from_utf8(decoded) {
+                cand = utf8;
+            }
+        }
+    }
+
+    if cand.len() >= 14 && cand.chars().all(|c| c.is_ascii_hexdigit()) {
+        let mut bytes = Vec::new();
+        let mut ok = true;
+        for i in (0..cand.len()).step_by(2) {
+            if let Ok(b) = u8::from_str_radix(&cand[i..i + 2], 16) {
+                bytes.push(b);
+            } else {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            if let Ok(utf8) = String::from_utf8(bytes) {
+                if utf8.starts_with("http") {
+                    cand = utf8;
+                }
+            }
+        }
+    }
+
+    if cand.contains("%3A") || cand.contains("%2F") || cand.contains("%3a") || cand.contains("%2f") {
+        if let Ok(u) = url::Url::parse(&format!("http://localhost?q={}", cand)) {
+            if let Some((_, decoded)) = u.query_pairs().next() {
+                if decoded.starts_with("http") {
+                    cand = decoded.to_string();
+                }
+            }
+        }
+    }
+
+    sanitize_playable_url_candidate(cand)
+}
+
 fn extract_playable_url_from_text(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -67,15 +173,23 @@ fn extract_playable_url_from_text(text: &str) -> Option<String> {
         for pointer in pointers {
             if let Some(url) = json_val.pointer(pointer).and_then(|v| v.as_str()) {
                 let clean = url.trim();
-                if clean.starts_with("http") {
-                    return Some(clean.to_string());
+                let decoded = sanitize_playable_url_candidate(decode_playable_url_candidate(clean.to_string()));
+                if decoded.starts_with("http") {
+                    return Some(decoded);
                 }
             }
         }
     }
 
+    let decoded_trimmed = sanitize_playable_url_candidate(decode_playable_url_candidate(trimmed.to_string()));
+    if decoded_trimmed.starts_with("http") && looks_like_direct_media_url(&decoded_trimmed) {
+        return Some(decoded_trimmed);
+    }
     if trimmed.starts_with("http") {
-        return Some(trimmed.to_string());
+        let sanitized_trimmed = sanitize_playable_url_candidate(trimmed.to_string());
+        if sanitized_trimmed.starts_with("http") && looks_like_direct_media_url(&sanitized_trimmed) {
+            return Some(sanitized_trimmed);
+        }
     }
 
     let normalized = trimmed
@@ -91,7 +205,23 @@ fn extract_playable_url_from_text(text: &str) -> Option<String> {
                 .trim_end_matches(&['\\', '"', '\'', ',', ';'][..])
                 .to_string()
         })
-        .find(|candidate| looks_like_direct_media_url(candidate));
+        .find_map(|candidate| {
+            let decoded = sanitize_playable_url_candidate(decode_playable_url_candidate(candidate));
+            if looks_like_direct_media_url(&decoded) {
+                Some(decoded)
+            } else {
+                None
+            }
+        });
+    
+    if matched.is_none() {
+        let regex_blind_decoding =
+            sanitize_playable_url_candidate(decode_playable_url_candidate(normalized.to_string()));
+        if regex_blind_decoding.starts_with("http") && looks_like_direct_media_url(&regex_blind_decoding) {
+            return Some(regex_blind_decoding);
+        }
+    }
+
     matched
 }
 
@@ -100,11 +230,43 @@ fn looks_like_m3u8_manifest(text: &str) -> bool {
     trimmed.starts_with("#EXTM3U")
 }
 
+fn looks_like_image_segment_line(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    if lower.is_empty() || lower.starts_with('#') {
+        return false;
+    }
+
+    [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico"]
+        .iter()
+        .any(|token| lower.contains(token))
+}
+
+fn manifest_looks_like_nonvideo_hls(text: &str) -> bool {
+    if !looks_like_m3u8_manifest(text) {
+        return false;
+    }
+
+    let mut media_lines = 0usize;
+    let mut image_lines = 0usize;
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        media_lines += 1;
+        if looks_like_image_segment_line(line) {
+            image_lines += 1;
+        }
+    }
+
+    media_lines > 0 && image_lines == media_lines
+}
+
 fn extract_playable_target_from_wrapped_response(text: &str, target_url: &str) -> Option<String> {
     if let Some(found) = extract_playable_url_from_text(text) {
         return Some(found);
     }
-    if looks_like_m3u8_manifest(text) {
+    if looks_like_m3u8_manifest(text) && !manifest_looks_like_nonvideo_hls(text) {
         let normalized = target_url.trim();
         if normalized.starts_with("http") && !looks_like_image_url(normalized) {
             return Some(normalized.to_string());
@@ -143,12 +305,17 @@ pub async fn resolve_jiexi(
     jiexi_prefix: String,
     video_url: String,
     extra_headers: Option<std::collections::HashMap<String, String>>,
+    timeout_ms: Option<u64>,
 ) -> Result<String, String> {
     let encoded_video =
         url::form_urlencoded::byte_serialize(video_url.as_bytes()).collect::<String>();
     let call_url = format!("{}{}", jiexi_prefix.trim_end_matches('&'), encoded_video);
     let resolved = resolve_media_request(&call_url, extra_headers.clone());
-    let client = build_transport_client(&resolved, true, Duration::from_secs(10))?;
+    let client = build_transport_client(
+        &resolved,
+        true,
+        Duration::from_millis(timeout_ms.unwrap_or(10_000).max(500)),
+    )?;
     let text = request_jiexi_text(&client, &call_url, &video_url, &extra_headers).await?;
     if let Some(found) = extract_playable_url_from_text(&text) {
         return Ok(found);
@@ -187,9 +354,14 @@ pub async fn resolve_jiexi(
 pub async fn resolve_wrapped_media_url(
     target_url: String,
     extra_headers: Option<std::collections::HashMap<String, String>>,
+    timeout_ms: Option<u64>,
 ) -> Result<String, String> {
     let resolved = resolve_media_request(&target_url, extra_headers.clone());
-    let client = build_transport_client(&resolved, true, Duration::from_secs(10))?;
+    let client = build_transport_client(
+        &resolved,
+        true,
+        Duration::from_millis(timeout_ms.unwrap_or(10_000).max(500)),
+    )?;
     let text = request_jiexi_text(&client, &target_url, &target_url, &extra_headers).await?;
     if let Some(found) = extract_playable_target_from_wrapped_response(&text, &target_url) {
         return Ok(found);
@@ -554,7 +726,15 @@ pub async fn resolve_jiexi_webview(
         let title = window.title().unwrap_or_default();
         if let Some(url) = title.strip_prefix("HALO_URL:") {
             let _ = window.close();
-            return Ok(url.to_string());
+            if let Some(found) = extract_playable_url_from_text(url) {
+                return Ok(found);
+            }
+            let sanitized = sanitize_playable_url_candidate(url.to_string());
+            return Ok(if sanitized.starts_with("http") {
+                sanitized
+            } else {
+                url.to_string()
+            });
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -562,7 +742,10 @@ pub async fn resolve_jiexi_webview(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_playable_target_from_wrapped_response, extract_playable_url_from_text};
+    use super::{
+        extract_playable_target_from_wrapped_response, extract_playable_url_from_text,
+        manifest_looks_like_nonvideo_hls,
+    };
 
     #[test]
     fn extracts_dash_like_url_from_embedded_html() {
@@ -590,6 +773,15 @@ mod tests {
     }
 
     #[test]
+    fn trims_encoded_iframe_tail_from_m3u8_url() {
+        let payload = "url=http%3A%2F%2Fbeyond.example.com%2F2026-03-22%2Fplay.m3u8%3Fts%3D1774177202-0-0-token%2522%2520width%253D%2522100%2525%2522%2520height%253D%2522100%2525%2522%253E%253C%2Fiframe%253E%253Cscript%253Efunction%2520SUIYI(url)%257B%2524(%2527";
+        assert_eq!(
+            extract_playable_url_from_text(payload).as_deref(),
+            Some("http://beyond.example.com/2026-03-22/play.m3u8?ts=1774177202-0-0-token")
+        );
+    }
+
+    #[test]
     fn returns_wrapped_target_when_body_is_hls_manifest() {
         let target = "http://wrapper.example.com/api/getM3u8?url=wrapped";
         let body = "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:5,\nsegment.ts\n";
@@ -597,5 +789,13 @@ mod tests {
             extract_playable_target_from_wrapped_response(body, target).as_deref(),
             Some(target)
         );
+    }
+
+    #[test]
+    fn rejects_wrapped_target_when_manifest_points_to_images() {
+        let target = "http://wrapper.example.com/api/getM3u8?url=wrapped";
+        let body = "#EXTM3U\n#EXTINF:10,\nhttps://cdn.example.com/poster-1.png\n#EXTINF:10,\nhttps://cdn.example.com/poster-2.jpg\n";
+        assert!(manifest_looks_like_nonvideo_hls(body));
+        assert!(extract_playable_target_from_wrapped_response(body, target).is_none());
     }
 }

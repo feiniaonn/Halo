@@ -69,6 +69,8 @@ export interface VodDetail {
 
 /** Full launch payload stored in localStorage and emitted to the window */
 export interface VodPlayerLaunchPayload {
+  sourceKey?: string;
+  repoUrl?: string;
   sourceKind: VodSourceKind;
   spiderUrl: string;
   siteName?: string;

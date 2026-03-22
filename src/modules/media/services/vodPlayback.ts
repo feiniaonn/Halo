@@ -5,7 +5,36 @@ import {
   type BrowserClickAction,
 } from '@/modules/media/services/browserParsePolicy';
 import { invokeSpiderPlayerV2 } from '@/modules/media/services/spiderV2';
+import {
+  listCachedVodParseSignals,
+  noteVodParseFailure,
+  noteVodParseSuccess,
+} from '@/modules/media/services/vodParseInsights';
+import {
+  appendPlaybackDiagnostic,
+  attachVodPlaybackDiagnostics,
+  buildVodPlaybackError,
+  createVodPlaybackDiagnostics,
+} from '@/modules/media/services/vodPlaybackDiagnostics';
+import {
+  classifyVodParseFailure,
+} from '@/modules/media/services/vodParseHealth';
+import {
+  buildNoUrlMessage,
+  delayMs,
+  extractPlayerHeaders,
+  hasResolvablePlayerPayload,
+  isHttpUrl,
+  isImageLikeUrl,
+  looksLikeDirectPlayableUrl,
+  looksLikeWrappedMediaUrl,
+  mergeHeaderRecords,
+  sanitizeMediaUrlCandidate,
+  unwrapPlayerPayload,
+} from '@/modules/media/services/vodPlaybackPayloadUtils';
 import { selectVodParses } from '@/modules/media/services/vodParseResolver';
+import { resolveWithStoredVodPlaybackResolution } from '@/modules/media/services/vodPlaybackResolutionStore';
+import { probeVodStream } from '@/modules/media/services/vodStreamProbe';
 import { resolveRequestPolicy } from '@/modules/media/services/tvboxNetworkPolicy';
 import type {
   TvBoxHostMapping,
@@ -16,6 +45,25 @@ import type {
   VodKernelMode,
   VodSourceKind,
 } from '@/modules/media/types/vodWindow.types';
+import type {
+  VodPlaybackDiagnostics,
+} from '@/modules/media/services/vodPlaybackDiagnostics';
+
+export {
+  getVodPlaybackDiagnosticsElapsedMs,
+  getVodPlaybackDiagnostics,
+  type VodPlaybackDiagnosticStage,
+  type VodPlaybackDiagnosticStatus,
+  type VodPlaybackDiagnosticStep,
+  type VodPlaybackDiagnostics,
+} from '@/modules/media/services/vodPlaybackDiagnostics';
+export {
+  buildNoUrlMessage,
+  extractPlayerHeaders,
+  hasResolvablePlayerPayload,
+  looksLikeDirectPlayableUrl,
+} from '@/modules/media/services/vodPlaybackPayloadUtils';
+export { clearVodParseRankingCache } from '@/modules/media/services/vodParseInsights';
 
 export interface PlayerPayload {
   url?: string;
@@ -27,6 +75,8 @@ export interface PlayerPayload {
 }
 
 export interface VodPlaybackContext {
+  sourceKey?: string;
+  repoUrl?: string;
   sourceKind: VodSourceKind;
   spiderUrl: string;
   siteKey: string;
@@ -42,27 +92,6 @@ export interface VodPlaybackContext {
   hostMappings?: TvBoxHostMapping[];
 }
 
-export type VodPlaybackDiagnosticStage =
-  | 'spider_payload'
-  | 'wrapped_url'
-  | 'parse_chain'
-  | 'webview_parse'
-  | 'direct_fallback'
-  | 'episode_direct'
-  | 'final';
-
-export type VodPlaybackDiagnosticStatus = 'success' | 'miss' | 'skip' | 'error';
-
-export interface VodPlaybackDiagnosticStep {
-  stage: VodPlaybackDiagnosticStage;
-  status: VodPlaybackDiagnosticStatus;
-  detail: string;
-}
-
-export interface VodPlaybackDiagnostics {
-  steps: VodPlaybackDiagnosticStep[];
-}
-
 export interface VodResolvedStream {
   url: string;
   headers: Record<string, string> | null;
@@ -73,68 +102,23 @@ export interface VodResolvedStream {
 
 const SPIDER_PLAYER_EMPTY_RETRY_DELAYS_MS = [300];
 const SPIDER_PLAYER_PAYLOAD_CACHE_TTL_MS = 2 * 60 * 1000;
-const WRAPPED_PARSE_FALLBACK_TIMEOUT_MS = 5000;
+const QUICK_PARSE_HTTP_TIMEOUT_MS = 2200;
+const QUICK_PARSE_TOTAL_TIMEOUT_MS = 8500;
+const QUICK_PARSE_MIN_TIMEOUT_MS = 800;
+const QUICK_PARSE_BROWSER_ATTEMPT_TIMEOUT_MS = 3200;
+const QUICK_PARSE_MAX_BROWSER_ATTEMPTS = 2;
+const QUICK_PARSE_VALIDATION_TIMEOUT_MS = 1400;
+const WRAPPED_PARSE_CHAIN_BUDGET_MS = 6500;
 
 interface CachedSpiderPayloadEntry {
   payload: PlayerPayload;
   expiresAt: number;
 }
 
-type VodPlaybackDiagnosticCarrier = {
-  diagnostics?: VodPlaybackDiagnostics;
-  playbackDiagnostics?: VodPlaybackDiagnostics;
-};
-
 const spiderPayloadCache = new Map<string, CachedSpiderPayloadEntry>();
 
 export function clearSpiderPlayerPayloadCache(): void {
   spiderPayloadCache.clear();
-}
-
-function createVodPlaybackDiagnostics(): VodPlaybackDiagnostics {
-  return { steps: [] };
-}
-
-function cloneVodPlaybackDiagnostics(diagnostics: VodPlaybackDiagnostics): VodPlaybackDiagnostics {
-  return {
-    steps: diagnostics.steps.map((step) => ({ ...step })),
-  };
-}
-
-function summarizeDiagnosticValue(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return 'empty';
-  if (trimmed.length <= 96) {
-    return trimmed;
-  }
-  return `${trimmed.slice(0, 64)}...${trimmed.slice(-24)}(len=${trimmed.length})`;
-}
-
-function appendPlaybackDiagnostic(
-  diagnostics: VodPlaybackDiagnostics,
-  stage: VodPlaybackDiagnosticStage,
-  status: VodPlaybackDiagnosticStatus,
-  detail: string,
-): void {
-  diagnostics.steps.push({
-    stage,
-    status,
-    detail: summarizeDiagnosticValue(detail),
-  });
-}
-
-function attachVodPlaybackDiagnostics<T extends object>(
-  target: T,
-  diagnostics: VodPlaybackDiagnostics,
-  field: keyof VodPlaybackDiagnosticCarrier,
-): T {
-  Object.defineProperty(target, field, {
-    value: cloneVodPlaybackDiagnostics(diagnostics),
-    configurable: true,
-    enumerable: false,
-    writable: true,
-  });
-  return target;
 }
 
 function finalizeResolvedStream(
@@ -150,65 +134,11 @@ function finalizeResolvedStream(
   return attachVodPlaybackDiagnostics(stream, diagnostics, 'diagnostics');
 }
 
-function buildVodPlaybackError(message: string, diagnostics: VodPlaybackDiagnostics): Error {
-  appendPlaybackDiagnostic(diagnostics, 'final', 'error', message);
-  return attachVodPlaybackDiagnostics(new Error(message), diagnostics, 'playbackDiagnostics');
-}
-
-export function getVodPlaybackDiagnostics(value: unknown): VodPlaybackDiagnostics | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-
-  const carrier = value as VodPlaybackDiagnosticCarrier;
-  const diagnostics = carrier.diagnostics ?? carrier.playbackDiagnostics;
-  if (!diagnostics || !Array.isArray(diagnostics.steps)) {
-    return null;
-  }
-
-  return diagnostics;
-}
-
 export function normalizeVodKernelMode(mode: unknown): VodKernelMode {
   if (mode === 'mpv' || mode === 'direct' || mode === 'proxy') {
     return mode;
   }
   return 'direct';
-}
-
-export function unwrapPlayerPayload(resp: string | unknown): PlayerPayload {
-  try {
-    let data: unknown = resp;
-    if (typeof resp === 'string') {
-      data = JSON.parse(resp);
-    }
-    if (
-      data &&
-      typeof data === 'object' &&
-      'result' in data &&
-      ('ok' in data || 'className' in data)
-    ) {
-      data = (data as { result: unknown }).result;
-    }
-    if (typeof data === 'string') {
-      const trimmed = data.trim();
-      if (!trimmed) return {};
-      data = JSON.parse(trimmed);
-    }
-    if (Array.isArray(data)) data = data.length > 0 ? data[0] : {};
-    if (!data || typeof data !== 'object') return {};
-    return data as PlayerPayload;
-  } catch {
-    return {};
-  }
-}
-
-export function hasResolvablePlayerPayload(payload: PlayerPayload): boolean {
-  const url = typeof payload.url === 'string' ? payload.url.trim() : '';
-  if (url) {
-    return true;
-  }
-  return Number(payload.parse ?? 0) === 1 || Number(payload.jx ?? 0) === 1;
 }
 
 function buildSpiderPayloadCacheKey(
@@ -244,146 +174,27 @@ function writeCachedSpiderPayload(cacheKey: string, payload: PlayerPayload): voi
   });
 }
 
-function normalizeHeaderRecord(value: unknown): Record<string, string> | null {
-  let data = value;
-  if (typeof data === 'string') {
-    const trimmed = data.trim();
-    if (!trimmed) return null;
-    try {
-      data = JSON.parse(trimmed);
-    } catch {
-      const entries = trimmed
-        .split(/\r?\n+/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => {
-          const splitAt = line.indexOf(':');
-          if (splitAt <= 0) return null;
-          return [line.slice(0, splitAt).trim(), line.slice(splitAt + 1).trim()] as const;
-        })
-        .filter((entry): entry is readonly [string, string] => !!entry && !!entry[0] && !!entry[1]);
-      if (entries.length === 0) {
-        return null;
-      }
-      return Object.fromEntries(entries);
-    }
-  }
-
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    return null;
-  }
-
-  const normalized = Object.entries(data as Record<string, unknown>).reduce<Record<string, string>>(
-    (current, [key, rawValue]) => {
-      const nextKey = String(key ?? '').trim();
-      if (!nextKey) {
-        return current;
-      }
-      if (typeof rawValue === 'string' && rawValue.trim()) {
-        current[nextKey] = rawValue.trim();
-        return current;
-      }
-      if (typeof rawValue === 'number' || typeof rawValue === 'boolean') {
-        current[nextKey] = String(rawValue);
-      }
-      return current;
-    },
-    {},
-  );
-
-  return Object.keys(normalized).length > 0 ? normalized : null;
-}
-
-function mergeHeaderRecords(
-  ...records: Array<Record<string, string> | null | undefined>
-): Record<string, string> | null {
-  const merged = records.reduce<Record<string, string>>((current, record) => {
-    if (!record) return current;
-    Object.assign(current, record);
-    return current;
-  }, {});
-  return Object.keys(merged).length > 0 ? merged : null;
-}
-
-export function extractPlayerHeaders(payload: PlayerPayload): Record<string, string> | null {
-  const normalized =
-    mergeHeaderRecords(
-      normalizeHeaderRecord(payload.headers),
-      normalizeHeaderRecord(payload.header),
-    ) ?? {};
-
-  const referer =
-    typeof payload.referer === 'string'
-      ? payload.referer.trim()
-      : typeof payload.referrer === 'string'
-        ? payload.referrer.trim()
-        : typeof payload.Referer === 'string'
-          ? payload.Referer.trim()
-          : '';
-  const userAgent =
-    typeof payload['user-agent'] === 'string'
-      ? payload['user-agent'].trim()
-      : typeof payload['User-Agent'] === 'string'
-        ? payload['User-Agent'].trim()
-        : typeof payload.ua === 'string'
-          ? payload.ua.trim()
-          : '';
-
-  if (referer) {
-    normalized.Referer = referer;
-  }
-  if (userAgent) {
-    normalized['User-Agent'] = userAgent;
-  }
-
-  return Object.keys(normalized).length > 0 ? normalized : null;
-}
-
-function isHttpUrl(value: string): boolean {
-  return /^https?:\/\//i.test(value);
-}
-
-function isImageLikeUrl(url: string): boolean {
-  return /\.(png|jpe?g|gif|webp|bmp|ico)(\?.*)?$/i.test(url);
-}
-
-export function looksLikeDirectPlayableUrl(url: string): boolean {
-  const normalized = url.trim().toLowerCase();
-  if (!normalized.startsWith('http')) return false;
-  if (isImageLikeUrl(normalized)) return false;
-  try {
-    const parsed = new URL(normalized);
-    const pathname = parsed.pathname.toLowerCase();
-    if (/(\.m3u8|\.mp4|\.flv|\.mpd|\.m4s|\.ts|\.webm|\.mkv|\.mov)$/.test(pathname)) {
-      return true;
-    }
-    if (/(^|\/)[^/?#]*\.(m3u8|mp4|flv|mpd|m4s|ts|webm|mkv|mov)(?:$|[?#])/.test(pathname)) {
-      return true;
-    }
-
-    if (/\/m3u8\//i.test(pathname)) {
-      return true;
-    }
-
-    const typeHint = parsed.searchParams.get('type')?.toLowerCase() ?? '';
-    const mimeHint = parsed.searchParams.get('mime')?.toLowerCase() ?? '';
-    const contentTypeHint = parsed.searchParams.get('contenttype')?.toLowerCase() ?? '';
-    if (typeHint === 'm3u8' || typeHint === 'mp4') {
-      return true;
-    }
-    if (mimeHint.includes('video') || contentTypeHint.includes('video')) {
-      return true;
-    }
-    return false;
-  } catch {
-    // Fall through to the legacy string heuristics for malformed-but-usable URLs.
-  }
-  return (
-    /^https?:\/\/[^?#]+\.(m3u8|mp4|flv|mpd|m4s|ts|webm|mkv|mov)(?:[?#].*)?$/i.test(normalized) ||
-    /[?&]mime=video/i.test(normalized) ||
-    /[?&]contenttype=video/i.test(normalized) ||
-    /[?&]type=(m3u8|mp4)/i.test(normalized)
-  );
+function buildPlaybackResolutionCacheKey(
+  context: VodPlaybackContext,
+  episode: VodEpisode,
+  routeName: string,
+): string {
+  return JSON.stringify([
+    context.sourceKey?.trim() ?? '',
+    context.repoUrl?.trim() ?? '',
+    context.sourceKind,
+    context.siteKey,
+    context.apiClass,
+    context.ext,
+    routeName,
+    episode.url,
+    context.playUrl?.trim() ?? '',
+    context.click?.trim() ?? '',
+    context.requestHeaders ?? [],
+    context.hostMappings ?? [],
+    context.playbackRules ?? [],
+    getEffectiveParses(context).map((parse) => `${parse.type}:${parse.url.trim()}`),
+  ]);
 }
 
 function buildSitePlayParse(context: VodPlaybackContext): TvBoxParse | null {
@@ -400,9 +211,90 @@ function getEffectiveParses(context: VodPlaybackContext): TvBoxParse[] {
   return siteParse ? [siteParse, ...(context.parses ?? [])] : [...(context.parses ?? [])];
 }
 
+function getRemainingParseBudgetMs(deadlineAt: number): number {
+  return Math.max(0, deadlineAt - Date.now());
+}
+
+function clampParseAttemptTimeout(remainingMs: number, preferredMs: number): number {
+  if (remainingMs <= 0) {
+    return 0;
+  }
+  return Math.max(
+    QUICK_PARSE_MIN_TIMEOUT_MS,
+    Math.min(preferredMs, remainingMs),
+  );
+}
+
+function getValidationProbeTimeoutMs(remainingMs: number): number | undefined {
+  const timeoutMs = clampParseAttemptTimeout(remainingMs, QUICK_PARSE_VALIDATION_TIMEOUT_MS);
+  return timeoutMs >= QUICK_PARSE_MIN_TIMEOUT_MS ? timeoutMs : undefined;
+}
+
+function shouldRejectProbeResult(reason: string | null): boolean {
+  if (!reason) {
+    return false;
+  }
+  return (
+    reason === 'stream_probe_hls_image_manifest'
+    || reason === 'stream_probe_hls_html_manifest'
+    || reason === 'stream_probe_hls_manifest_unreadable'
+    || reason === 'stream_probe_audio_only'
+  );
+}
+
+async function validateResolvedStreamCandidate(
+  stream: VodResolvedStream,
+  options?: { timeoutMs?: number },
+): Promise<{ stream: VodResolvedStream | null; reason: string | null }> {
+  const sanitizedUrl = sanitizeMediaUrlCandidate(stream.url) || stream.url.trim();
+  if (sanitizedUrl !== stream.url) {
+    stream = {
+      ...stream,
+      url: sanitizedUrl,
+    };
+  }
+  if (!looksLikeDirectPlayableUrl(stream.url)) {
+    if (looksLikeWrappedMediaUrl(stream.url)) {
+      return {
+        stream: null,
+        reason: 'parse result is not directly playable',
+      };
+    }
+    return { stream, reason: null };
+  }
+
+  const inferredHlsLike = /(\.m3u8|[?&]type=m3u8|\/m3u8\/)/i.test(stream.url);
+  if (!inferredHlsLike) {
+    return { stream, reason: null };
+  }
+
+  try {
+    const probe = await probeVodStream(stream.url, stream.headers, {
+      timeoutMs: options?.timeoutMs,
+    });
+    if (probe.finalUrl && probe.finalUrl !== stream.url) {
+      stream = {
+        ...stream,
+        url: probe.finalUrl,
+      };
+    }
+    if (probe.kind === 'unknown' && shouldRejectProbeResult(probe.reason)) {
+      return {
+        stream: null,
+        reason: probe.reason ?? 'stream_probe_unknown',
+      };
+    }
+  } catch {
+    // Probe failures should not discard a potentially valid stream.
+  }
+
+  return { stream, reason: null };
+}
+
 async function resolveWrappedPayloadUrl(
   targetUrl: string,
   headers?: Record<string, string> | null,
+  timeoutMs?: number,
 ): Promise<string | null> {
   if (!isHttpUrl(targetUrl)) {
     return null;
@@ -411,17 +303,13 @@ async function resolveWrappedPayloadUrl(
     const resolved = await invoke<string>('resolve_wrapped_media_url', {
       targetUrl,
       extraHeaders: headers ?? null,
+      timeoutMs: timeoutMs ?? null,
     });
-    return typeof resolved === 'string' && resolved.trim() ? resolved.trim() : null;
+    const normalizedResolved = sanitizeMediaUrlCandidate(resolved);
+    return normalizedResolved || (typeof resolved === 'string' && resolved.trim() ? resolved.trim() : null);
   } catch {
     return null;
   }
-}
-
-function delayMs(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
 }
 
 async function invokeSpiderPlayerWithRetry(
@@ -502,6 +390,9 @@ export function shouldUseSpiderParseChain(
   payload: PlayerPayload,
   hasDirectPayloadUrl: boolean,
 ): boolean {
+  if (Number(payload.parse ?? 0) === 1) {
+    return true;
+  }
   if (Number(payload.jx ?? 0) === 1) {
     return true;
   }
@@ -516,18 +407,47 @@ async function resolveByParse(
   routeName: string,
   pageUrl: string,
   upstreamHeaders?: Record<string, string> | null,
+  options?: {
+    timeBudgetMs?: number;
+    allowBrowser?: boolean;
+    diagnostics?: VodPlaybackDiagnostics;
+  },
 ): Promise<VodResolvedStream | null> {
+  const { rankingRecords, healthRecords } = await listCachedVodParseSignals(context, routeName);
   const parseSelection = selectVodParses(getEffectiveParses(context), {
     jxIndex: 1,
     routeName,
     pageUrl,
+    rankingRecords,
+    healthRecords,
   });
   if (parseSelection.ordered.length === 0) {
     return null;
   }
 
+  const diagnostics = options?.diagnostics;
   let lastError = '';
+  const deadlineAt = Date.now() + (options?.timeBudgetMs ?? QUICK_PARSE_TOTAL_TIMEOUT_MS);
+  const browserCandidates: Array<{
+    parseUrl: string;
+    parseHeaders: Record<string, string> | null;
+    parseRequest: ReturnType<typeof resolveRequestPolicy>;
+  }> = [];
+
   for (const parse of parseSelection.ordered) {
+    const remainingMs = getRemainingParseBudgetMs(deadlineAt);
+    if (remainingMs < QUICK_PARSE_MIN_TIMEOUT_MS) {
+      if (diagnostics) {
+        appendPlaybackDiagnostic(
+          diagnostics,
+          'parse_attempt',
+          'skip',
+          `parser=${parse.url} reason=budget_exhausted`,
+          { budgetMs: remainingMs },
+        );
+      }
+      break;
+    }
     const parseHeaders = mergeHeaderRecords(parse.ext?.header ?? null, upstreamHeaders);
     const parseRequest = resolveRequestPolicy(
       parse.url,
@@ -535,12 +455,17 @@ async function resolveByParse(
       context.requestHeaders,
       context.hostMappings,
     );
+    const attemptTimeoutMs = clampParseAttemptTimeout(remainingMs, QUICK_PARSE_HTTP_TIMEOUT_MS);
+    const attemptStartedAt = Date.now();
     try {
-      const resolvedUrl = await invoke<string>('resolve_jiexi', {
+      const rawResolvedUrl = await invoke<string>('resolve_jiexi', {
         jiexiPrefix: parseRequest.url,
         videoUrl: pageUrl,
         extraHeaders: parseRequest.headers,
+        timeoutMs: attemptTimeoutMs,
       });
+      const resolvedUrl = sanitizeMediaUrlCandidate(rawResolvedUrl);
+      const attemptDurationMs = Date.now() - attemptStartedAt;
       if (resolvedUrl && !isImageLikeUrl(resolvedUrl)) {
         const resolvedTarget = resolveRequestPolicy(
           resolvedUrl,
@@ -548,52 +473,223 @@ async function resolveByParse(
           context.requestHeaders,
           context.hostMappings,
         );
-        return {
+        const validationTimeoutMs = getValidationProbeTimeoutMs(
+          getRemainingParseBudgetMs(deadlineAt),
+        );
+        const validated = await validateResolvedStreamCandidate({
           url: resolvedTarget.url,
           headers: resolvedTarget.headers,
           resolvedBy: 'jiexi',
-        };
+        }, {
+          timeoutMs: validationTimeoutMs,
+        });
+        if (validated.stream) {
+          if (diagnostics) {
+            appendPlaybackDiagnostic(
+              diagnostics,
+              'parse_attempt',
+              'success',
+              `parser=${parse.url} mode=http resolved=${validated.stream.url}`,
+              { budgetMs: attemptTimeoutMs },
+            );
+          }
+          await noteVodParseSuccess(context, routeName, parse.url, attemptDurationMs);
+          return validated.stream;
+        }
+        lastError = validated.reason ?? '解析返回了不可播放地址。';
+        if (diagnostics) {
+          appendPlaybackDiagnostic(
+            diagnostics,
+            'parse_attempt',
+            'miss',
+            `parser=${parse.url} mode=http reason=${validated.reason ?? 'stream_probe_unknown'}`,
+            { budgetMs: attemptTimeoutMs },
+          );
+        }
+        await noteVodParseFailure(
+          context,
+          routeName,
+          parse.url,
+          classifyVodParseFailure(
+            validated.reason ?? 'stream_probe_unknown',
+            { validationReason: validated.reason },
+          ),
+          attemptDurationMs,
+        );
+        continue;
       }
       lastError = '解析返回了非视频地址。';
+      if (diagnostics) {
+        appendPlaybackDiagnostic(
+          diagnostics,
+          'parse_attempt',
+          'miss',
+          `parser=${parse.url} mode=http reason=${lastError || 'non_media_payload'}`,
+          { budgetMs: attemptTimeoutMs },
+        );
+      }
+      await noteVodParseFailure(
+        context,
+        routeName,
+        parse.url,
+        classifyVodParseFailure(lastError || 'non_media_payload'),
+        attemptDurationMs,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const attemptDurationMs = Date.now() - attemptStartedAt;
       lastError = message;
       if (message.includes('jiexi_needs_browser')) {
-        const browserPolicy = buildBrowserParsePolicy(
-          context.click,
-          context.playbackRules,
-          pageUrl,
-        );
-        try {
-          const browserResolved = await invoke<string>('resolve_jiexi_webview', {
-            jiexiPrefix: parseRequest.url,
-            videoUrl: pageUrl,
-            timeoutMs: 25000,
-            visible: false,
-            clickActions: browserPolicy.actions as BrowserClickAction[],
-          });
-          if (browserResolved && !isImageLikeUrl(browserResolved)) {
-            const resolvedTarget = resolveRequestPolicy(
-              browserResolved,
-              parseHeaders,
-              context.requestHeaders,
-              context.hostMappings,
-            );
-            return {
-              url: resolvedTarget.url,
-              headers: resolvedTarget.headers,
-              resolvedBy: 'jiexi-webview',
-            };
-          }
-          lastError = '浏览器解析返回了非视频地址。';
-        } catch (browserError) {
-          const browserMessage =
-            browserError instanceof Error ? browserError.message : String(browserError);
-          lastError =
-            browserPolicy.ignoredEntries.length > 0
-              ? `${browserMessage}（另有 ${browserPolicy.ignoredEntries.length} 条点击脚本因不在白名单内被跳过）`
-              : browserMessage;
+        browserCandidates.push({ parseUrl: parse.url, parseHeaders, parseRequest });
+        if (diagnostics) {
+          appendPlaybackDiagnostic(
+            diagnostics,
+            'parse_attempt',
+            'skip',
+            `parser=${parse.url} reason=browser_required`,
+            { budgetMs: attemptTimeoutMs },
+          );
         }
+        continue;
+      }
+      if (diagnostics) {
+        appendPlaybackDiagnostic(
+          diagnostics,
+          'parse_attempt',
+          'error',
+          `parser=${parse.url} mode=http reason=${message}`,
+          { budgetMs: attemptTimeoutMs },
+        );
+      }
+      await noteVodParseFailure(
+        context,
+        routeName,
+        parse.url,
+        classifyVodParseFailure(message),
+        attemptDurationMs,
+      );
+    }
+  }
+
+  if (options?.allowBrowser !== false && browserCandidates.length > 0) {
+    const browserPolicy = buildBrowserParsePolicy(
+      context.click,
+      context.playbackRules,
+      pageUrl,
+    );
+    for (const candidate of browserCandidates.slice(0, QUICK_PARSE_MAX_BROWSER_ATTEMPTS)) {
+      const remainingMs = getRemainingParseBudgetMs(deadlineAt);
+      if (remainingMs < QUICK_PARSE_MIN_TIMEOUT_MS) {
+        break;
+      }
+      const browserTimeoutMs = clampParseAttemptTimeout(
+        remainingMs,
+        QUICK_PARSE_BROWSER_ATTEMPT_TIMEOUT_MS,
+      );
+      const attemptStartedAt = Date.now();
+      try {
+        const rawBrowserResolved = await invoke<string>('resolve_jiexi_webview', {
+          jiexiPrefix: candidate.parseRequest.url,
+          videoUrl: pageUrl,
+          timeoutMs: browserTimeoutMs,
+          visible: false,
+          clickActions: browserPolicy.actions as BrowserClickAction[],
+        });
+        const browserResolved = sanitizeMediaUrlCandidate(rawBrowserResolved);
+        const attemptDurationMs = Date.now() - attemptStartedAt;
+        if (browserResolved && !isImageLikeUrl(browserResolved)) {
+          const resolvedTarget = resolveRequestPolicy(
+            browserResolved,
+            candidate.parseHeaders,
+            context.requestHeaders,
+            context.hostMappings,
+          );
+          const validationTimeoutMs = getValidationProbeTimeoutMs(
+            getRemainingParseBudgetMs(deadlineAt),
+          );
+          const validated = await validateResolvedStreamCandidate({
+            url: resolvedTarget.url,
+            headers: resolvedTarget.headers,
+            resolvedBy: 'jiexi-webview',
+          }, {
+            timeoutMs: validationTimeoutMs,
+          });
+          if (validated.stream) {
+            if (diagnostics) {
+              appendPlaybackDiagnostic(
+                diagnostics,
+                'webview_parse',
+                'success',
+                `parser=${candidate.parseUrl} resolved=${validated.stream.url}`,
+                { budgetMs: browserTimeoutMs },
+              );
+            }
+            await noteVodParseSuccess(context, routeName, candidate.parseUrl, attemptDurationMs);
+            return validated.stream;
+          }
+          lastError = validated.reason ?? '浏览器解析返回了不可播放地址。';
+          if (diagnostics) {
+            appendPlaybackDiagnostic(
+              diagnostics,
+              'webview_parse',
+              'miss',
+              `parser=${candidate.parseUrl} reason=${validated.reason ?? 'stream_probe_unknown'}`,
+              { budgetMs: browserTimeoutMs },
+            );
+          }
+          await noteVodParseFailure(
+            context,
+            routeName,
+            candidate.parseUrl,
+            classifyVodParseFailure(
+              validated.reason ?? 'stream_probe_unknown',
+              { validationReason: validated.reason },
+            ),
+            attemptDurationMs,
+          );
+          continue;
+        }
+        lastError = '浏览器解析返回了非视频地址。';
+        if (diagnostics) {
+          appendPlaybackDiagnostic(
+            diagnostics,
+            'webview_parse',
+            'miss',
+            `parser=${candidate.parseUrl} reason=${lastError || 'non_media_payload'}`,
+            { budgetMs: browserTimeoutMs },
+          );
+        }
+        await noteVodParseFailure(
+          context,
+          routeName,
+          candidate.parseUrl,
+          classifyVodParseFailure(lastError || 'non_media_payload'),
+          attemptDurationMs,
+        );
+      } catch (browserError) {
+        const browserMessage =
+          browserError instanceof Error ? browserError.message : String(browserError);
+        const attemptDurationMs = Date.now() - attemptStartedAt;
+        lastError =
+          browserPolicy.ignoredEntries.length > 0
+            ? `${browserMessage}（另有 ${browserPolicy.ignoredEntries.length} 条点击脚本因不在白名单内被跳过）`
+            : browserMessage;
+        if (diagnostics) {
+          appendPlaybackDiagnostic(
+            diagnostics,
+            'webview_parse',
+            'error',
+            `parser=${candidate.parseUrl} reason=${lastError}`,
+            { budgetMs: browserTimeoutMs },
+          );
+        }
+        await noteVodParseFailure(
+          context,
+          routeName,
+          candidate.parseUrl,
+          classifyVodParseFailure(browserMessage),
+          attemptDurationMs,
+        );
       }
     }
   }
@@ -606,10 +702,19 @@ async function resolveUrlWithParseAndWebviewFallback(
   routeName: string,
   targetUrl: string,
   extraHeaders: Record<string, string> | null,
+  options?: {
+    timeBudgetMs?: number;
+    diagnostics?: VodPlaybackDiagnostics;
+  },
 ): Promise<VodResolvedStream | null> {
+  const deadlineAt = Date.now() + (options?.timeBudgetMs ?? QUICK_PARSE_TOTAL_TIMEOUT_MS);
+  const diagnostics = options?.diagnostics;
   let parsed: VodResolvedStream | null = null;
   try {
-    parsed = await resolveByParse(context, routeName, targetUrl, extraHeaders);
+    parsed = await resolveByParse(context, routeName, targetUrl, extraHeaders, {
+      timeBudgetMs: getRemainingParseBudgetMs(deadlineAt),
+      diagnostics,
+    });
   } catch (e) {
     // Fall back below
   }
@@ -620,14 +725,32 @@ async function resolveUrlWithParseAndWebviewFallback(
 
   if (!looksLikeDirectPlayableUrl(targetUrl)) {
     try {
+      const remainingMs = getRemainingParseBudgetMs(deadlineAt);
+      const browserTimeoutMs = clampParseAttemptTimeout(
+        remainingMs,
+        QUICK_PARSE_BROWSER_ATTEMPT_TIMEOUT_MS,
+      );
+      if (browserTimeoutMs < QUICK_PARSE_MIN_TIMEOUT_MS) {
+        if (diagnostics) {
+          appendPlaybackDiagnostic(
+            diagnostics,
+            'webview_parse',
+            'skip',
+            `target=${targetUrl} reason=budget_exhausted`,
+            { budgetMs: remainingMs },
+          );
+        }
+        return null;
+      }
       const browserPolicy = buildBrowserParsePolicy(context.click, context.playbackRules, targetUrl);
-      const browserResolved = await invoke<string>('resolve_jiexi_webview', {
+      const rawBrowserResolved = await invoke<string>('resolve_jiexi_webview', {
         jiexiPrefix: targetUrl,
         videoUrl: '',
-        timeoutMs: 25000,
+        timeoutMs: browserTimeoutMs,
         visible: false,
         clickActions: browserPolicy.actions as BrowserClickAction[],
       });
+      const browserResolved = sanitizeMediaUrlCandidate(rawBrowserResolved);
       if (browserResolved && !isImageLikeUrl(browserResolved)) {
         const resolvedTarget = resolveRequestPolicy(
           browserResolved,
@@ -635,13 +758,37 @@ async function resolveUrlWithParseAndWebviewFallback(
           context.requestHeaders,
           context.hostMappings,
         );
-        return {
+        const validationTimeoutMs = getValidationProbeTimeoutMs(
+          getRemainingParseBudgetMs(deadlineAt),
+        );
+        const validated = await validateResolvedStreamCandidate({
           url: resolvedTarget.url,
           headers: resolvedTarget.headers,
           resolvedBy: 'jiexi-webview',
-        };
+        }, {
+          timeoutMs: validationTimeoutMs,
+        });
+        if (diagnostics) {
+          appendPlaybackDiagnostic(
+            diagnostics,
+            'webview_parse',
+            validated.stream ? 'success' : 'miss',
+            `target=${targetUrl} reason=${validated.reason ?? 'resolved'}`,
+            { budgetMs: browserTimeoutMs },
+          );
+        }
+        return validated.stream;
       }
     } catch (e) {
+      if (diagnostics) {
+        appendPlaybackDiagnostic(
+          diagnostics,
+          'webview_parse',
+          'error',
+          `target=${targetUrl} reason=${e instanceof Error ? e.message : String(e)}`,
+          { budgetMs: getRemainingParseBudgetMs(deadlineAt) },
+        );
+      }
       // Ignored
     }
   }
@@ -649,177 +796,7 @@ async function resolveUrlWithParseAndWebviewFallback(
   return null;
 }
 
-export function buildNoUrlMessage(
-  payload: PlayerPayload,
-  id: string,
-  hasParseCandidates: boolean,
-): string {
-  if (id.startsWith('msearch:')) return '当前搜索结果没有可播放地址。';
-  if (Number(payload.parse ?? 0) === 1 || Number(payload.jx ?? 0) === 1) {
-    return hasParseCandidates
-      ? '当前站点要求解析，但解析服务没有返回可播放地址。'
-      : '当前站点要求解析，但当前没有可用解析服务。';
-  }
-  if (payload.url && typeof payload.url === 'string' && isImageLikeUrl(payload.url)) {
-    return '当前返回的是图片地址，不是可播放视频。';
-  }
-  return '当前接口没有返回可播放地址。';
-}
-
-async function resolveEpisodePlaybackLegacy(
-  context: VodPlaybackContext,
-  episode: VodEpisode,
-  routeName: string,
-): Promise<VodResolvedStream> {
-  if (context.sourceKind === 'spider') {
-    const { payload } = await invokeSpiderPlayerWithRetry(context, routeName, episode.url);
-    const payloadHeaders = extractPlayerHeaders(payload);
-    const payloadUrl = typeof payload.url === 'string' ? payload.url.trim() : '';
-    const hasDirectPayloadUrl = isHttpUrl(payloadUrl) && !isImageLikeUrl(payloadUrl);
-    const parseRequired = shouldUseSpiderParseChain(payload, hasDirectPayloadUrl);
-    const payloadLooksDirectPlayable =
-      hasDirectPayloadUrl && looksLikeDirectPlayableUrl(payloadUrl);
-    if (payloadLooksDirectPlayable) {
-      const resolvedPayload = resolveRequestPolicy(
-        payloadUrl,
-        payloadHeaders,
-        context.requestHeaders,
-        context.hostMappings,
-      );
-      return {
-        url: resolvedPayload.url,
-        headers: resolvedPayload.headers,
-        resolvedBy: 'spider',
-      };
-    }
-
-    if (hasDirectPayloadUrl && !parseRequired) {
-      const wrappedPlayableUrl = await resolveWrappedPayloadUrl(payloadUrl, payloadHeaders);
-      if (wrappedPlayableUrl) {
-        if (Number(payload.parse ?? 0) === 1 && wrappedPlayableUrl === payloadUrl) {
-          const parsedWrappedPayload = await withTimeout(
-            resolveByParse(
-              context,
-              routeName,
-              payloadUrl,
-              payloadHeaders,
-            ),
-            WRAPPED_PARSE_FALLBACK_TIMEOUT_MS,
-            'wrapped parse fallback',
-          ).catch(() => null);
-          if (parsedWrappedPayload) {
-            return parsedWrappedPayload;
-          }
-        }
-        const resolvedWrapped = resolveRequestPolicy(
-          wrappedPlayableUrl,
-          payloadHeaders,
-          context.requestHeaders,
-          context.hostMappings,
-        );
-        return {
-          url: resolvedWrapped.url,
-          headers: resolvedWrapped.headers,
-          resolvedBy: 'spider',
-          skipProbe: wrappedPlayableUrl === payloadUrl,
-        };
-      }
-
-      if (Number(payload.parse ?? 0) === 1 || !payloadLooksDirectPlayable) {
-        const parsedWrappedPayload = await withTimeout(
-          resolveUrlWithParseAndWebviewFallback(
-            context,
-            routeName,
-            payloadUrl,
-            payloadHeaders,
-          ),
-          25000, // WebView requires more time
-          'wrapped parse fallback',
-        ).catch(() => null);
-
-        if (parsedWrappedPayload) {
-          return parsedWrappedPayload;
-        }
-      }
-
-      const resolvedPayload = resolveRequestPolicy(
-        payloadUrl,
-        payloadHeaders,
-        context.requestHeaders,
-        context.hostMappings,
-      );
-      return {
-        url: resolvedPayload.url,
-        headers: resolvedPayload.headers,
-        resolvedBy: 'spider',
-        skipProbe: true,
-      };
-    }
-
-    const parseTarget = hasDirectPayloadUrl
-      ? payloadUrl
-      : isHttpUrl(episode.url)
-        ? episode.url
-        : '';
-    if (parseTarget) {
-      const parsed = await resolveUrlWithParseAndWebviewFallback(context, routeName, parseTarget, payloadHeaders);
-      if (parsed) {
-        return parsed;
-      }
-    }
-
-    if (isHttpUrl(episode.url) && looksLikeDirectPlayableUrl(episode.url)) {
-      const resolvedEpisode = resolveRequestPolicy(
-        episode.url,
-        payloadHeaders,
-        context.requestHeaders,
-        context.hostMappings,
-      );
-      return {
-        url: resolvedEpisode.url,
-        headers: resolvedEpisode.headers,
-        resolvedBy: 'direct',
-      };
-    }
-
-    throw new Error(
-      buildNoUrlMessage(payload, episode.url, getEffectiveParses(context).length > 0),
-    );
-  }
-
-  if (!isHttpUrl(episode.url)) {
-    throw new Error('当前剧集未提供可解析地址。');
-  }
-
-  if (looksLikeDirectPlayableUrl(episode.url)) {
-    const resolvedEpisode = resolveRequestPolicy(
-      episode.url,
-      null,
-      context.requestHeaders,
-      context.hostMappings,
-    );
-    return {
-      url: resolvedEpisode.url,
-      headers: resolvedEpisode.headers,
-      resolvedBy: 'direct',
-    };
-  }
-
-  const parsed = await resolveUrlWithParseAndWebviewFallback(context, routeName, episode.url, null);
-  if (parsed) {
-    return parsed;
-  }
-
-  if (context.playUrl || (context.parses?.length ?? 0) > 0) {
-    throw new Error('当前解析链路未返回可播地址。请切换线路或解析器。');
-  }
-
-  throw new Error('当前剧集需要解析，但没有可用解析器。请补充 playUrl 或全局 parses。');
-}
-
-void resolveEpisodePlaybackLegacy;
-
-export async function resolveEpisodePlayback(
+async function resolveEpisodePlaybackUncached(
   context: VodPlaybackContext,
   episode: VodEpisode,
   routeName: string,
@@ -838,7 +815,7 @@ export async function resolveEpisodePlayback(
 
     const { payload, fromCache } = spiderPayloadResult;
     const payloadHeaders = extractPlayerHeaders(payload);
-    const payloadUrl = typeof payload.url === 'string' ? payload.url.trim() : '';
+    const payloadUrl = sanitizeMediaUrlCandidate(payload.url);
     const hasDirectPayloadUrl = isHttpUrl(payloadUrl) && !isImageLikeUrl(payloadUrl);
     const parseRequired = shouldUseSpiderParseChain(payload, hasDirectPayloadUrl);
     const payloadLooksDirectPlayable =
@@ -851,7 +828,7 @@ export async function resolveEpisodePlayback(
       `cache=${fromCache ? '1' : '0'} parse=${Number(payload.parse ?? 0)} jx=${Number(payload.jx ?? 0)} direct=${hasDirectPayloadUrl ? '1' : '0'} url=${payloadUrl || 'empty'}`,
     );
 
-    if (payloadLooksDirectPlayable) {
+    if (payloadLooksDirectPlayable && !parseRequired) {
       const resolvedPayload = resolveRequestPolicy(
         payloadUrl,
         payloadHeaders,
@@ -868,7 +845,7 @@ export async function resolveEpisodePlayback(
       );
     }
 
-    if (hasDirectPayloadUrl && !parseRequired) {
+    if (hasDirectPayloadUrl) {
       appendPlaybackDiagnostic(
         diagnostics,
         'wrapped_url',
@@ -876,7 +853,11 @@ export async function resolveEpisodePlayback(
         `target=${payloadUrl} reason=payload_not_parse_required`,
       );
 
-      const wrappedPlayableUrl = await resolveWrappedPayloadUrl(payloadUrl, payloadHeaders);
+      const wrappedPlayableUrl = await resolveWrappedPayloadUrl(
+        payloadUrl,
+        payloadHeaders,
+        QUICK_PARSE_HTTP_TIMEOUT_MS,
+      );
       if (wrappedPlayableUrl) {
         appendPlaybackDiagnostic(
           diagnostics,
@@ -892,8 +873,12 @@ export async function resolveEpisodePlayback(
               routeName,
               payloadUrl,
               payloadHeaders,
+              {
+                timeBudgetMs: WRAPPED_PARSE_CHAIN_BUDGET_MS,
+                diagnostics,
+              },
             ),
-            WRAPPED_PARSE_FALLBACK_TIMEOUT_MS,
+            WRAPPED_PARSE_CHAIN_BUDGET_MS,
             'wrapped parse fallback',
           ).catch((error) => {
             appendPlaybackDiagnostic(
@@ -921,15 +906,37 @@ export async function resolveEpisodePlayback(
           context.requestHeaders,
           context.hostMappings,
         );
-        return finalizeResolvedStream(
-          {
+        const sameParseTarget =
+          Number(payload.parse ?? 0) === 1 && wrappedPlayableUrl === payloadUrl;
+        if (sameParseTarget && !looksLikeDirectPlayableUrl(resolvedWrapped.url)) {
+          appendPlaybackDiagnostic(
+            diagnostics,
+            'wrapped_url',
+            'miss',
+            `target=${wrappedPlayableUrl} reason=parse_target_still_not_direct`,
+          );
+        } else {
+          const validatedWrapped = await validateResolvedStreamCandidate({
             url: resolvedWrapped.url,
             headers: resolvedWrapped.headers,
             resolvedBy: 'spider',
-            skipProbe: wrappedPlayableUrl === payloadUrl,
-          },
-          diagnostics,
-        );
+          }, {
+            timeoutMs: QUICK_PARSE_VALIDATION_TIMEOUT_MS,
+          });
+          if (!validatedWrapped.stream) {
+            appendPlaybackDiagnostic(
+              diagnostics,
+              'wrapped_url',
+              'miss',
+              `target=${wrappedPlayableUrl} reason=${validatedWrapped.reason ?? 'stream_probe_unknown'}`,
+            );
+          } else {
+            return finalizeResolvedStream(
+              validatedWrapped.stream,
+              diagnostics,
+            );
+          }
+        }
       }
 
       appendPlaybackDiagnostic(
@@ -940,15 +947,15 @@ export async function resolveEpisodePlayback(
       );
 
       if (Number(payload.parse ?? 0) === 1 || !payloadLooksDirectPlayable) {
-        const parsedWrappedPayload = await withTimeout(
-          resolveUrlWithParseAndWebviewFallback(
-            context,
-            routeName,
-            payloadUrl,
-            payloadHeaders,
-          ),
-          25000,
-          'wrapped parse fallback',
+        const parsedWrappedPayload = await resolveUrlWithParseAndWebviewFallback(
+          context,
+          routeName,
+          payloadUrl,
+          payloadHeaders,
+          {
+            timeBudgetMs: WRAPPED_PARSE_CHAIN_BUDGET_MS,
+            diagnostics,
+          },
         ).catch((error) => {
           appendPlaybackDiagnostic(
             diagnostics,
@@ -982,13 +989,39 @@ export async function resolveEpisodePlayback(
         context.requestHeaders,
         context.hostMappings,
       );
+      const validatedPayload = await validateResolvedStreamCandidate({
+        url: resolvedPayload.url,
+        headers: resolvedPayload.headers,
+        resolvedBy: 'spider',
+      }, {
+        timeoutMs: QUICK_PARSE_VALIDATION_TIMEOUT_MS,
+      });
+      if (Number(payload.parse ?? 0) === 1 && !looksLikeDirectPlayableUrl(resolvedPayload.url)) {
+        appendPlaybackDiagnostic(
+          diagnostics,
+          'direct_fallback',
+          'error',
+          `source=payload target=${payloadUrl} reason=parse_target_still_not_direct`,
+        );
+        throw buildVodPlaybackError(
+          '当前线路仍然停留在解析页，没有拿到真正的视频地址。',
+          diagnostics,
+        );
+      }
+      if (!validatedPayload.stream) {
+        appendPlaybackDiagnostic(
+          diagnostics,
+          'direct_fallback',
+          'error',
+          `source=payload target=${payloadUrl} reason=${validatedPayload.reason ?? 'stream_probe_unknown'}`,
+        );
+        throw buildVodPlaybackError(
+          '当前直链经过检测不是真正的视频流，已跳过错误线路。',
+          diagnostics,
+        );
+      }
       return finalizeResolvedStream(
-        {
-          url: resolvedPayload.url,
-          headers: resolvedPayload.headers,
-          resolvedBy: 'spider',
-          skipProbe: true,
-        },
+        validatedPayload.stream,
         diagnostics,
       );
     }
@@ -1004,6 +1037,7 @@ export async function resolveEpisodePlayback(
         routeName,
         parseTarget,
         payloadHeaders,
+        { diagnostics },
       ).catch((error) => {
         appendPlaybackDiagnostic(
           diagnostics,
@@ -1092,6 +1126,7 @@ export async function resolveEpisodePlayback(
     routeName,
     episode.url,
     null,
+    { diagnostics },
   ).catch((error) => {
     appendPlaybackDiagnostic(
       diagnostics,
@@ -1124,6 +1159,22 @@ export async function resolveEpisodePlayback(
     'episode requires parsing but no playUrl or global parses are configured.',
     diagnostics,
   );
+}
+
+export async function resolveEpisodePlayback(
+  context: VodPlaybackContext,
+  episode: VodEpisode,
+  routeName: string,
+): Promise<VodResolvedStream> {
+  const cacheKey = buildPlaybackResolutionCacheKey(context, episode, routeName);
+  return resolveWithStoredVodPlaybackResolution(
+    {
+      sourceKey: context.sourceKey,
+      repoUrl: context.repoUrl,
+    },
+    cacheKey,
+    () => resolveEpisodePlaybackUncached(context, episode, routeName),
+  ) as Promise<VodResolvedStream>;
 }
 
 export function formatPlaybackTime(seconds: number): string {

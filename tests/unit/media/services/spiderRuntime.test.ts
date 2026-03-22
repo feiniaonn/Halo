@@ -117,6 +117,19 @@ describe("spiderRuntime", () => {
     }, "fallback")).toContain("TypeToken");
   });
 
+  it("softens prefetch fetch-error notices into retry guidance", () => {
+    expect(buildSpiderFailureNotice({
+      ok: false,
+      siteKey: "csp_demo",
+      method: "prefetch",
+      executionTarget: "desktop-direct",
+      failureKind: "FetchError",
+      failureMessage: "Failed to download target spider JAR from all candidates",
+      checkedAtMs: Date.now(),
+      artifact: null,
+    }, "fallback")).toContain("继续重试");
+  });
+
   it("marks helper routes with helper status", () => {
     const state = mergeSpiderExecutionReport(undefined, {
       ok: true,

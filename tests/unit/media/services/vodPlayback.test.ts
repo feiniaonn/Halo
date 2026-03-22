@@ -19,6 +19,9 @@ describe("vodPlayback", () => {
       looksLikeDirectPlayableUrl("http://wrapper.example.com/getM3u8?name=test&url=wrapped-video.m3u8"),
     ).toBe(false);
     expect(
+      looksLikeDirectPlayableUrl("http://43.248.100.143:9090/nby/m3u8/getM3u8?name=jx.91by.top&time=1&url=NBY-demo.m3u8"),
+    ).toBe(false);
+    expect(
       looksLikeDirectPlayableUrl("http://example.com/api/get?type=m3u8&token=123"),
     ).toBe(true);
   });
@@ -32,7 +35,7 @@ describe("vodPlayback", () => {
     expect(withParseCandidates).not.toBe(withoutParseCandidates);
   });
 
-  it("only enters spider parse chain when jx demands it or no direct url exists", () => {
+  it("treats parse=1 as parse-required even when a direct-looking url is present", () => {
     expect(
       shouldUseSpiderParseChain(
         {
@@ -42,7 +45,7 @@ describe("vodPlayback", () => {
         },
         true,
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldUseSpiderParseChain(
         {

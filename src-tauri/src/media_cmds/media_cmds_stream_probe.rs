@@ -88,21 +88,72 @@ fn detect_kind_from_bytes(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+fn looks_like_hls_manifest_bytes(bytes: &[u8]) -> bool {
+    bytes.len() >= 7 && bytes[..7].eq_ignore_ascii_case(b"#EXTM3U")
+}
+
+fn looks_like_image_manifest_uri(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    if lower.is_empty() || lower.starts_with('#') {
+        return false;
+    }
+
+    [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico"]
+        .iter()
+        .any(|token| lower.contains(token))
+}
+
+fn detect_hls_manifest_anomaly(bytes: &[u8]) -> Option<&'static str> {
+    if !looks_like_hls_manifest_bytes(bytes) {
+        return None;
+    }
+
+    let manifest = String::from_utf8_lossy(bytes);
+    let mut media_lines = 0usize;
+    let mut image_lines = 0usize;
+    let mut html_lines = 0usize;
+
+    for raw_line in manifest.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        media_lines += 1;
+        if looks_like_image_manifest_uri(line) {
+            image_lines += 1;
+        }
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("<!doctype html") || lower.starts_with("<html") {
+            html_lines += 1;
+        }
+    }
+
+    if media_lines > 0 && image_lines == media_lines {
+        return Some("stream_probe_hls_image_manifest");
+    }
+    if media_lines > 0 && html_lines == media_lines {
+        return Some("stream_probe_hls_html_manifest");
+    }
+    None
+}
+
 pub async fn probe_stream_kind(
     url: String,
     headers: Option<HashMap<String, String>>,
+    timeout_ms: Option<u64>,
 ) -> Result<StreamProbeResult, String> {
     let resolved = resolve_media_request(&url, headers.clone());
     let mut result = StreamProbeResult {
         final_url: Some(resolved.url.clone()),
         ..Default::default()
     };
+    let probe_timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(3_500).max(800));
 
     if let Some(kind) = detect_kind_from_url(&resolved.url) {
         result.kind = kind.to_string();
     }
 
-    let client = build_transport_client(&resolved, true, std::time::Duration::from_secs(10))?;
+    let client = build_transport_client(&resolved, true, probe_timeout)?;
 
     let head_req = apply_request_headers(client.head(&resolved.url), &resolved.headers);
 
@@ -119,18 +170,23 @@ pub async fn probe_stream_kind(
                 }
                 if let Some(kind) = detect_kind_from_content_type(ct) {
                     result.kind = kind.to_string();
-                    return Ok(result);
+                    if kind != "hls" {
+                        return Ok(result);
+                    }
                 }
             }
         }
-        if result.kind != "unknown" {
+        if result.kind != "unknown" && result.kind != "hls" {
             return Ok(result);
         }
     }
 
-    let mut get_req = client
-        .get(result.final_url.as_deref().unwrap_or(&resolved.url))
-        .header(reqwest::header::RANGE, "bytes=0-2047");
+    let probe_url = result.final_url.as_deref().unwrap_or(&resolved.url).to_string();
+    let should_fetch_full_hls_manifest = result.kind == "hls";
+    let mut get_req = client.get(&probe_url);
+    if !should_fetch_full_hls_manifest {
+        get_req = get_req.header(reqwest::header::RANGE, "bytes=0-2047");
+    }
     get_req = apply_request_headers(get_req, &resolved.headers);
     let resp = get_req
         .send()
@@ -157,10 +213,21 @@ pub async fn probe_stream_kind(
         .bytes()
         .await
         .map_err(|e| format!("probe_read_failed:{e}"))?;
-    if result.kind == "unknown" {
-        if let Some(kind) = detect_kind_from_bytes(bytes.as_ref()) {
+    let detected_kind = detect_kind_from_bytes(bytes.as_ref());
+    if let Some(kind) = detected_kind {
+        if kind == "hls" {
+            if let Some(reason) = detect_hls_manifest_anomaly(bytes.as_ref()) {
+                result.kind = "unknown".to_string();
+                result.reason = Some(reason.to_string());
+                return Ok(result);
+            }
+        }
+        if result.kind == "unknown" || kind == "hls" {
             result.kind = kind.to_string();
         }
+    }
+    if should_fetch_full_hls_manifest && detected_kind != Some("hls") {
+        result.reason = Some("stream_probe_hls_manifest_unreadable".to_string());
     }
     if result.kind == "unknown" {
         result.reason = Some("stream_probe_unknown".to_string());
@@ -170,7 +237,10 @@ pub async fn probe_stream_kind(
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_kind_from_content_type, is_audio_only_content_type};
+    use super::{
+        detect_hls_manifest_anomaly, detect_kind_from_content_type,
+        is_audio_only_content_type,
+    };
 
     #[test]
     fn content_type_detects_video_kinds() {
@@ -193,5 +263,20 @@ mod tests {
         assert!(is_audio_only_content_type("audio/mpeg"));
         assert!(!is_audio_only_content_type("audio/mpegurl"));
         assert!(!is_audio_only_content_type("video/mp4"));
+    }
+
+    #[test]
+    fn detects_fake_hls_image_manifest() {
+        let manifest = b"#EXTM3U\n#EXTINF:10,\nhttps://cdn.example.com/frame-1.png\n#EXTINF:10,\nhttps://cdn.example.com/frame-2.jpg\n";
+        assert_eq!(
+            detect_hls_manifest_anomaly(manifest),
+            Some("stream_probe_hls_image_manifest")
+        );
+    }
+
+    #[test]
+    fn ignores_normal_hls_manifest() {
+        let manifest = b"#EXTM3U\n#EXTINF:10,\nsegment-1.ts\n#EXTINF:10,\nsegment-2.ts\n";
+        assert_eq!(detect_hls_manifest_anomaly(manifest), None);
     }
 }

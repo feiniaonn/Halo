@@ -22,6 +22,10 @@ import {
 } from "@/modules/media/services/vodAggregateSearch";
 import { executeAggregateVodSearch } from "@/modules/media/services/vodAggregateExecutor";
 import {
+  filterAggregateAutoSearchSites,
+  GLOBAL_VOD_DISPATCH_ORIGIN_SITE_KEY,
+} from "@/modules/media/services/vodDispatchHealth";
+import {
   buildVodAggregateCacheKey,
   buildVodBrowseSessionCachePrefix,
   buildVodCategoryCacheKey,
@@ -30,10 +34,11 @@ import {
 import {
   mergeVodBrowseItems,
   normalizeVodRequestErrorMessage,
-  runWithConcurrencyLimit,
   withVodInterfaceTimeout,
 } from "@/modules/media/services/vodBrowseRuntime";
-import { resolveVodDispatchMatches } from "@/modules/media/services/vodDispatchResolver";
+import { getVodMetadataHomeFallbackTarget } from "@/modules/media/services/vodMetadataFallback";
+import { useVodDispatchActions } from "@/modules/media/hooks/useVodDispatchActions";
+import { useVodSpiderWarmup } from "@/modules/media/hooks/useVodSpiderWarmup";
 import {
   getSpiderRuntimeWarmupPromise as getWarmupPromiseFromMap,
   triggerSpiderRuntimeWarmup,
@@ -45,6 +50,7 @@ import {
   writeVodSourceSelectionSnapshot,
 } from "@/modules/media/services/vodSourceSelection";
 import { sortVodSitesByRanking } from "@/modules/media/services/vodSourceRanking";
+import { useVodDispatchBackendStats } from "@/modules/media/hooks/useVodDispatchBackendStats";
 import { useVodSiteRankings } from "@/modules/media/hooks/useVodSiteRankings";
 import {
   loadPersistedAggregateSearchCache,
@@ -63,7 +69,7 @@ import {
   resolveSiteSpiderUrl,
 } from "@/modules/media/services/tvboxConfig";
 import { openVodPlayerWindow } from "@/modules/media/services/vodPlayerWindow";
-import { clearTvBoxRuntimeCaches, prefetchSiteExtInputs, resolveSiteExtInput } from "@/modules/media/services/tvboxRuntime";
+import { clearTvBoxRuntimeCaches, resolveSiteExtInput } from "@/modules/media/services/tvboxRuntime";
 import type { MediaNotice } from "@/modules/media/types/mediaPage.types";
 import type {
   CompatHelperStatus,
@@ -78,7 +84,6 @@ import type {
   TvBoxClass,
   TvBoxRepoUrl,
 } from "@/modules/media/types/tvbox.types";
-import type { VodDispatchCandidate } from "@/modules/media/types/vodDispatch.types";
 import type {
   AggregateCacheEntry,
   CategoryCacheEntry,
@@ -154,6 +159,10 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     siteKey: string;
     classId: string;
   } | null>(null);
+  const suppressInitialMetadataCategoryWarningRef = useRef<{
+    siteKey: string;
+    classId: string;
+  } | null>(null);
   const controllerGenerationRef = useRef(0);
   const dispatchSearchSessionRef = useRef(0);
 
@@ -170,6 +179,16 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
   }, [source]);
 
   const { siteRankings, recordSiteSuccess } = useVodSiteRankings(source, activeRepoUrl);
+  const { backendStats: aggregateDispatchBackendStats, recordBackendSuccess: recordAggregateBackendSuccess, recordBackendFailure: recordAggregateBackendFailure } = useVodDispatchBackendStats(
+    source,
+    activeRepoUrl,
+    GLOBAL_VOD_DISPATCH_ORIGIN_SITE_KEY,
+  );
+  const { backendStats: activeOriginDispatchBackendStats } = useVodDispatchBackendStats(
+    source,
+    activeRepoUrl,
+    activeSiteKey,
+  );
 
   useEffect(() => {
     activeClassIdRef.current = activeClassId;
@@ -284,6 +303,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
 
   const resetVodBrowseState = useCallback(() => {
     skipInitialCategoryFetchRef.current = null;
+    suppressInitialMetadataCategoryWarningRef.current = null;
     setClassFilterKeyword("");
     setVodSearchKeyword("");
     setActiveSearchKeyword("");
@@ -332,7 +352,10 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
 
   const prioritizedSites = useMemo(() => (config ? sortVodSitesByRanking(config.sites, siteRankings, activeSiteKey) : []), [activeSiteKey, config, siteRankings]);
 
-  const aggregateEligibleSites = useMemo(() => prioritizedSites.filter((site) => site.capability.canSearch), [prioritizedSites]);
+  const aggregateEligibleSites = useMemo(
+    () => filterAggregateAutoSearchSites(prioritizedSites, aggregateDispatchBackendStats),
+    [aggregateDispatchBackendStats, prioritizedSites],
+  );
 
   const supportsAggregateBrowse = aggregateEligibleSites.length > 1;
   const effectiveBrowseMode = supportsAggregateBrowse ? browseMode : "site";
@@ -453,7 +476,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     spiderUrl: string,
     apiClass: string,
     ext: string,
-    options?: { trackAsActive?: boolean; profileSite?: boolean },
+    options?: { trackAsActive?: boolean; profileSite?: boolean; notifyOnFailure?: boolean },
   ) => {
     return triggerSpiderRuntimeWarmup({
       siteKey,
@@ -478,6 +501,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       onNotifyWarning: (message) => notify({ kind: "warning", text: message }),
       shouldTrackAsActive: options?.trackAsActive,
       shouldProfileSite: options?.profileSite,
+      notifyOnFailure: options?.notifyOnFailure,
     });
   }, [
     applySpiderExecutionState,
@@ -498,6 +522,8 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
   ) => {
     try {
       await openVodPlayerWindow({
+        sourceKey: source,
+        repoUrl: activeRepoUrl || undefined,
         sourceKind: site.capability.sourceKind,
         spiderUrl: resolveSiteSpiderUrl(site, config?.spider),
         siteName: site.name,
@@ -525,69 +551,38 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       const message = err instanceof Error ? err.message : String(err);
       notify({ kind: "error", text: `打开播放窗口失败: ${message}` });
     }
-  }, [config?.ads, config?.headers, config?.hosts, config?.parses, config?.proxy, config?.rules, config?.spider, notify]);
-
-  const resolveMsearchMatches = useCallback(async (
-    keyword: string,
-    fallbackTitle = "",
-    maxMatches = 4,
-  ): Promise<VodDispatchCandidate[]> => {
-    if (!config || !activeSiteKey) {
-      throw new Error("Current source is unavailable for dispatch search.");
-    }
-
-    const generation = controllerGenerationRef.current;
-    const sessionId = beginDispatchSearchSession();
-    const matches = await resolveVodDispatchMatches({
-      keyword,
-      fallbackTitle,
-      maxMatches,
-      config,
-      activeSiteKey,
-      sourceKey: sourceRef.current,
-      repoUrl: activeRepoUrlRef.current,
-      runtimeSessionKey: runtimeSessionKeyRef.current,
-      policyGeneration: networkPolicyGenerationRef.current,
-      concurrency: VOD_AGGREGATE_SEARCH_CONCURRENCY,
-      isStale: () => isStaleDispatchSearchSession(generation, sessionId),
-      resolveSiteExt,
-      getSpiderRuntimeWarmupPromise,
-    });
-    for (const siteKey of new Set(matches.map((item) => item.siteKey))) {
-      recordSiteSuccess(siteKey);
-    }
-    return matches;
   }, [
-    activeSiteKey,
-    beginDispatchSearchSession,
-    config,
-    getSpiderRuntimeWarmupPromise,
-    isStaleDispatchSearchSession,
-    recordSiteSuccess,
-    resolveSiteExt,
+    activeRepoUrl,
+    config?.ads,
+    config?.headers,
+    config?.hosts,
+    config?.parses,
+    config?.proxy,
+    config?.rules,
+    config?.spider,
+    notify,
+    source,
   ]);
 
-  const resolveMsearchAndPlay = useCallback(async (keyword: string, fallbackTitle = "") => {
-    const matches = await resolveMsearchMatches(keyword, fallbackTitle, 1);
-    const firstMatch = matches[0];
-    if (!firstMatch) {
-      throw new Error("未在可用站点中找到可播放节点。");
-    }
-
-    const targetSite = config?.sites.find((site) => site.key === firstMatch.siteKey) ?? null;
-    if (!targetSite) {
-      throw new Error("Matched site context is no longer available.");
-    }
-
-    clearSelectedVod();
-    await openVodFromDetail(
-      targetSite,
-      firstMatch.extInput,
-      firstMatch.detail,
-      firstMatch.routes,
-    );
-    notify({ kind: "success", text: `已从 [${firstMatch.siteName}] 找到可播线路，正在播放...` });
-  }, [clearSelectedVod, config?.sites, notify, openVodFromDetail, resolveMsearchMatches]);
+  const { playDispatchCandidate, resolveMsearchMatches, resolveMsearchAndPlay } = useVodDispatchActions({
+    config,
+    activeSiteKey,
+    activeSiteKeyRef,
+    sourceRef,
+    activeRepoUrlRef,
+    runtimeSessionKeyRef,
+    networkPolicyGenerationRef,
+    controllerGenerationRef,
+    beginDispatchSearchSession,
+    isStaleDispatchSearchSession,
+    resolveSiteExt,
+    getSpiderRuntimeWarmupPromise,
+    syncSpiderExecutionState,
+    recordSiteSuccess,
+    clearSelectedVod,
+    openVodFromDetail,
+    notify,
+  });
 
   const selectRepo = useCallback(async (repo: TvBoxRepoUrl) => {
     if (!repo.url) return;
@@ -710,65 +705,24 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     void loadSourceConfig(source);
   }, [loadSourceConfig, resetVodBrowseState, resetVodRuntimeState, source]);
 
-  useEffect(() => {
-    if (!config?.sites.length || !runtimeSessionKey) {
-      return;
-    }
-    void prefetchSiteExtInputs(config.sites, {
-      sessionKey: runtimeSessionKey,
-      policyGeneration: networkPolicyGeneration,
-    }, VOD_EXT_PREFETCH_CONCURRENCY).catch(() => {
-      // Ignore best-effort prefetch failures and resolve ext lazily on demand.
-    });
-  }, [config, networkPolicyGeneration, runtimeSessionKey]);
-
-  useEffect(() => {
-    if (!config?.sites.length || !activeSiteKey) {
-      return;
-    }
-
-    const warmupCandidates = prioritizedSites
-      .filter((site) => site.capability.requiresSpider)
-      .slice(0, VOD_BACKGROUND_WARMUP_MAX_SITES);
-
-    void runWithConcurrencyLimit(
-      warmupCandidates,
-      VOD_BACKGROUND_WARMUP_CONCURRENCY,
-      async (site) => {
-        const spiderUrl = resolveSiteSpiderUrl(site, config.spider);
-        if (!spiderUrl) {
-          return;
-        }
-        const extInput = await resolveSiteExt(site);
-        await triggerJarPrefetch(site.key, spiderUrl, site.api, extInput, {
-          trackAsActive: site.key === activeSiteKey,
-          profileSite: true,
-        });
-      },
-    ).catch(() => {
-      // Ignore best-effort warmup failures.
-    });
-  }, [activeSiteKey, config?.sites.length, prioritizedSites, resolveSiteExt, siteReloadToken, triggerJarPrefetch]);
-
-  useEffect(() => {
-    if (!activeVodSite || !config || !activeVodSite.capability.requiresSpider) {
-      return;
-    }
-    const spiderUrl = resolveSiteSpiderUrl(activeVodSite, config.spider);
-    if (!spiderUrl) return;
-    void resolveSiteExt(activeVodSite).then((extInput) => {
-      void triggerJarPrefetch(activeVodSite.key, spiderUrl, activeVodSite.api, extInput, {
-        trackAsActive: true,
-        profileSite: true,
-      });
-    });
-  }, [activeVodSite, config, resolveSiteExt, siteReloadToken, triggerJarPrefetch]);
-
-  useEffect(() => {
-    if (activeSiteRuntime?.executionTarget === "desktop-helper") {
-      void syncCompatHelperStatus();
-    }
-  }, [activeSiteRuntime?.executionTarget, syncCompatHelperStatus]);
+  useVodSpiderWarmup({
+    config,
+    activeSiteKey,
+    activeVodSite,
+    activeSiteExecutionTarget: activeSiteRuntime?.executionTarget,
+    prioritizedSites,
+    activeOriginDispatchBackendStats,
+    aggregateDispatchBackendStats,
+    runtimeSessionKey,
+    networkPolicyGeneration,
+    siteReloadToken,
+    extPrefetchConcurrency: VOD_EXT_PREFETCH_CONCURRENCY,
+    backgroundWarmupConcurrency: VOD_BACKGROUND_WARMUP_CONCURRENCY,
+    backgroundWarmupMaxSites: VOD_BACKGROUND_WARMUP_MAX_SITES,
+    resolveSiteExt,
+    triggerJarPrefetch,
+    syncCompatHelperStatus,
+  });
 
   useEffect(() => {
     const fetchHomeContent = async () => {
@@ -783,6 +737,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       const presetClasses = buildPresetClasses(site);
       if (!site.capability.canHome) {
         skipInitialCategoryFetchRef.current = null;
+        suppressInitialMetadataCategoryWarningRef.current = null;
         setVodClasses(presetClasses);
         setActiveClassId(presetClasses[0]?.type_id ?? "");
         setVodList([]);
@@ -808,6 +763,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         skipInitialCategoryFetchRef.current = cachedHome.shouldSkipInitialCategoryFetch
           ? { siteKey: site.key, classId: cachedHome.activeClassId }
           : null;
+        suppressInitialMetadataCategoryWarningRef.current = null;
         setVodPage(1);
         setHasMore(true);
         setVodClasses(cachedHome.classes);
@@ -862,6 +818,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
           list: homeList,
           shouldSkipInitialCategoryFetch: Boolean(skipInitialCategoryFetchRef.current),
         }, VOD_BROWSE_CACHE_TTL_MS);
+        suppressInitialMetadataCategoryWarningRef.current = null;
         setVodClasses(classes);
         setActiveClassId(nextClassId);
         setVodList(homeList);
@@ -871,6 +828,20 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         const fallbackMessage = normalizeVodRequestErrorMessage(reason);
         const report = site.capability.requiresSpider ? await syncSpiderExecutionState(site.key) : null;
         if (isStale()) return;
+        const metadataFallbackTarget = getVodMetadataHomeFallbackTarget(site, presetClasses);
+        if (metadataFallbackTarget) {
+          skipInitialCategoryFetchRef.current = null;
+          suppressInitialMetadataCategoryWarningRef.current = {
+            siteKey: site.key,
+            classId: metadataFallbackTarget.classId,
+          };
+          setVodPage(1);
+          setHasMore(true);
+          setVodClasses(metadataFallbackTarget.classes);
+          setActiveClassId(metadataFallbackTarget.classId);
+          setVodList([]);
+          return;
+        }
         const message = buildSpiderFailureNotice(report, fallbackMessage);
         notify({ kind: "error", text: `获取首页失败: ${message}` });
       } finally {
@@ -936,6 +907,12 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         buildVodCategoryCacheKey(runtimeSessionKeyRef.current, site.key, activeClassId, vodPage),
       );
       if (cachedCategory) {
+        if (
+          suppressInitialMetadataCategoryWarningRef.current?.siteKey === site.key
+          && suppressInitialMetadataCategoryWarningRef.current?.classId === activeClassId
+        ) {
+          suppressInitialMetadataCategoryWarningRef.current = null;
+        }
         setVodList((current) => (isLoadMore ? [...current, ...cachedCategory.list] : cachedCategory.list));
         setHasMore(cachedCategory.hasMore);
         categoryInFlightRef.current = "";
@@ -995,9 +972,21 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
             },
             VOD_BROWSE_CACHE_TTL_MS,
           );
+          if (
+            suppressInitialMetadataCategoryWarningRef.current?.siteKey === site.key
+            && suppressInitialMetadataCategoryWarningRef.current?.classId === activeClassId
+          ) {
+            suppressInitialMetadataCategoryWarningRef.current = null;
+          }
           setVodList((current) => (isLoadMore ? [...current, ...data.list!] : data.list!));
           setHasMore(nextHasMore);
         } else {
+          if (
+            suppressInitialMetadataCategoryWarningRef.current?.siteKey === site.key
+            && suppressInitialMetadataCategoryWarningRef.current?.classId === activeClassId
+          ) {
+            suppressInitialMetadataCategoryWarningRef.current = null;
+          }
           if (!isLoadMore) setVodList([]);
           setHasMore(false);
         }
@@ -1007,6 +996,14 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         const fallbackMessage = normalizeVodRequestErrorMessage(reason);
         const report = site.capability.requiresSpider ? await syncSpiderExecutionState(site.key) : null;
         if (isStale()) return;
+        const shouldSuppressWarning = !isLoadMore
+          && suppressInitialMetadataCategoryWarningRef.current?.siteKey === site.key
+          && suppressInitialMetadataCategoryWarningRef.current?.classId === activeClassId;
+        if (shouldSuppressWarning) {
+          suppressInitialMetadataCategoryWarningRef.current = null;
+          setHasMore(false);
+          return;
+        }
         const message = buildSpiderFailureNotice(report, fallbackMessage);
         notify({ kind: "warning", text: `获取分类数据失败: ${message}` });
         setHasMore(false);
@@ -1085,6 +1082,11 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         setAggregateSessionState(buildAggregateSessionState(keyword, cachedAggregate.statuses, false));
         setLoadingVod(false);
         searchInFlightRef.current = "";
+        for (const status of cachedAggregate.statuses) {
+          if (status.resultCount > 0) {
+            recordAggregateBackendSuccess(status.siteKey);
+          }
+        }
         notify({
           kind: cachedAggregate.items.length > 0 ? "success" : "warning",
           text: cachedAggregate.items.length > 0
@@ -1113,6 +1115,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         searchInFlightRef.current = "";
         for (const status of persistedAggregate.statuses) {
           if (status.resultCount > 0) {
+            recordAggregateBackendSuccess(status.siteKey);
             recordSiteSuccess(status.siteKey);
           }
         }
@@ -1145,6 +1148,12 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
           onStatusesChange: (nextStatuses, running) => {
             statuses = nextStatuses;
             setAggregateSessionState(buildAggregateSessionState(keyword, nextStatuses, running));
+          },
+          onSiteSuccess: (siteKey) => {
+            recordAggregateBackendSuccess(siteKey);
+          },
+          onSiteFailure: (siteKey, failureKind) => {
+            recordAggregateBackendFailure(siteKey, failureKind);
           },
         });
         aggregateItems = result.items;
@@ -1299,6 +1308,8 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     invalidateVodRequests,
     isStaleControllerGeneration,
     notify,
+    recordAggregateBackendFailure,
+    recordAggregateBackendSuccess,
     recordSiteSuccess,
     resolveSiteExt,
     siteRuntimeStates,
@@ -1448,5 +1459,6 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     openVodFromDetail,
     resolveMsearchMatches,
     resolveMsearchAndPlay,
+    playDispatchCandidate,
   };
 }

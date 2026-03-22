@@ -295,6 +295,9 @@ export function buildSpiderFailureNotice(
   fallbackMessage: string,
 ): string {
   if (!report) return fallbackMessage;
+  if (report.method === "prefetch" && report.failureKind === "FetchError") {
+    return "Spider 运行资源预取失败，当前接口会在真实请求时继续重试；若持续失败，再考虑切换接口。";
+  }
 
   if (isImmediateSourceFailure(report)) {
     return "当前接口疑似已失效或上游返回已变，本次会话已暂时隔离，避免重复拖慢页面。";

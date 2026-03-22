@@ -896,12 +896,6 @@ fn should_retry_fetch_error(message: &str) -> bool {
 }
 
 fn detect_segment_payload_anomaly(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.len() >= 8 && bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
-        return Some("segment payload is PNG signature");
-    }
-    if bytes.len() >= 6 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) {
-        return Some("segment payload is GIF signature");
-    }
     let head_len = bytes.len().min(96);
     if head_len > 0 {
         let head = String::from_utf8_lossy(&bytes[..head_len]).to_ascii_lowercase();
@@ -910,6 +904,41 @@ fn detect_segment_payload_anomaly(bytes: &[u8]) -> Option<&'static str> {
         }
     }
     None
+}
+
+fn strip_image_header(payload: Vec<u8>) -> Vec<u8> {
+    if payload.len() < 188 {
+        return payload;
+    }
+    
+    // Check for common image signatures: PNG, GIF, BMP, JPEG
+    let is_png = payload.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    let is_gif = payload.starts_with(b"GIF87a") || payload.starts_with(b"GIF89a");
+    let is_bmp = payload.starts_with(b"BM");
+    let is_jpeg = payload.starts_with(&[0xFF, 0xD8, 0xFF]);
+    
+    if !is_png && !is_gif && !is_bmp && !is_jpeg {
+        return payload; // No known image header detected
+    }
+    
+    // The image header is a disguise. We shouldn't blindly hope the TS is at 0.
+    // A TS sync byte (0x47) must occur every 188 bytes in an unaligned or aligned payload.
+    // Try scanning for a valid TS sync byte pattern. Usually, the image header is small
+    // (e.g., just the PNG signature + IHDR chunk, maybe 50-100 bytes long, then the TS data begins).
+    let max_scan = 2048.min(payload.len().saturating_sub(188 * 2));
+    for offset in 0..max_scan {
+        if payload[offset] == 0x47 
+           && payload[offset + 188] == 0x47 
+           && payload[offset + 376] == 0x47 {
+            // Found a sequence of at least three 0x47 bytes separated by 188 bytes!
+            // This is almost certainly the start of the TS stream.
+            return payload[offset..].to_vec();
+        }
+    }
+    
+    // If we can't find the TS pattern, return the original data. The player might still 
+    // fail, but we shouldn't damage potentially valid (though unconventional) data.
+    payload
 }
 
 pub async fn fetch_hls_manifest_rewritten(
@@ -1048,6 +1077,7 @@ async fn prefetch_segment_to_cache(
         fetch_segment_bytes_resilient(client, &rescue_client, url, headers, "Prefetch").await;
     release_inflight(inflight_key);
     let bytes = fetched?;
+    let bytes = strip_image_header(bytes);
     put_segment_cache_bytes(cache_key.clone(), bytes.clone());
     if let Some(key) = stream_key {
         track_stream_cache_key(key, &cache_key);
@@ -1316,6 +1346,7 @@ pub async fn proxy_hls_segment(
         get_segment_cache_bytes(&source_cache_key, source_hit_max_age)
     };
     if let Some(bytes) = cached {
+        let bytes = strip_image_header(bytes);
         if let Some(anomaly) = detect_segment_payload_anomaly(bytes.as_slice()) {
             let msg = format!(
                 "Segment payload anomaly (cache): {} for {}",
@@ -1343,14 +1374,15 @@ pub async fn proxy_hls_segment(
             } else {
                 get_segment_cache_bytes(&source_cache_key, source_hit_max_age)
             };
-            if let Some(bytes) = waiting_cached {
+            if let Some(b) = waiting_cached {
+                let b = strip_image_header(b);
                 if relay_sequence_mode {
                     update_live_metrics_on_relay_seq_cache_hit();
                 }
-                update_live_metrics_on_cache_hit(bytes.len());
+                update_live_metrics_on_cache_hit(b.len());
                 return Ok(base64::Engine::encode(
                     &base64::engine::general_purpose::STANDARD,
-                    bytes.as_slice(),
+                    b.as_slice(),
                 ));
             }
             tokio::time::sleep(Duration::from_millis(INFLIGHT_WAIT_MS)).await;
@@ -1365,7 +1397,7 @@ pub async fn proxy_hls_segment(
         )
         .await;
         release_inflight(&inflight_key);
-        let bytes = match fetched {
+        let mut bytes = match fetched {
             Ok(bytes) => bytes,
             Err(msg) => {
                 if should_retry_fetch_error(&msg) {
@@ -1379,14 +1411,15 @@ pub async fn proxy_hls_segment(
                     } else {
                         get_segment_cache_bytes(&source_cache_key, Some(SEGMENT_CACHE_FRESH_HIT_MS))
                     };
-                    if let Some(bytes) = rescued {
+                    if let Some(b) = rescued {
+                        let b = strip_image_header(b);
                         if relay_sequence_mode {
                             update_live_metrics_on_relay_seq_cache_hit();
                         }
-                        update_live_metrics_on_cache_hit(bytes.len());
+                        update_live_metrics_on_cache_hit(b.len());
                         return Ok(base64::Engine::encode(
                             &base64::engine::general_purpose::STANDARD,
-                            bytes.as_slice(),
+                            b.as_slice(),
                         ));
                     }
                 }
@@ -1394,6 +1427,7 @@ pub async fn proxy_hls_segment(
                 return Err(msg);
             }
         };
+        bytes = strip_image_header(bytes);
         if let Some(anomaly) = detect_segment_payload_anomaly(bytes.as_slice()) {
             let msg = format!("Segment payload anomaly: {} for {}", anomaly, resolved_url);
             update_live_metrics_on_error(msg.clone());
@@ -1417,7 +1451,7 @@ pub async fn proxy_hls_segment(
         ));
     }
 
-    let bytes =
+    let mut bytes =
         fetch_segment_bytes_resilient(&client, &rescue_client, &resolved_url, &headers, "Segment")
             .await
             .map_err(|msg| {
@@ -1429,6 +1463,7 @@ pub async fn proxy_hls_segment(
                 update_live_metrics_on_error(msg.clone());
                 msg
             })?;
+    bytes = strip_image_header(bytes);
     if let Some(anomaly) = detect_segment_payload_anomaly(bytes.as_slice()) {
         let msg = format!("Segment payload anomaly: {} for {}", anomaly, resolved_url);
         update_live_metrics_on_error(msg.clone());

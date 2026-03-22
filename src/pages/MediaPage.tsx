@@ -289,11 +289,14 @@ export function MediaPage() {
             void vod.openVodFromDetail(site, extInput, detail, routes, routeIdx, episodeIdx);
             showNotice({ kind: 'success', text: '正在启动内核播放...' });
           }}
-          onSearchOnlyPlay={async (keyword, fallbackTitle) => {
-            await vod.resolveMsearchAndPlay(keyword, fallbackTitle);
+          onPlayDispatchCandidate={async (candidate) => {
+            await vod.playDispatchCandidate(candidate);
           }}
-          onResolveSearchDispatch={async (keyword, fallbackTitle) => {
-            return vod.resolveMsearchMatches(keyword, fallbackTitle);
+          onSearchOnlyPlay={async (keyword, fallbackTitle, originSiteKey) => {
+            await vod.resolveMsearchAndPlay(keyword, fallbackTitle, originSiteKey);
+          }}
+          onResolveSearchDispatch={async (keyword, fallbackTitle, originSiteKey) => {
+            return vod.resolveMsearchMatches(keyword, fallbackTitle, 4, originSiteKey);
           }}
         />
       )}

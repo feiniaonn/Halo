@@ -119,6 +119,8 @@ export function VodPlayerWindowPage() {
     <div className="h-full w-full overflow-hidden bg-transparent">
       <VodPlayer
         key={playerKey}
+        sourceKey={payload.sourceKey}
+        repoUrl={payload.repoUrl}
         sourceKind={payload.sourceKind}
         spiderUrl={payload.spiderUrl}
         siteName={payload.siteName}

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import { classifyVodDispatchFailure } from "@/modules/media/services/vodDispatchHealth";
 import {
   buildAggregateSearchItems,
   buildAggregateSiteStatuses,
@@ -16,9 +17,11 @@ import {
 } from "@/modules/media/services/tvboxConfig";
 import type {
   NormalizedTvBoxSite,
+  SpiderExecutionReport,
   VodAggregateResultItem,
   VodAggregateSessionState,
 } from "@/modules/media/types/tvbox.types";
+import type { VodDispatchFailureKind } from "@/modules/media/types/vodDispatch.types";
 
 interface ExecuteAggregateVodSearchArgs {
   keyword: string;
@@ -31,12 +34,14 @@ interface ExecuteAggregateVodSearchArgs {
     spiderUrl: string,
     apiClass: string,
   ) => Promise<unknown> | null;
-  syncSpiderExecutionState: (siteKey: string) => Promise<unknown>;
+  syncSpiderExecutionState: (siteKey: string) => Promise<SpiderExecutionReport | null>;
   onItems: (items: VodAggregateResultItem[]) => void;
   onStatusesChange: (
     statuses: VodAggregateSessionState["statuses"],
     running: boolean,
   ) => void;
+  onSiteSuccess?: (siteKey: string) => void;
+  onSiteFailure?: (siteKey: string, failureKind: VodDispatchFailureKind) => void;
 }
 
 interface ExecuteAggregateVodSearchResult {
@@ -55,6 +60,8 @@ export async function executeAggregateVodSearch({
   syncSpiderExecutionState,
   onItems,
   onStatusesChange,
+  onSiteSuccess,
+  onSiteFailure,
 }: ExecuteAggregateVodSearchArgs): Promise<ExecuteAggregateVodSearchResult> {
   let statuses = buildAggregateSiteStatuses(sites);
   const aggregateItems: VodAggregateResultItem[] = [];
@@ -143,6 +150,9 @@ export async function executeAggregateVodSearch({
 
         aggregateItems.push(...items);
         onItems(items);
+        if (items.length > 0) {
+          onSiteSuccess?.(site.key);
+        }
         patchStatus(site.key, {
           state: items.length > 0 ? "success" : "empty",
           resultCount: items.length,
@@ -152,6 +162,10 @@ export async function executeAggregateVodSearch({
           return;
         }
         const message = normalizeVodRequestErrorMessage(reason);
+        const report = site.capability.requiresSpider
+          ? await syncSpiderExecutionState(site.key).catch(() => null)
+          : null;
+        onSiteFailure?.(site.key, classifyVodDispatchFailure(message, report));
         patchStatus(site.key, {
           state: message.includes("超时") ? "timeout" : "error",
           resultCount: 0,

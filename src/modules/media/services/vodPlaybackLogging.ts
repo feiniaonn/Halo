@@ -1,4 +1,5 @@
 import {
+  getVodPlaybackDiagnosticsElapsedMs,
   getVodPlaybackDiagnostics,
   type VodPlaybackDiagnostics,
   type VodResolvedStream,
@@ -14,7 +15,11 @@ function formatPlaybackDiagnostics(diagnostics: VodPlaybackDiagnostics | null): 
     return "none";
   }
   return diagnostics.steps
-    .map((step) => `${step.stage}:${step.status}:${step.detail.replace(/\s+/g, "_")}`)
+    .map((step) => {
+      const elapsed = typeof step.elapsedMs === "number" ? `@${step.elapsedMs}ms` : "";
+      const budget = typeof step.budgetMs === "number" ? `/b${step.budgetMs}` : "";
+      return `${step.stage}:${step.status}${elapsed}${budget}:${step.detail.replace(/\s+/g, "_")}`;
+    })
     .join("|");
 }
 
@@ -27,6 +32,7 @@ export function buildPlaybackResolutionLog(input: {
   kernelPlan: string[];
 }): string {
   const diagnostics = getVodPlaybackDiagnostics(input.stream);
+  const elapsedMs = getVodPlaybackDiagnosticsElapsedMs(diagnostics);
   return [
     `[VodPlayer] playback_resolve`,
     `route=${input.routeName}`,
@@ -36,6 +42,7 @@ export function buildPlaybackResolutionLog(input: {
     `header_keys=${summarizePlaybackHeaderKeys(input.stream.headers)}`,
     `stream_kind=${input.streamKind}`,
     `kernel_plan=[${input.kernelPlan.join(",")}]`,
+    `elapsed_ms=${elapsedMs ?? "na"}`,
     `diagnostics=${formatPlaybackDiagnostics(diagnostics)}`,
   ].join(" ");
 }
@@ -46,11 +53,14 @@ export function buildPlaybackResolutionFailureLog(input: {
   reason: string;
   diagnostics?: VodPlaybackDiagnostics | null;
 }): string {
+  const diagnostics = input.diagnostics ?? null;
+  const elapsedMs = getVodPlaybackDiagnosticsElapsedMs(diagnostics);
   return [
     `[VodPlayer] playback_resolve_failed`,
     `route=${input.routeName}`,
     `episode=${input.episodeName}`,
     `reason=${input.reason}`,
-    `diagnostics=${formatPlaybackDiagnostics(input.diagnostics ?? null)}`,
+    `elapsed_ms=${elapsedMs ?? "na"}`,
+    `diagnostics=${formatPlaybackDiagnostics(diagnostics)}`,
   ].join(" ");
 }

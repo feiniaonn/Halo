@@ -9,13 +9,18 @@ import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { isVodOriginMetadataSite } from "@/modules/media/services/vodDispatchHealth";
 import { fetchVodDetail } from "@/modules/media/services/vodDetail";
 import {
   normalizeVodImageUrl,
   proxyVodImage,
   shouldPreferProxyImage,
 } from "@/modules/media/services/vodImageProxy";
-import type { VodDispatchCandidate } from "@/modules/media/types/vodDispatch.types";
+import type {
+  VodDispatchCandidate,
+  VodDispatchBackendStatus,
+  VodDispatchResolution,
+} from "@/modules/media/types/vodDispatch.types";
 import type { NormalizedTvBoxSite } from "@/modules/media/types/tvbox.types";
 import type { VodDetail, VodRoute } from "@/modules/media/types/vodWindow.types";
 
@@ -37,11 +42,13 @@ interface MediaDetailModalProps {
     epIdx: number,
     extInput: string,
   ) => void;
-  onSearchOnlyPlay?: (keyword: string, fallbackTitle: string) => Promise<void> | void;
+  onPlayDispatchCandidate?: (candidate: VodDispatchCandidate) => Promise<void> | void;
+  onSearchOnlyPlay?: (keyword: string, fallbackTitle: string, originSiteKey: string) => Promise<void> | void;
   onResolveSearchDispatch?: (
     keyword: string,
     fallbackTitle: string,
-  ) => Promise<VodDispatchCandidate[]>;
+    originSiteKey: string,
+  ) => Promise<VodDispatchResolution>;
 }
 
 function extractMsearchKeyword(url: string): string {
@@ -73,6 +80,27 @@ function MetaBlock({
   );
 }
 
+function describeDispatchBackendStatus(status: VodDispatchBackendStatus): string {
+  switch (status.state) {
+    case "cache-hit":
+      return "Hit persisted dispatch cache.";
+    case "attempting":
+      return "Matching playable backend...";
+    case "success":
+      return status.message || "Resolved playable route.";
+    case "no-match":
+      return status.message || "No relevant title match on this backend.";
+    case "no-routes":
+      return status.message || "Matched detail returned no playable routes.";
+    case "skipped-quarantined":
+      return status.message || "Skipped due to recent repeated hard failures.";
+    case "failed":
+      return status.message || "Backend request failed.";
+    default:
+      return "Backend state unavailable.";
+  }
+}
+
 export function MediaDetailModal({
   vodId,
   site,
@@ -85,6 +113,7 @@ export function MediaDetailModal({
   onClose,
   onPlay,
   onPlayWithDetail,
+  onPlayDispatchCandidate,
   onSearchOnlyPlay,
   onResolveSearchDispatch,
 }: MediaDetailModalProps) {
@@ -96,9 +125,11 @@ export function MediaDetailModal({
   const [playWarning, setPlayWarning] = useState<string | null>(null);
   const [searchResolving, setSearchResolving] = useState(false);
   const [backgroundImageSrc, setBackgroundImageSrc] = useState("");
-  const [dispatchCandidates, setDispatchCandidates] = useState<VodDispatchCandidate[]>([]);
+  const [dispatchCandidates, setDispatchCandidates] = useState<VodDispatchResolution["matches"]>([]);
+  const [dispatchBackendStatuses, setDispatchBackendStatuses] = useState<VodDispatchBackendStatus[]>([]);
   const [dispatchLoading, setDispatchLoading] = useState(false);
   const [dispatchError, setDispatchError] = useState<string | null>(null);
+  const isDisplayOnlySite = isVodOriginMetadataSite(site);
 
   useEffect(() => {
     let mounted = true;
@@ -139,6 +170,7 @@ export function MediaDetailModal({
 
     if (!shouldResolveDispatch) {
       setDispatchCandidates([]);
+      setDispatchBackendStatuses([]);
       setDispatchLoading(false);
       setDispatchError(null);
       return;
@@ -147,13 +179,18 @@ export function MediaDetailModal({
     let cancelled = false;
     setDispatchLoading(true);
     setDispatchError(null);
-    setPlayWarning(`Dispatch lookup in progress: ${keyword}`);
+    setPlayWarning(
+      isDisplayOnlySite
+        ? `正在为 [${site.name}] 匹配资源接口：${keyword}`
+        : `Dispatch lookup in progress: ${keyword}`,
+    );
 
-    void onResolveSearchDispatch!(keyword, fallbackTitle || keyword)
-      .then((matches) => {
+    void onResolveSearchDispatch!(keyword, fallbackTitle || keyword, site.key)
+      .then((resolution) => {
         if (cancelled) return;
-        setDispatchCandidates(matches);
-        if (matches.length > 0) {
+        setDispatchCandidates(resolution.matches);
+        setDispatchBackendStatuses(resolution.backendStatuses);
+        if (resolution.matches.length > 0) {
           setPlayWarning(null);
         } else {
           setDispatchError("No playable dispatch results were found.");
@@ -163,6 +200,7 @@ export function MediaDetailModal({
         if (cancelled) return;
         const message = reason instanceof Error ? reason.message : String(reason);
         setDispatchCandidates([]);
+        setDispatchBackendStatuses([]);
         setDispatchError(message || "Dispatch lookup failed.");
       })
       .finally(() => {
@@ -173,7 +211,7 @@ export function MediaDetailModal({
     return () => {
       cancelled = true;
     };
-  }, [detail, error, fallbackTitle, loading, onResolveSearchDispatch, routes.length]);
+  }, [detail, error, fallbackTitle, isDisplayOnlySite, loading, onResolveSearchDispatch, routes.length, site.key, site.name]);
 
   useEffect(() => {
     let mounted = true;
@@ -196,6 +234,12 @@ export function MediaDetailModal({
     };
   }, [detail?.vod_pic]);
 
+  useEffect(() => {
+    if (!loading && isDisplayOnlySite && detail && routes.length === 0) {
+      setPlayWarning(`当前接口 [${site.name}] 只展示影视信息，播放会切换到其他资源接口。`);
+    }
+  }, [detail, isDisplayOnlySite, loading, routes.length, site.name]);
+
   const handleEpisodePlay = async (routeName: string, episodeName: string, episodeUrl: string, searchOnly: boolean) => {
     if (searchResolving) return;
 
@@ -205,11 +249,16 @@ export function MediaDetailModal({
         setSearchResolving(true);
         setDispatchLoading(true);
         setDispatchError(null);
-        setPlayWarning(`Dispatch lookup in progress: ${keyword}`);
+        setPlayWarning(
+          isDisplayOnlySite
+            ? `正在为 [${site.name}] 匹配资源接口：${keyword}`
+            : `Dispatch lookup in progress: ${keyword}`,
+        );
         try {
-          const matches = await onResolveSearchDispatch(keyword, detail?.vod_name || episodeName);
-          setDispatchCandidates(matches);
-          if (matches.length > 0) {
+          const resolution = await onResolveSearchDispatch(keyword, detail?.vod_name || episodeName, site.key);
+          setDispatchCandidates(resolution.matches);
+          setDispatchBackendStatuses(resolution.backendStatuses);
+          if (resolution.matches.length > 0) {
             setPlayWarning(null);
           } else {
             setDispatchError("No playable dispatch results were found.");
@@ -217,6 +266,7 @@ export function MediaDetailModal({
         } catch (reason: unknown) {
           const message = reason instanceof Error ? reason.message : String(reason);
           setDispatchCandidates([]);
+          setDispatchBackendStatuses([]);
           setDispatchError(message || "Dispatch lookup failed.");
         } finally {
           setDispatchLoading(false);
@@ -230,9 +280,13 @@ export function MediaDetailModal({
       }
 
       setSearchResolving(true);
-      setPlayWarning(`Dispatch lookup in progress: ${keyword}`);
+      setPlayWarning(
+        isDisplayOnlySite
+          ? `正在为 [${site.name}] 匹配资源接口：${keyword}`
+          : `Dispatch lookup in progress: ${keyword}`,
+      );
       try {
-        await onSearchOnlyPlay(keyword, detail?.vod_name || episodeName);
+        await onSearchOnlyPlay(keyword, detail?.vod_name || episodeName, site.key);
         setPlayWarning(null);
       } catch (reason: unknown) {
         const message = reason instanceof Error ? reason.message : String(reason);
@@ -264,6 +318,28 @@ export function MediaDetailModal({
   const shouldShowDispatchFallback = Boolean(onResolveSearchDispatch)
     && !loading
     && (Boolean(error) || !detail || routes.length === 0);
+  const recommendedDispatchCandidate = dispatchCandidates[0] ?? null;
+
+  const handleDispatchPlayback = async (candidate: VodDispatchResolution["matches"][number]) => {
+    if (
+      onPlayDispatchCandidate
+      && (
+        candidate.requiresDetailResolve
+        || !candidate.detail
+        || !candidate.extInput
+        || !candidate.routes?.length
+      )
+    ) {
+      await onPlayDispatchCandidate(candidate);
+      return;
+    }
+
+    if (!onPlayWithDetail || !candidate.detail || !candidate.extInput || !candidate.routes?.length) {
+      return;
+    }
+
+    onPlayWithDetail(candidate.detail, candidate.routes, 0, 0, candidate.extInput);
+  };
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -334,6 +410,11 @@ export function MediaDetailModal({
                           <Badge variant="secondary" className="shadow-sm">
                             {site.capability.sourceKind === "spider" ? "Spider" : "CMS"}
                           </Badge>
+                          {isDisplayOnlySite && (
+                            <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                              仅展示
+                            </Badge>
+                          )}
                           {displayDetail.vod_year && <Badge variant="outline" className="bg-background/40">{displayDetail.vod_year}</Badge>}
                           {displayDetail.vod_area && <Badge variant="outline" className="bg-background/40">{displayDetail.vod_area}</Badge>}
                         </div>
@@ -356,13 +437,26 @@ export function MediaDetailModal({
                   </div>
                 )}
 
+                {isDisplayOnlySite && (
+                  <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 px-4 py-3 text-sm text-sky-800 shadow-sm dark:text-sky-200">
+                    <div className="font-medium">当前接口只负责展示影视信息</div>
+                    <div className="mt-1 leading-6 text-sky-900/80 dark:text-sky-100/80">
+                      这里显示的是片单、分类和简介，真正播放会切换到同源里的资源接口。
+                    </div>
+                  </div>
+                )}
+
 
                 {shouldShowDispatchFallback && (
                   <div className="space-y-3 rounded-2xl border border-border/60 bg-background/72 p-4 shadow-sm">
                     <div className="space-y-1">
                       <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-primary/70">Successful Interfaces</div>
                       <h3 className="text-base font-semibold text-foreground">Dispatch Results</h3>
-                      <p className="text-[13px] text-muted-foreground">Playable results discovered from other searchable interfaces in the same source.</p>
+                      <p className="text-[13px] text-muted-foreground">
+                        {isDisplayOnlySite
+                          ? "当前条目来自元数据接口，播放前会优先匹配已验证过的资源接口。"
+                          : "Playable results discovered from other searchable interfaces in the same source."}
+                      </p>
                     </div>
 
                     {dispatchLoading ? (
@@ -371,27 +465,80 @@ export function MediaDetailModal({
                         <span>Searching playable interfaces...</span>
                       </div>
                     ) : dispatchCandidates.length > 0 ? (
-                      <div className="grid gap-2 md:grid-cols-2">
-                        {dispatchCandidates.map((candidate) => (
+                      <div className="space-y-3">
+                        {recommendedDispatchCandidate && onPlayWithDetail && (
                           <Button
-                            key={`${candidate.siteKey}:${candidate.vodId}`}
-                            variant="outline"
-                            className="h-auto justify-start rounded-xl px-3 py-3 text-left"
-                            onClick={() => onPlayWithDetail?.(candidate.detail, candidate.routes, 0, 0, candidate.extInput)}
+                            variant="default"
+                            className="h-auto w-full justify-between rounded-2xl px-4 py-3 text-left shadow-sm"
+                            onClick={() => {
+                              void handleDispatchPlayback(recommendedDispatchCandidate);
+                            }}
                           >
                             <div className="space-y-1">
-                              <div className="text-sm font-semibold text-foreground">{candidate.siteName}</div>
-                              <div className="text-xs text-muted-foreground break-all">{candidate.matchTitle}</div>
-                              <div className="text-[11px] text-muted-foreground">
-                                {candidate.routes.length} routes{candidate.remarks ? ` / ${candidate.remarks}` : ""}
+                              <div className="text-sm font-semibold">换接口播放</div>
+                              <div className="text-xs text-primary-foreground/80">
+                                推荐接口：{recommendedDispatchCandidate.siteName} / {recommendedDispatchCandidate.matchTitle}
                               </div>
                             </div>
+                            <div className="text-xs text-primary-foreground/80">
+                              {recommendedDispatchCandidate.routes?.length
+                                ? `${recommendedDispatchCandidate.routes.length} 条线路`
+                                : "点击后解析线路"}
+                            </div>
                           </Button>
-                        ))}
+                        )}
+
+                        <div className="grid gap-2 md:grid-cols-2">
+                          {dispatchCandidates.map((candidate) => (
+                            <Button
+                              key={`${candidate.siteKey}:${candidate.vodId}`}
+                              variant="outline"
+                              className="h-auto justify-start rounded-xl px-3 py-3 text-left"
+                              onClick={() => {
+                                void handleDispatchPlayback(candidate);
+                              }}
+                            >
+                              <div className="space-y-1">
+                                <div className="text-sm font-semibold text-foreground">切到 {candidate.siteName} 播放</div>
+                                <div className="text-xs text-muted-foreground break-all">{candidate.matchTitle}</div>
+                                <div className="text-[11px] text-muted-foreground">
+                                  {candidate.routes?.length
+                                    ? `${candidate.routes.length} routes`
+                                    : "Click to resolve detail"}
+                                  {candidate.remarks ? ` / ${candidate.remarks}` : ""}
+                                </div>
+                              </div>
+                            </Button>
+                          ))}
+                        </div>
                       </div>
                     ) : (
                       <div className="rounded-xl border border-dashed border-border/55 bg-muted/10 px-3 py-4 text-sm text-muted-foreground">
                         {dispatchError || 'No playable dispatch results were found.'}
+                      </div>
+                    )}
+
+                    {dispatchBackendStatuses.length > 0 && (
+                      <div className="space-y-2 rounded-xl border border-border/50 bg-muted/15 px-3 py-3">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                          Dispatch Diagnostics
+                        </div>
+                        <div className="space-y-2">
+                          {dispatchBackendStatuses.map((status) => (
+                            <div
+                              key={`${status.targetSiteKey}:${status.order}`}
+                              className="flex items-start justify-between gap-3 rounded-lg border border-border/45 bg-background/65 px-3 py-2 text-xs"
+                            >
+                              <div className="min-w-0 space-y-1">
+                                <div className="font-medium text-foreground">{status.targetSiteName}</div>
+                                <div className="text-muted-foreground break-all">{describeDispatchBackendStatus(status)}</div>
+                              </div>
+                              <Badge variant="outline" className="shrink-0 bg-background/70">
+                                {status.state}
+                              </Badge>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>

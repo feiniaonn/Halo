@@ -248,6 +248,33 @@ function isSearchNameHint(name: string): boolean {
   return /(search|搜索|搜片|搜剧|检索|聚搜)/i.test(name);
 }
 
+function isMetadataNameHint(name: string): boolean {
+  return /(douban|豆瓣|预告|片单|榜单|热播|热映|热剧|推荐)/i.test(name);
+}
+
+function inferDispatchRole(site: {
+  api: string;
+  name: string;
+  canSearch: boolean;
+  searchOnly: boolean;
+  canHome: boolean;
+  canCategory: boolean;
+  displayOnly: boolean;
+  hasPlayUrl: boolean;
+  requiresSpider: boolean;
+}): NormalizedTvBoxSite["capability"]["dispatchRole"] {
+  if (site.searchOnly) {
+    return "search-only-backend";
+  }
+
+  const metadataHint = isMetadataNameHint(site.name) || /(?:douban|trailer|preview)/i.test(site.api);
+  if (!site.canSearch && (site.displayOnly || metadataHint || (site.requiresSpider && (site.canHome || site.canCategory) && !site.hasPlayUrl))) {
+    return "origin-metadata";
+  }
+
+  return "resource-backend";
+}
+
 function inferSiteCapability(site: {
   type: number;
   api: string;
@@ -269,9 +296,21 @@ function inferSiteCapability(site: {
   const canCategory = !searchOnly && (hasPresetCategories || site.filterable || sourceKind === "cms" || requiresSpider);
   const canHome = !searchOnly && (sourceKind === "cms" || requiresSpider || hasPresetCategories);
   const displayOnly = canHome && !canSearch;
+  const dispatchRole = inferDispatchRole({
+    api: site.api,
+    name: site.name,
+    canSearch,
+    searchOnly,
+    canHome,
+    canCategory,
+    displayOnly,
+    hasPlayUrl: !!site.playUrl,
+    requiresSpider,
+  });
 
   return {
     sourceKind,
+    dispatchRole,
     canHome,
     canCategory: !searchOnly && canCategory,
     canSearch,

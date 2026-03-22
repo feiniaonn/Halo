@@ -59,6 +59,118 @@ pub fn record_vod_site_success(
 }
 
 #[tauri::command]
+pub fn list_vod_parse_rankings(
+    source: String,
+    repo_url: Option<String>,
+    site_key: String,
+    api_class: String,
+    route_name: String,
+    limit: Option<i64>,
+) -> Result<Vec<crate::vod_source_stats::VodParseRankingRecord>, String> {
+    crate::vod_source_stats::list_vod_parse_rankings(
+        &source,
+        repo_url.as_deref(),
+        &site_key,
+        &api_class,
+        &route_name,
+        limit.unwrap_or(8),
+    )
+}
+
+#[tauri::command]
+pub fn record_vod_parse_success(
+    source: String,
+    repo_url: Option<String>,
+    site_key: String,
+    api_class: String,
+    route_name: String,
+    parse_url: String,
+) -> Result<(), String> {
+    crate::vod_source_stats::record_vod_parse_success(
+        &source,
+        repo_url.as_deref(),
+        &site_key,
+        &api_class,
+        &route_name,
+        &parse_url,
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+#[tauri::command]
+pub fn list_vod_parse_health_records(
+    source: String,
+    repo_url: Option<String>,
+    site_key: String,
+    api_class: String,
+    route_name: String,
+    limit: Option<i64>,
+) -> Result<Vec<crate::vod_source_stats::VodParseHealthRecord>, String> {
+    crate::vod_source_stats::list_vod_parse_health_records(
+        &source,
+        repo_url.as_deref(),
+        &site_key,
+        &api_class,
+        &route_name,
+        limit.unwrap_or(12),
+    )
+}
+
+#[tauri::command]
+pub fn record_vod_parse_health_success(
+    source: String,
+    repo_url: Option<String>,
+    site_key: String,
+    api_class: String,
+    route_name: String,
+    parse_url: String,
+    duration_ms: Option<i64>,
+) -> Result<(), String> {
+    crate::vod_source_stats::record_vod_parse_health_success(
+        &source,
+        repo_url.as_deref(),
+        &site_key,
+        &api_class,
+        &route_name,
+        &parse_url,
+        duration_ms.unwrap_or_default(),
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+#[tauri::command]
+pub fn record_vod_parse_health_failure(
+    source: String,
+    repo_url: Option<String>,
+    site_key: String,
+    api_class: String,
+    route_name: String,
+    parse_url: String,
+    last_status: Option<String>,
+    failure_kind: Option<String>,
+    duration_ms: Option<i64>,
+    hard_failure: bool,
+    soft_failure: bool,
+    quarantine_until_ms: Option<i64>,
+) -> Result<(), String> {
+    crate::vod_source_stats::record_vod_parse_health_failure(
+        &source,
+        repo_url.as_deref(),
+        &site_key,
+        &api_class,
+        &route_name,
+        &parse_url,
+        last_status.as_deref().unwrap_or("failed"),
+        failure_kind.as_deref(),
+        duration_ms.unwrap_or_default(),
+        hard_failure,
+        soft_failure,
+        quarantine_until_ms.unwrap_or_default(),
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+#[tauri::command]
 pub fn load_vod_aggregate_search_cache(
     source: String,
     repo_url: Option<String>,
@@ -88,6 +200,38 @@ pub fn save_vod_aggregate_search_cache(
         repo_url.as_deref(),
         &keyword,
         &site_set_key,
+        &payload_json,
+        chrono::Utc::now().timestamp_millis(),
+        ttl_ms,
+    )
+}
+
+#[tauri::command]
+pub fn load_vod_playback_resolution_cache(
+    source: String,
+    repo_url: Option<String>,
+    cache_key: String,
+) -> Result<Option<crate::vod_source_stats::VodCachedPayloadRecord>, String> {
+    crate::vod_source_stats::load_vod_playback_resolution_cache(
+        &source,
+        repo_url.as_deref(),
+        &cache_key,
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+#[tauri::command]
+pub fn save_vod_playback_resolution_cache(
+    source: String,
+    repo_url: Option<String>,
+    cache_key: String,
+    payload_json: String,
+    ttl_ms: i64,
+) -> Result<(), String> {
+    crate::vod_source_stats::save_vod_playback_resolution_cache(
+        &source,
+        repo_url.as_deref(),
+        &cache_key,
         &payload_json,
         chrono::Utc::now().timestamp_millis(),
         ttl_ms,
@@ -131,6 +275,99 @@ pub fn save_vod_detail_cache(
 }
 
 #[tauri::command]
+pub fn load_vod_dispatch_cache(
+    source: String,
+    repo_url: Option<String>,
+    origin_site_key: String,
+    keyword: String,
+) -> Result<Option<crate::vod_source_stats::VodCachedPayloadRecord>, String> {
+    crate::vod_source_stats::load_vod_dispatch_cache(
+        &source,
+        repo_url.as_deref(),
+        &origin_site_key,
+        &keyword,
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+#[tauri::command]
+pub fn save_vod_dispatch_cache(
+    source: String,
+    repo_url: Option<String>,
+    origin_site_key: String,
+    keyword: String,
+    payload_json: String,
+    ttl_ms: i64,
+) -> Result<(), String> {
+    crate::vod_source_stats::save_vod_dispatch_cache(
+        &source,
+        repo_url.as_deref(),
+        &origin_site_key,
+        &keyword,
+        &payload_json,
+        chrono::Utc::now().timestamp_millis(),
+        ttl_ms,
+    )
+}
+
+#[tauri::command]
+pub fn load_vod_dispatch_backend_stats(
+    source: String,
+    repo_url: Option<String>,
+    origin_site_key: String,
+    limit: Option<i64>,
+) -> Result<Vec<crate::vod_source_stats::VodDispatchBackendStatRecord>, String> {
+    crate::vod_source_stats::load_vod_dispatch_backend_stats(
+        &source,
+        repo_url.as_deref(),
+        &origin_site_key,
+        limit.unwrap_or(32),
+    )
+}
+
+#[tauri::command]
+pub fn record_vod_dispatch_backend_success(
+    source: String,
+    repo_url: Option<String>,
+    origin_site_key: String,
+    target_site_key: String,
+) -> Result<(), String> {
+    crate::vod_source_stats::record_vod_dispatch_backend_success(
+        &source,
+        repo_url.as_deref(),
+        &origin_site_key,
+        &target_site_key,
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+#[tauri::command]
+pub fn record_vod_dispatch_backend_failure(
+    source: String,
+    repo_url: Option<String>,
+    origin_site_key: String,
+    target_site_key: String,
+    last_status: Option<String>,
+    failure_kind: Option<String>,
+    hard_failure: bool,
+    upstream_failure: bool,
+    quarantine_until_ms: Option<i64>,
+) -> Result<(), String> {
+    crate::vod_source_stats::record_vod_dispatch_backend_failure(
+        &source,
+        repo_url.as_deref(),
+        &origin_site_key,
+        &target_site_key,
+        last_status.as_deref().unwrap_or("failed"),
+        failure_kind.as_deref(),
+        hard_failure,
+        upstream_failure,
+        quarantine_until_ms.unwrap_or_default(),
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+#[tauri::command]
 pub fn set_media_network_policy(policy: Option<media_cmds_network::MediaNetworkPolicyInput>) {
     media_cmds_network::set_media_network_policy(policy);
 }
@@ -151,8 +388,9 @@ pub async fn execute_media_transport(
 pub async fn probe_stream_kind(
     url: String,
     headers: Option<std::collections::HashMap<String, String>>,
+    timeout_ms: Option<u64>,
 ) -> Result<media_cmds_stream_probe::StreamProbeResult, String> {
-    media_cmds_stream_probe::probe_stream_kind(url, headers).await
+    media_cmds_stream_probe::probe_stream_kind(url, headers, timeout_ms).await
 }
 
 #[tauri::command]
@@ -188,16 +426,18 @@ pub async fn resolve_jiexi(
     jiexi_prefix: String,
     video_url: String,
     extra_headers: Option<std::collections::HashMap<String, String>>,
+    timeout_ms: Option<u64>,
 ) -> Result<String, String> {
-    media_cmds_jiexi::resolve_jiexi(jiexi_prefix, video_url, extra_headers).await
+    media_cmds_jiexi::resolve_jiexi(jiexi_prefix, video_url, extra_headers, timeout_ms).await
 }
 
 #[tauri::command]
 pub async fn resolve_wrapped_media_url(
     target_url: String,
     extra_headers: Option<std::collections::HashMap<String, String>>,
+    timeout_ms: Option<u64>,
 ) -> Result<String, String> {
-    media_cmds_jiexi::resolve_wrapped_media_url(target_url, extra_headers).await
+    media_cmds_jiexi::resolve_wrapped_media_url(target_url, extra_headers, timeout_ms).await
 }
 
 #[tauri::command]
