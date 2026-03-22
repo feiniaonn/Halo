@@ -25,15 +25,12 @@ vi.mock("@/modules/media/services/vodParseRanking", () => ({
 import { clearVodPlaybackResolutionCache } from "@/modules/media/services/vodPlaybackResolutionCache";
 import { clearVodParseHealthCache } from "@/modules/media/services/vodParseInsights";
 import {
-  buildVodPlaybackResolutionRequestKey,
-  buildVodPlaybackResolveTimeoutError,
   clearVodParseRankingCache,
   clearSpiderPlayerPayloadCache,
   extractPlayerHeaders,
   getVodPlaybackDiagnostics,
   hasResolvablePlayerPayload,
   resolveEpisodePlayback,
-  withTimeout,
 } from "@/modules/media/services/vodPlayback";
 
 function mockProbeResult(url: string, overrides: Partial<Record<"kind" | "reason" | "content_type" | "final_url", string | null>> = {}) {
@@ -135,7 +132,7 @@ describe("vodPlayback resolve", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it("prefers a validated spider direct url even when parse=1 is set", async () => {
+  it("honors parse=1 even when spider payload also carries a direct-looking url", async () => {
     invokeSpiderPlayerV2Mock.mockResolvedValue({
       normalizedPayload: {
         url: "https://media.example.com/live/index.m3u8?token=direct-but-parse",
@@ -172,13 +169,16 @@ describe("vodPlayback resolve", () => {
       searchOnly: false,
     }, "默认线路");
 
-    expect(invokeMock.mock.calls.some(([command]) => command === "resolve_jiexi")).toBe(false);
+    expect(invokeMock).toHaveBeenCalledWith("resolve_jiexi", expect.objectContaining({
+      jiexiPrefix: "https://jiexi.example.com/?url=",
+      videoUrl: "https://media.example.com/live/index.m3u8?token=direct-but-parse",
+    }));
     expect(result).toEqual({
-      url: "https://media.example.com/live/index.m3u8?token=direct-but-parse",
+      url: "https://jiexi.example.com/final/index.m3u8?token=parsed",
       headers: {
         Referer: "https://page.example.com/watch/2",
       },
-      resolvedBy: "spider",
+      resolvedBy: "jiexi",
     });
   });
 
@@ -509,7 +509,7 @@ describe("vodPlayback resolve", () => {
     const commands: string[] = [];
     invokeSpiderPlayerV2Mock.mockResolvedValue({
       normalizedPayload: {
-        url: "https://page.example.com/watch?id=needs-parse",
+        url: "https://media.example.com/live/index.m3u8?token=needs-parse",
         parse: 1,
         jx: 0,
         header: {
@@ -776,79 +776,6 @@ describe("vodPlayback resolve", () => {
 
     expect(result.url).toBe("https://media.example.com/final/index.m3u8?token=probe-budget");
     expect(probeTimeouts.some((value) => value > 0 && value <= 1400)).toBe(true);
-  });
-
-  it("attaches live diagnostics when outer playback resolution timeout fires", async () => {
-    vi.useFakeTimers();
-
-    let releaseWrapped: ((value: string) => void) | null = null;
-    invokeSpiderPlayerV2Mock.mockResolvedValue({
-      normalizedPayload: {
-        url: "http://wrapper.example.com/getM3u8?name=test&url=wrapped-video.m3u8",
-        parse: 1,
-        jx: 0,
-      },
-    });
-
-    invokeMock.mockImplementation(async (command: string, args?: { url?: string }) => {
-      if (command === "resolve_wrapped_media_url") {
-        return new Promise<string>((resolve) => {
-          releaseWrapped = resolve;
-        });
-      }
-      if (command === "resolve_jiexi") {
-        return "https://media.example.com/final/index.m3u8?token=late";
-      }
-      if (command === "probe_stream_kind") {
-        return mockProbeResult(args?.url ?? "");
-      }
-      throw new Error(`unexpected invoke: ${command}`);
-    });
-
-    const context = {
-      sourceKind: "spider" as const,
-      spiderUrl: "https://spider.example.com/app.jar",
-      siteKey: "timeout-live-diagnostics",
-      apiClass: "csp_TimeoutLiveDiagnostics",
-      ext: "",
-    };
-    const episode = {
-      name: "缁?闂?",
-      url: "timeout-live-episode-1",
-      searchOnly: false,
-    };
-    const routeName = "姒涙顓荤痪鑳熅";
-    const requestKey = buildVodPlaybackResolutionRequestKey(context, episode, routeName);
-
-    const timed = withTimeout(
-      resolveEpisodePlayback(context, episode, routeName),
-      10,
-      "episode playback resolve",
-      {
-        createTimeoutError: () => buildVodPlaybackResolveTimeoutError(
-          requestKey,
-          "episode playback resolve",
-          10,
-        ),
-      },
-    ).catch((error) => error);
-
-    await vi.advanceTimersByTimeAsync(20);
-    const error = await timed;
-    const diagnostics = getVodPlaybackDiagnostics(error);
-
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain("episode playback resolve timeout (10ms)");
-    expect(diagnostics?.steps).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ stage: "spider_payload", status: "success" }),
-        expect.objectContaining({ stage: "wrapped_url", status: "skip" }),
-        expect.objectContaining({ stage: "final", status: "error" }),
-      ]),
-    );
-
-    releaseWrapped?.("");
-    await vi.runAllTimersAsync();
   });
 
   it("rejects fake HLS parse results and continues to the next parser", async () => {

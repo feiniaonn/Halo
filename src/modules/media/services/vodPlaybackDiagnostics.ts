@@ -28,9 +28,7 @@ type VodPlaybackDiagnosticCarrier = {
   playbackDiagnostics?: VodPlaybackDiagnostics;
 };
 
-export function cloneVodPlaybackDiagnostics(
-  diagnostics: VodPlaybackDiagnostics,
-): VodPlaybackDiagnostics {
+function cloneVodPlaybackDiagnostics(diagnostics: VodPlaybackDiagnostics): VodPlaybackDiagnostics {
   return {
     startedAt: diagnostics.startedAt,
     steps: diagnostics.steps.map((step) => ({ ...step })),
@@ -108,7 +106,7 @@ export function getVodPlaybackDiagnostics(value: unknown): VodPlaybackDiagnostic
     return null;
   }
 
-  return cloneVodPlaybackDiagnostics(diagnostics);
+  return diagnostics;
 }
 
 export function getVodPlaybackDiagnosticsElapsedMs(

@@ -14,7 +14,6 @@ import {
   appendPlaybackDiagnostic,
   attachVodPlaybackDiagnostics,
   buildVodPlaybackError,
-  cloneVodPlaybackDiagnostics,
   createVodPlaybackDiagnostics,
 } from '@/modules/media/services/vodPlaybackDiagnostics';
 import {
@@ -51,8 +50,6 @@ import type {
 } from '@/modules/media/services/vodPlaybackDiagnostics';
 
 export {
-  buildVodPlaybackError,
-  cloneVodPlaybackDiagnostics,
   getVodPlaybackDiagnosticsElapsedMs,
   getVodPlaybackDiagnostics,
   type VodPlaybackDiagnosticStage,
@@ -119,7 +116,6 @@ interface CachedSpiderPayloadEntry {
 }
 
 const spiderPayloadCache = new Map<string, CachedSpiderPayloadEntry>();
-const inflightVodPlaybackDiagnostics = new Map<string, VodPlaybackDiagnostics>();
 
 export function clearSpiderPlayerPayloadCache(): void {
   spiderPayloadCache.clear();
@@ -199,47 +195,6 @@ function buildPlaybackResolutionCacheKey(
     context.playbackRules ?? [],
     getEffectiveParses(context).map((parse) => `${parse.type}:${parse.url.trim()}`),
   ]);
-}
-
-export function buildVodPlaybackResolutionRequestKey(
-  context: VodPlaybackContext,
-  episode: VodEpisode,
-  routeName: string,
-): string {
-  return buildPlaybackResolutionCacheKey(context, episode, routeName);
-}
-
-function registerInflightVodPlaybackDiagnostics(
-  requestKey: string,
-  diagnostics: VodPlaybackDiagnostics,
-): void {
-  inflightVodPlaybackDiagnostics.set(requestKey, diagnostics);
-}
-
-function clearInflightVodPlaybackDiagnostics(
-  requestKey: string,
-  diagnostics: VodPlaybackDiagnostics,
-): void {
-  if (inflightVodPlaybackDiagnostics.get(requestKey) === diagnostics) {
-    inflightVodPlaybackDiagnostics.delete(requestKey);
-  }
-}
-
-export function getInflightVodPlaybackDiagnostics(
-  requestKey: string,
-): VodPlaybackDiagnostics | null {
-  const diagnostics = inflightVodPlaybackDiagnostics.get(requestKey);
-  return diagnostics ? cloneVodPlaybackDiagnostics(diagnostics) : null;
-}
-
-export function buildVodPlaybackResolveTimeoutError(
-  requestKey: string,
-  stage: string,
-  timeoutMs: number,
-): Error {
-  const message = `${stage} timeout (${timeoutMs}ms)`;
-  const diagnostics = getInflightVodPlaybackDiagnostics(requestKey);
-  return diagnostics ? buildVodPlaybackError(message, diagnostics) : new Error(message);
 }
 
 function buildSitePlayParse(context: VodPlaybackContext): TvBoxParse | null {
@@ -845,8 +800,9 @@ async function resolveEpisodePlaybackUncached(
   context: VodPlaybackContext,
   episode: VodEpisode,
   routeName: string,
-  diagnostics: VodPlaybackDiagnostics,
 ): Promise<VodResolvedStream> {
+  const diagnostics = createVodPlaybackDiagnostics();
+
   if (context.sourceKind === 'spider') {
     let spiderPayloadResult: Awaited<ReturnType<typeof invokeSpiderPlayerWithRetry>>;
     try {
@@ -864,17 +820,6 @@ async function resolveEpisodePlaybackUncached(
     const parseRequired = shouldUseSpiderParseChain(payload, hasDirectPayloadUrl);
     const payloadLooksDirectPlayable =
       hasDirectPayloadUrl && looksLikeDirectPlayableUrl(payloadUrl);
-    const resolvedPayload = hasDirectPayloadUrl
-      ? resolveRequestPolicy(
-          payloadUrl,
-          payloadHeaders,
-          context.requestHeaders,
-          context.hostMappings,
-        )
-      : null;
-    let validatedDirectPayload:
-      | Awaited<ReturnType<typeof validateResolvedStreamCandidate>>
-      | null = null;
 
     appendPlaybackDiagnostic(
       diagnostics,
@@ -897,34 +842,6 @@ async function resolveEpisodePlaybackUncached(
           resolvedBy: 'spider',
         },
         diagnostics,
-      );
-    }
-
-    if (Number(payload.parse ?? 0) === 1 && payloadLooksDirectPlayable && resolvedPayload) {
-      validatedDirectPayload = await validateResolvedStreamCandidate({
-        url: resolvedPayload.url,
-        headers: resolvedPayload.headers,
-        resolvedBy: 'spider',
-      }, {
-        timeoutMs: QUICK_PARSE_VALIDATION_TIMEOUT_MS,
-      });
-      if (validatedDirectPayload.stream) {
-        appendPlaybackDiagnostic(
-          diagnostics,
-          'direct_fallback',
-          'success',
-          `source=payload target=${payloadUrl} fast_path=1`,
-        );
-        return finalizeResolvedStream(
-          validatedDirectPayload.stream,
-          diagnostics,
-        );
-      }
-      appendPlaybackDiagnostic(
-        diagnostics,
-        'direct_fallback',
-        'skip',
-        `source=payload target=${payloadUrl} reason=${validatedDirectPayload.reason ?? 'validation_miss'}`,
       );
     }
 
@@ -1066,20 +983,20 @@ async function resolveEpisodePlaybackUncached(
         'success',
         `source=payload target=${payloadUrl}`,
       );
-      const fallbackResolvedPayload = resolvedPayload ?? resolveRequestPolicy(
+      const resolvedPayload = resolveRequestPolicy(
         payloadUrl,
         payloadHeaders,
         context.requestHeaders,
         context.hostMappings,
       );
-      const validatedPayload = validatedDirectPayload ?? await validateResolvedStreamCandidate({
-        url: fallbackResolvedPayload.url,
-        headers: fallbackResolvedPayload.headers,
+      const validatedPayload = await validateResolvedStreamCandidate({
+        url: resolvedPayload.url,
+        headers: resolvedPayload.headers,
         resolvedBy: 'spider',
       }, {
         timeoutMs: QUICK_PARSE_VALIDATION_TIMEOUT_MS,
       });
-      if (Number(payload.parse ?? 0) === 1 && !looksLikeDirectPlayableUrl(fallbackResolvedPayload.url)) {
+      if (Number(payload.parse ?? 0) === 1 && !looksLikeDirectPlayableUrl(resolvedPayload.url)) {
         appendPlaybackDiagnostic(
           diagnostics,
           'direct_fallback',
@@ -1249,22 +1166,14 @@ export async function resolveEpisodePlayback(
   episode: VodEpisode,
   routeName: string,
 ): Promise<VodResolvedStream> {
-  const cacheKey = buildVodPlaybackResolutionRequestKey(context, episode, routeName);
+  const cacheKey = buildPlaybackResolutionCacheKey(context, episode, routeName);
   return resolveWithStoredVodPlaybackResolution(
     {
       sourceKey: context.sourceKey,
       repoUrl: context.repoUrl,
     },
     cacheKey,
-    async () => {
-      const diagnostics = createVodPlaybackDiagnostics();
-      registerInflightVodPlaybackDiagnostics(cacheKey, diagnostics);
-      try {
-        return await resolveEpisodePlaybackUncached(context, episode, routeName, diagnostics);
-      } finally {
-        clearInflightVodPlaybackDiagnostics(cacheKey, diagnostics);
-      }
-    },
+    () => resolveEpisodePlaybackUncached(context, episode, routeName),
   ) as Promise<VodResolvedStream>;
 }
 
@@ -1279,17 +1188,10 @@ export function formatPlaybackTime(seconds: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-export function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  stage: string,
-  options?: {
-    createTimeoutError?: () => Error;
-  },
-): Promise<T> {
+export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, stage: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = window.setTimeout(() => {
-      reject(options?.createTimeoutError?.() ?? new Error(`${stage} timeout (${timeoutMs}ms)`));
+      reject(new Error(`${stage} timeout (${timeoutMs}ms)`));
     }, timeoutMs);
     promise
       .then((value) => {
