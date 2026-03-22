@@ -393,6 +393,7 @@ pub async fn resolve_jiexi_webview(
 
     if let Some(existing) = app.get_webview_window(JIEXI_WORKER_LABEL) {
         let _ = existing.destroy(); // destroy is more definitive than close for background workers
+        tokio::time::sleep(Duration::from_millis(60)).await;
     }
 
     let window =
@@ -719,13 +720,13 @@ pub async fn resolve_jiexi_webview(
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.unwrap_or(25_000));
     loop {
         if Instant::now() >= deadline {
-            let _ = window.close();
+            let _ = window.destroy();
             return Err("jiexi_webview_timeout".to_string());
         }
 
         let title = window.title().unwrap_or_default();
         if let Some(url) = title.strip_prefix("HALO_URL:") {
-            let _ = window.close();
+            let _ = window.destroy();
             if let Some(found) = extract_playable_url_from_text(url) {
                 return Ok(found);
             }

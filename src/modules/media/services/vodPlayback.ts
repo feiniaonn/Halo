@@ -112,6 +112,8 @@ const QUICK_PARSE_BROWSER_ATTEMPT_TIMEOUT_MS = 3200;
 const QUICK_PARSE_MAX_BROWSER_ATTEMPTS = 2;
 const QUICK_PARSE_VALIDATION_TIMEOUT_MS = 1400;
 const WRAPPED_PARSE_CHAIN_BUDGET_MS = 6500;
+const QUICK_PARSE_BROWSER_RESERVE_MS =
+  QUICK_PARSE_BROWSER_ATTEMPT_TIMEOUT_MS + QUICK_PARSE_MIN_TIMEOUT_MS;
 
 interface CachedSpiderPayloadEntry {
   payload: PlayerPayload;
@@ -264,10 +266,10 @@ function clampParseAttemptTimeout(remainingMs: number, preferredMs: number): num
   if (remainingMs <= 0) {
     return 0;
   }
-  return Math.max(
-    QUICK_PARSE_MIN_TIMEOUT_MS,
-    Math.min(preferredMs, remainingMs),
-  );
+  if (remainingMs < QUICK_PARSE_MIN_TIMEOUT_MS) {
+    return remainingMs;
+  }
+  return Math.min(preferredMs, remainingMs);
 }
 
 function getValidationProbeTimeoutMs(remainingMs: number): number | undefined {
@@ -284,6 +286,32 @@ function shouldRejectProbeResult(reason: string | null): boolean {
     || reason === 'stream_probe_hls_html_manifest'
     || reason === 'stream_probe_hls_manifest_unreadable'
     || reason === 'stream_probe_audio_only'
+  );
+}
+
+function buildVodParseChainError(
+  message: string,
+  options?: {
+    skipTargetWebviewFallback?: boolean;
+  },
+): Error {
+  const error = new Error(message);
+  Object.defineProperty(error, 'skipTargetWebviewFallback', {
+    value: Boolean(options?.skipTargetWebviewFallback),
+    configurable: true,
+    enumerable: false,
+    writable: true,
+  });
+  return error;
+}
+
+function shouldSkipTargetWebviewFallback(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  return Boolean(
+    'skipTargetWebviewFallback' in error
+    && (error as { skipTargetWebviewFallback?: unknown }).skipTargetWebviewFallback,
   );
 }
 
@@ -493,6 +521,18 @@ async function resolveByParse(
       }
       break;
     }
+    if (browserCandidates.length > 0 && remainingMs <= QUICK_PARSE_BROWSER_RESERVE_MS) {
+      if (diagnostics) {
+        appendPlaybackDiagnostic(
+          diagnostics,
+          'parse_attempt',
+          'skip',
+          `parser=${parse.url} reason=reserve_browser_budget`,
+          { budgetMs: remainingMs },
+        );
+      }
+      break;
+    }
     const parseHeaders = mergeHeaderRecords(parse.ext?.header ?? null, upstreamHeaders);
     const parseRequest = resolveRequestPolicy(
       parse.url,
@@ -595,6 +635,9 @@ async function resolveByParse(
             { budgetMs: attemptTimeoutMs },
           );
         }
+        if (getRemainingParseBudgetMs(deadlineAt) <= QUICK_PARSE_BROWSER_RESERVE_MS) {
+          break;
+        }
         continue;
       }
       if (diagnostics) {
@@ -622,6 +665,7 @@ async function resolveByParse(
       context.playbackRules,
       pageUrl,
     );
+    let attemptedBrowserFallback = false;
     for (const candidate of browserCandidates.slice(0, QUICK_PARSE_MAX_BROWSER_ATTEMPTS)) {
       const remainingMs = getRemainingParseBudgetMs(deadlineAt);
       if (remainingMs < QUICK_PARSE_MIN_TIMEOUT_MS) {
@@ -631,7 +675,11 @@ async function resolveByParse(
         remainingMs,
         QUICK_PARSE_BROWSER_ATTEMPT_TIMEOUT_MS,
       );
+      if (browserTimeoutMs < QUICK_PARSE_MIN_TIMEOUT_MS) {
+        break;
+      }
       const attemptStartedAt = Date.now();
+      attemptedBrowserFallback = true;
       try {
         const rawBrowserResolved = await invoke<string>('resolve_jiexi_webview', {
           jiexiPrefix: candidate.parseRequest.url,
@@ -737,6 +785,9 @@ async function resolveByParse(
         );
       }
     }
+    throw buildVodParseChainError(lastError || 'current parse chain is unavailable', {
+      skipTargetWebviewFallback: attemptedBrowserFallback,
+    });
   }
 
   throw new Error(lastError || '当前解析链路不可用。');
@@ -761,7 +812,9 @@ async function resolveUrlWithParseAndWebviewFallback(
       diagnostics,
     });
   } catch (e) {
-    // Fall back below
+    if (shouldSkipTargetWebviewFallback(e)) {
+      return null;
+    }
   }
 
   if (parsed) {
