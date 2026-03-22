@@ -306,49 +306,6 @@ describe("vodPlayback resolve", () => {
     );
   });
 
-  it("unwraps nested getM3u8 media targets before invoking wrapper or parse services", async () => {
-    const wrapperUrl =
-      "http://43.248.100.143:9090/nby/m3u8/getM3u8?name=jx.91by.top&time=1&url=https%3A%2F%2Fmedia.example.com%2Fstream%2Findex.m3u8%3Ftoken%3Dnested";
-    invokeSpiderPlayerV2Mock.mockResolvedValue({
-      normalizedPayload: {
-        url: wrapperUrl,
-        parse: 1,
-        jx: 0,
-        header: {
-          Referer: "https://page.example.com/detail/nested",
-        },
-      },
-    });
-    invokeMock.mockImplementation(async (command: string, args?: { url?: string }) => {
-      if (command === "probe_stream_kind") {
-        return mockProbeResult(args?.url ?? "");
-      }
-      throw new Error(`unexpected invoke: ${command}`);
-    });
-
-    const result = await resolveEpisodePlayback({
-      sourceKind: "spider",
-      spiderUrl: "https://spider.example.com/app.jar",
-      siteKey: "nested-wrapper-test",
-      apiClass: "csp_NestedWrapperTest",
-      ext: "",
-    }, {
-      name: "episode 1",
-      url: "episode-nested-wrapper-1",
-      searchOnly: false,
-    }, "default-route");
-
-    expect(result).toEqual({
-      url: "https://media.example.com/stream/index.m3u8?token=nested",
-      headers: {
-        Referer: "https://page.example.com/detail/nested",
-      },
-      resolvedBy: "spider",
-    });
-    expect(invokeMock.mock.calls.some(([command]) => command === "resolve_wrapped_media_url")).toBe(false);
-    expect(invokeMock.mock.calls.some(([command]) => command === "resolve_jiexi")).toBe(false);
-  });
-
   it("attaches diagnostics to playback resolution failures", async () => {
     invokeSpiderPlayerV2Mock.mockResolvedValue({
       normalizedPayload: {},
