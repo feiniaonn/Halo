@@ -11,8 +11,6 @@ import {
   VOD_KERNEL_LABELS,
 } from '@/modules/media/services/vodKernelStateMachine';
 import {
-  buildVodPlaybackResolutionRequestKey,
-  buildVodPlaybackResolveTimeoutError,
   clearSpiderPlayerPayloadCache,
   formatPlaybackTime,
   getVodPlaybackDiagnostics,
@@ -75,7 +73,6 @@ const NATIVE_PLAYER_STARTUP_TIMEOUT_MS = 20_000;
 const HLS_STARTUP_TIMEOUT_MS = 15_000;
 const DIRECT_STARTUP_TIMEOUT_MS = 12_000;
 const VIDEO_ELEMENT_WAIT_TIMEOUT_MS = 1_500;
-const PLAYBACK_RESOLVE_TIMEOUT_MS = 16_000;
 
 interface KernelAttemptResult {
   ok: boolean;
@@ -557,7 +554,7 @@ export function VodPlayer({
 
   const fetchEpisodePlayback = useCallback(
     async (episode: VodEpisode, routeName: string) => {
-      const requestKey = buildVodPlaybackResolutionRequestKey(
+      return resolveEpisodePlayback(
         {
           sourceKey,
           repoUrl,
@@ -577,38 +574,6 @@ export function VodPlayer({
         },
         episode,
         routeName,
-      );
-      return withTimeout(
-        resolveEpisodePlayback(
-          {
-            sourceKey,
-            repoUrl,
-            sourceKind,
-            spiderUrl,
-            siteName,
-            siteKey,
-            apiClass,
-            ext,
-            playUrl,
-            click,
-            playerType,
-            parses,
-            playbackRules,
-            requestHeaders,
-            hostMappings,
-          },
-          episode,
-          routeName,
-        ),
-        PLAYBACK_RESOLVE_TIMEOUT_MS,
-        'episode playback resolve',
-        {
-          createTimeoutError: () => buildVodPlaybackResolveTimeoutError(
-            requestKey,
-            'episode playback resolve',
-            PLAYBACK_RESOLVE_TIMEOUT_MS,
-          ),
-        },
       );
     },
     [

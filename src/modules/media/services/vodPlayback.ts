@@ -890,6 +890,7 @@ async function resolveEpisodePlaybackUncached(
     }
 
     if (hasDirectPayloadUrl) {
+      let parseTargetUrl = payloadUrl;
       appendPlaybackDiagnostic(
         diagnostics,
         'wrapped_url',
@@ -903,46 +904,13 @@ async function resolveEpisodePlaybackUncached(
         QUICK_PARSE_HTTP_TIMEOUT_MS,
       );
       if (wrappedPlayableUrl) {
+        parseTargetUrl = wrappedPlayableUrl;
         appendPlaybackDiagnostic(
           diagnostics,
           'wrapped_url',
           'success',
           `target=${payloadUrl} resolved=${wrappedPlayableUrl}`,
         );
-
-        if (Number(payload.parse ?? 0) === 1 && wrappedPlayableUrl === payloadUrl) {
-          const parsedWrappedPayload = await withTimeout(
-            resolveByParse(
-              context,
-              routeName,
-              payloadUrl,
-              payloadHeaders,
-              {
-                timeBudgetMs: WRAPPED_PARSE_CHAIN_BUDGET_MS,
-                diagnostics,
-              },
-            ),
-            WRAPPED_PARSE_CHAIN_BUDGET_MS,
-            'wrapped parse fallback',
-          ).catch((error) => {
-            appendPlaybackDiagnostic(
-              diagnostics,
-              'parse_chain',
-              'error',
-              `target=${payloadUrl} reason=${error instanceof Error ? error.message : String(error)}`,
-            );
-            return null;
-          });
-          if (parsedWrappedPayload) {
-            appendPlaybackDiagnostic(
-              diagnostics,
-              'parse_chain',
-              'success',
-              `target=${payloadUrl} resolved_by=${parsedWrappedPayload.resolvedBy}`,
-            );
-            return finalizeResolvedStream(parsedWrappedPayload, diagnostics);
-          }
-        }
 
         const resolvedWrapped = resolveRequestPolicy(
           wrappedPlayableUrl,
@@ -981,20 +949,20 @@ async function resolveEpisodePlaybackUncached(
             );
           }
         }
+      } else {
+        appendPlaybackDiagnostic(
+          diagnostics,
+          'wrapped_url',
+          'miss',
+          `target=${payloadUrl} reason=not_resolved`,
+        );
       }
-
-      appendPlaybackDiagnostic(
-        diagnostics,
-        'wrapped_url',
-        'miss',
-        `target=${payloadUrl} reason=not_resolved`,
-      );
 
       if (Number(payload.parse ?? 0) === 1 || !payloadLooksDirectPlayable) {
         const parsedWrappedPayload = await resolveUrlWithParseAndWebviewFallback(
           context,
           routeName,
-          payloadUrl,
+          parseTargetUrl,
           payloadHeaders,
           {
             timeBudgetMs: WRAPPED_PARSE_CHAIN_BUDGET_MS,
@@ -1015,7 +983,7 @@ async function resolveEpisodePlaybackUncached(
             diagnostics,
             'parse_chain',
             'success',
-            `target=${payloadUrl} resolved_by=${parsedWrappedPayload.resolvedBy}`,
+            `target=${parseTargetUrl} resolved_by=${parsedWrappedPayload.resolvedBy}`,
           );
           return finalizeResolvedStream(parsedWrappedPayload, diagnostics);
         }

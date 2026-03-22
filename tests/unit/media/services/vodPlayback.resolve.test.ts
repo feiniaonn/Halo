@@ -135,7 +135,7 @@ describe("vodPlayback resolve", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it("honors parse=1 even when spider payload also carries a direct-looking url", async () => {
+  it("prefers a validated spider direct url even when parse=1 is set", async () => {
     invokeSpiderPlayerV2Mock.mockResolvedValue({
       normalizedPayload: {
         url: "https://media.example.com/live/index.m3u8?token=direct-but-parse",
@@ -172,16 +172,13 @@ describe("vodPlayback resolve", () => {
       searchOnly: false,
     }, "默认线路");
 
-    expect(invokeMock).toHaveBeenCalledWith("resolve_jiexi", expect.objectContaining({
-      jiexiPrefix: "https://jiexi.example.com/?url=",
-      videoUrl: "https://media.example.com/live/index.m3u8?token=direct-but-parse",
-    }));
+    expect(invokeMock.mock.calls.some(([command]) => command === "resolve_jiexi")).toBe(false);
     expect(result).toEqual({
-      url: "https://jiexi.example.com/final/index.m3u8?token=parsed",
+      url: "https://media.example.com/live/index.m3u8?token=direct-but-parse",
       headers: {
         Referer: "https://page.example.com/watch/2",
       },
-      resolvedBy: "jiexi",
+      resolvedBy: "spider",
     });
   });
 
@@ -448,6 +445,65 @@ describe("vodPlayback resolve", () => {
       },
       resolvedBy: "jiexi",
     });
+  });
+
+  it("does not rerun the same wrapped parse chain after a browser fallback failure", async () => {
+    const wrapperUrl =
+      "http://wrapper.example.com/getM3u8?name=test&time=1&url=wrapped-video.m3u8";
+    invokeSpiderPlayerV2Mock.mockResolvedValue({
+      normalizedPayload: {
+        url: wrapperUrl,
+        parse: 1,
+        jx: 0,
+      },
+    });
+
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "resolve_wrapped_media_url") {
+        return wrapperUrl;
+      }
+      if (command === "resolve_jiexi") {
+        throw new Error("jiexi_needs_browser");
+      }
+      if (command === "resolve_jiexi_webview") {
+        throw new Error("browser parse failed");
+      }
+      if (command === "probe_stream_kind") {
+        return mockProbeResult(wrapperUrl, {
+          kind: "hls",
+          reason: "stream_probe_hls_manifest_unreadable",
+          content_type: "text/plain;charset=UTF-8",
+        });
+      }
+      throw new Error(`unexpected invoke: ${command}`);
+    });
+
+    await expect(
+      resolveEpisodePlayback({
+        sourceKind: "spider",
+        spiderUrl: "https://spider.example.com/app.jar",
+        siteKey: "wrapped-no-rerun-test",
+        apiClass: "csp_WrappedNoRerun",
+        ext: "",
+        playUrl: "https://jiexi.example.com/?url=",
+      }, {
+        name: "episode 1",
+        url: "episode-no-rerun-1",
+        searchOnly: false,
+      }, "default-route"),
+    ).rejects.toBeInstanceOf(Error);
+
+    expect(invokeMock.mock.calls.filter(([command]) => command === "resolve_jiexi")).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.filter(
+        ([command, args]) =>
+          command === "resolve_jiexi_webview"
+          && typeof args === "object"
+          && args
+          && "jiexiPrefix" in args
+          && args.jiexiPrefix === "https://jiexi.example.com/?url=",
+      ),
+    ).toHaveLength(1);
   });
 
   it("reuses the last cached spider payload when a kernel switch gets an empty player response", async () => {
