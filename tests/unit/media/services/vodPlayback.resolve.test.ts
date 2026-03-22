@@ -25,12 +25,15 @@ vi.mock("@/modules/media/services/vodParseRanking", () => ({
 import { clearVodPlaybackResolutionCache } from "@/modules/media/services/vodPlaybackResolutionCache";
 import { clearVodParseHealthCache } from "@/modules/media/services/vodParseInsights";
 import {
+  buildVodPlaybackResolutionRequestKey,
+  buildVodPlaybackResolveTimeoutError,
   clearVodParseRankingCache,
   clearSpiderPlayerPayloadCache,
   extractPlayerHeaders,
   getVodPlaybackDiagnostics,
   hasResolvablePlayerPayload,
   resolveEpisodePlayback,
+  withTimeout,
 } from "@/modules/media/services/vodPlayback";
 
 function mockProbeResult(url: string, overrides: Partial<Record<"kind" | "reason" | "content_type" | "final_url", string | null>> = {}) {
@@ -776,6 +779,79 @@ describe("vodPlayback resolve", () => {
 
     expect(result.url).toBe("https://media.example.com/final/index.m3u8?token=probe-budget");
     expect(probeTimeouts.some((value) => value > 0 && value <= 1400)).toBe(true);
+  });
+
+  it("attaches live diagnostics when outer playback resolution timeout fires", async () => {
+    vi.useFakeTimers();
+
+    let releaseWrapped: ((value: string) => void) | null = null;
+    invokeSpiderPlayerV2Mock.mockResolvedValue({
+      normalizedPayload: {
+        url: "http://wrapper.example.com/getM3u8?name=test&url=wrapped-video.m3u8",
+        parse: 1,
+        jx: 0,
+      },
+    });
+
+    invokeMock.mockImplementation(async (command: string, args?: { url?: string }) => {
+      if (command === "resolve_wrapped_media_url") {
+        return new Promise<string>((resolve) => {
+          releaseWrapped = resolve;
+        });
+      }
+      if (command === "resolve_jiexi") {
+        return "https://media.example.com/final/index.m3u8?token=late";
+      }
+      if (command === "probe_stream_kind") {
+        return mockProbeResult(args?.url ?? "");
+      }
+      throw new Error(`unexpected invoke: ${command}`);
+    });
+
+    const context = {
+      sourceKind: "spider" as const,
+      spiderUrl: "https://spider.example.com/app.jar",
+      siteKey: "timeout-live-diagnostics",
+      apiClass: "csp_TimeoutLiveDiagnostics",
+      ext: "",
+    };
+    const episode = {
+      name: "episode 1",
+      url: "timeout-live-episode-1",
+      searchOnly: false,
+    };
+    const routeName = "default-route";
+    const requestKey = buildVodPlaybackResolutionRequestKey(context, episode, routeName);
+
+    const timed = withTimeout(
+      resolveEpisodePlayback(context, episode, routeName),
+      10,
+      "episode playback resolve",
+      {
+        createTimeoutError: () => buildVodPlaybackResolveTimeoutError(
+          requestKey,
+          "episode playback resolve",
+          10,
+        ),
+      },
+    ).catch((error) => error);
+
+    await vi.advanceTimersByTimeAsync(20);
+    const error = await timed;
+    const diagnostics = getVodPlaybackDiagnostics(error);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("episode playback resolve timeout (10ms)");
+    expect(diagnostics?.steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ stage: "spider_payload", status: "success" }),
+        expect.objectContaining({ stage: "wrapped_url", status: "skip" }),
+        expect.objectContaining({ stage: "final", status: "error" }),
+      ]),
+    );
+
+    releaseWrapped?.("");
+    await vi.runAllTimersAsync();
   });
 
   it("rejects fake HLS parse results and continues to the next parser", async () => {
