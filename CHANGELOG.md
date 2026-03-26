@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.117 - 2026-03-26
+
+### 发布重点
+
+- 收拢迷你环岛链路，补齐固定大窗口方案、模块化岛体渲染与更稳定的恢复主页交互。
+- 音乐歌词链路新增 QQ 音乐本地缓存优先、逐字时序保留、翻译对齐修正与歌词缓存持久化优化。
+- 发布脚本补齐私钥重建、默认私钥发现、统一产物目录与更顺手的签名流程。
+
+### 新增
+
+- 新增 QQ 音乐本地歌词缓存读取与 QRC 解析能力，支持优先复用本地歌词与逐字时间片。
+- 新增环岛模块注册结构、时钟空态与音乐扩展态逐字歌词显示。
+- 新增迷你模式恢复主页自定义快捷键设置，默认值为 `Control+Shift+H`。
+
+### 调整
+
+- 调整音乐页歌词面板、自定义背景下的可读性与逐字高亮连续性。
+- 调整播放器时钟外推与进度回退吸附逻辑，减少英文逐字卡顿和播放结束后的进度条拖尾。
+- 调整发布说明与 README，使仓库说明反映当前歌词、环岛与发布流程能力。
+
+### 修复
+
+- 修复 QQ 本地播放时旧云端歌词缓存抢占、本地歌词不优先的问题。
+- 修复部分歌词翻译行因时间标签连写或小偏差导致漏对齐的问题。
+- 修复迷你环岛恢复主页快捷键只能写死、不能跟随用户设置的问题。
+
+### 验证
+
+- 已验证 `npx eslint src/pages/MiniPlayerPage.tsx src/pages/MusicPage.tsx src/modules/music/components/MusicSettingsModal.tsx src/modules/music/components/KaraokeLineText.tsx src/modules/music/hooks/usePlaybackClock.ts src/modules/music/components/NowPlayingBlock.tsx --max-warnings=0`
+- 已验证 `npx tsc --noEmit --pretty false`
+- 已验证 `cargo check --manifest-path src-tauri/Cargo.toml`
+
 这里记录 Halo 的公开版本变更。
 
 ## 0.3.116 - 2026-03-16

@@ -17,9 +17,11 @@ pub use media_cmds_hls::LiveProxyMetrics;
 pub(crate) use media_cmds_network::build_transport_client;
 pub use media_cmds_network::{
     apply_request_headers, build_client, configure_http_client_builder,
-    current_media_network_policy_generation, resolve_media_request,
+    current_media_network_policy_generation, resolve_media_request, MediaHostMapping,
+    MediaNetworkPolicyInput, MediaRequestHeaderRule,
 };
 pub(crate) use media_cmds_network::{build_rescue_client, build_rescue_transport_client};
+pub use media_cmds_stream_probe::StreamProbeResult;
 pub use media_cmds_transport::{
     execute_media_transport_request, MediaTransportOptions, MediaTransportRequest,
     MediaTransportResponse,
@@ -41,7 +43,11 @@ pub fn list_vod_site_rankings(
     repo_url: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<crate::vod_source_stats::VodSiteRankingRecord>, String> {
-    crate::vod_source_stats::list_vod_site_rankings(&source, repo_url.as_deref(), limit.unwrap_or(16))
+    crate::vod_source_stats::list_vod_site_rankings(
+        &source,
+        repo_url.as_deref(),
+        limit.unwrap_or(16),
+    )
 }
 
 #[tauri::command]
@@ -509,13 +515,28 @@ pub async fn launch_potplayer(
     url: String,
     headers: Option<std::collections::HashMap<String, String>>,
 ) -> Result<(), String> {
-    use std::process::Command;
     use std::io::Write;
+    use std::process::Command;
 
     let exe = find_potplayer_exe()?;
 
-    // If it's an M3U8 URL, download and save to temp file
-    if url.to_lowercase().contains(".m3u8") || url.to_lowercase().contains("m3u8") {
+    let lower_url = url.to_lowercase();
+    let is_m3u8 = lower_url.contains(".m3u8") || lower_url.contains("m3u8");
+    let is_local_relay_manifest = (lower_url.starts_with("http://127.0.0.1:")
+        || lower_url.starts_with("http://localhost:"))
+        && lower_url.contains("/vod-hls/manifest/");
+
+    if is_local_relay_manifest {
+        log::info!(
+            "[PotPlayer] Launching with local relay manifest URL: {}",
+            url
+        );
+        Command::new(&exe)
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("鍚姩 PotPlayer 澶辫触: {}", e))?;
+    } else if is_m3u8 {
+        // Remote manifest URLs are materialized locally for external player compatibility.
         log::info!("[PotPlayer] Downloading M3U8 manifest from: {}", url);
 
         let client = build_client()?;
@@ -526,7 +547,8 @@ pub async fn launch_potplayer(
             }
         }
 
-        let manifest = req.send()
+        let manifest = req
+            .send()
             .await
             .map_err(|e| format!("下载 M3U8 失败: {}", e))?
             .text()
@@ -535,12 +557,19 @@ pub async fn launch_potplayer(
 
         // Save to temp file
         let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join(format!("halo_potplayer_{}.m3u8", chrono::Utc::now().timestamp()));
+        let temp_file = temp_dir.join(format!(
+            "halo_potplayer_{}.m3u8",
+            chrono::Utc::now().timestamp_millis()
+        ));
 
-        let mut file = std::fs::File::create(&temp_file)
-            .map_err(|e| format!("创建临时文件失败: {}", e))?;
+        let mut file =
+            std::fs::File::create(&temp_file).map_err(|e| format!("创建临时文件失败: {}", e))?;
         file.write_all(manifest.as_bytes())
             .map_err(|e| format!("写入临时文件失败: {}", e))?;
+
+        file.sync_all()
+            .map_err(|e| format!("flush temp manifest failed: {}", e))?;
+        drop(file);
 
         log::info!("[PotPlayer] Saved manifest to: {}", temp_file.display());
         log::info!("[PotPlayer] Launching with temp file");
@@ -609,8 +638,10 @@ fn find_potplayer_exe() -> Result<std::path::PathBuf, String> {
 #[cfg(target_os = "windows")]
 fn read_registry_exe_path(subkey: &str) -> Result<std::path::PathBuf, String> {
     use std::path::PathBuf;
-    use windows::Win32::System::Registry::{RegOpenKeyExW, RegQueryValueExW, RegCloseKey, HKEY, HKEY_LOCAL_MACHINE, KEY_READ};
     use windows::core::PCWSTR;
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ,
+    };
 
     unsafe {
         let subkey_wide: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
@@ -622,11 +653,16 @@ fn read_registry_exe_path(subkey: &str) -> Result<std::path::PathBuf, String> {
             Some(0),
             KEY_READ,
             &mut hkey,
-        ).is_err() {
+        )
+        .is_err()
+        {
             return Err("Registry key not found".to_string());
         }
 
-        let value_name_wide: Vec<u16> = "ProgramPath".encode_utf16().chain(std::iter::once(0)).collect();
+        let value_name_wide: Vec<u16> = "ProgramPath"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let mut buffer = vec![0u16; 512];
         let mut buffer_size = (buffer.len() * 2) as u32;
 

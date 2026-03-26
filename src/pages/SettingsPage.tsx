@@ -8,30 +8,20 @@ import { StorageSettingsSection } from '@/modules/settings/components/StorageSet
 import { UpdateSettingsSection } from '@/modules/settings/components/UpdateSettingsSection';
 import { WindowSettingsSection } from '@/modules/settings/components/WindowSettingsSection';
 import { useSettingsPageController } from '@/modules/settings/hooks/useSettingsPageController';
-import type { MiniRestoreMode } from '@/modules/settings/types/settings.types';
+ '@/modules/settings/types/settings.types';
 
 export function SettingsPage({
   bgType = 'none',
   bgFsPath,
   bgBlur = 12,
-  miniRestoreMode,
-  miniModeWidth,
-  miniModeHeight,
   onBgChange,
   onBgBlurChange,
-  onMiniRestoreModeChange,
-  onMiniModeWidthChange,
-  onMiniModeHeightChange,
-}: {
+  }: {
   bgType?: 'none' | 'image' | 'video';
   bgFsPath?: string | null;
   bgBlur?: number;
-  miniRestoreMode?: MiniRestoreMode;
-  miniModeWidth?: number;
-  miniModeHeight?: number;
   onBgChange?: (type: 'none' | 'image' | 'video', path: string | null) => void;
   onBgBlurChange?: (blur: number) => void;
-  onMiniRestoreModeChange?: (mode: MiniRestoreMode) => void;
   onMiniModeWidthChange?: (width: number) => void;
   onMiniModeHeightChange?: (height: number) => void;
 }) {
@@ -43,45 +33,24 @@ export function SettingsPage({
     setBgNotice,
     storageMessage,
     setStorageMessage,
-    bgOptimizeHint,
-    bgOptimizeStage,
-    legacyRoots,
-    hasLegacy,
     migrationRunning,
     imagePreviewSrc,
     videoPreviewSrc,
-    migrationProgress,
-    migrationComplete,
-    removeSource,
-    setRemoveSource,
     isMigrating,
     handleBackgroundBlurChange,
-    handleAllowComponentDownload,
-    handlePrepareVideoOptimizer,
     handleClearBackground,
     handleApplyStoredBackground,
     handleChooseBackground,
     handleLaunchAtLogin,
     handleCloseBehavior,
-    handleMiniRestoreMode,
-    handleMiniModeSize,
     handleChooseFolder,
     handleRestoreDefaultStorage,
-    handleStartMigration,
-    handleCancelMigration,
-    handleMigrateNow,
   } = useSettingsPageController({
     bgType,
     bgFsPath,
     bgBlur,
-    miniRestoreMode,
-    miniModeWidth,
-    miniModeHeight,
     onBgChange,
     onBgBlurChange,
-    onMiniRestoreModeChange,
-    onMiniModeWidthChange,
-    onMiniModeHeightChange,
   });
 
   // Auto-dismiss success notices after 3 s (must be before any early returns – Rules of Hooks)
@@ -120,15 +89,14 @@ export function SettingsPage({
         <div className="pointer-events-none fixed right-6 top-16 z-[60] w-[min(480px,calc(100vw-3rem))] animate-in slide-in-from-top-4 slide-in-from-right-4 fade-in duration-500">
           <div
             className={cn(
-              'glass-card pointer-events-auto relative overflow-hidden rounded-[24px] border p-5 shadow-2xl backdrop-blur-xl',
+              'pointer-events-auto relative overflow-hidden rounded-2xl border p-4 shadow-lg backdrop-blur-xl',
               bgNotice.kind === 'success'
-                ? 'border-emerald-500/30 bg-emerald-500/10 shadow-emerald-500/10'
-                : 'border-red-500/30 bg-red-500/10 shadow-red-500/10',
+                ? 'border-emerald-500/20 bg-emerald-500/10'
+                : 'border-red-500/20 bg-red-500/10',
             )}
             role="status"
             aria-live="polite"
           >
-            <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent opacity-50" />
             <div className="relative z-10 flex items-start gap-4">
               <div
                 className={cn(
@@ -158,51 +126,45 @@ export function SettingsPage({
         </div>
       )}
 
-      <div className="shrink-0 px-8 pt-8 pb-4">
-        <h1 className="text-3xl font-semibold tracking-tight">设置</h1>
-        <p className="text-sm text-muted-foreground mt-2">
+      <div className="shrink-0 px-8 pt-8 pb-2">
+        <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
+        <p className="text-xs text-muted-foreground mt-1">
           管理应用外观、运行行为、版本更新及本地存储。
         </p>
       </div>
 
       <Tabs defaultValue="appearance" className="flex h-full min-h-0 flex-col">
-        <div className="shrink-0 px-8 border-b border-border/40">
-          <TabsList className="flex h-12 w-full justify-start gap-8 rounded-none bg-transparent p-0">
+        <div className="shrink-0 px-8 pb-2">
+          
+            <TabsList className="flex h-12 w-full justify-start gap-2 p-1">
             {tabs.map((tab) => {
               const Icon = tab.icon;
               return (
                 <TabsTrigger
                   key={tab.value}
                   value={tab.value}
-                  className="relative flex items-center justify-center gap-2 rounded-none border-b-2 border-transparent px-1 pb-3 pt-3 font-medium text-muted-foreground transition-none data-[state=active]:border-primary data-[state=active]:text-foreground data-[state=active]:shadow-none hover:text-foreground"
+                  className="relative flex items-center justify-center gap-2 rounded-xl px-4 py-2 font-medium text-muted-foreground transition-all duration-300 ease-out hover:text-foreground hover:bg-white/5 data-[state=active]:text-foreground data-[state=active]:shadow-sm"
                 >
                   <Icon className="size-4 shrink-0" />
                   <span>{tab.label}</span>
                 </TabsTrigger>
               );
             })}
-          </TabsList>
-        </div>
+            </TabsList>
+          </div>
 
         <div className="min-h-0 flex-1 overflow-hidden">
-          <div className="h-full min-h-0 overflow-y-auto px-8 py-6 custom-scrollbar-minimal">
+          <div className="h-full min-h-0 overflow-y-auto px-8 py-6 custom-scrollbar-minimal bg-transparent">
             <TabsContent
               value="appearance"
               className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500"
             >
               <BackgroundSettingsSection
-                allowComponentDownload={settings.allow_component_download}
-                bgOptimizeHint={bgOptimizeHint}
-                bgOptimizeStage={bgOptimizeStage}
                 bgType={bgType}
                 bgBlur={bgBlur}
                 imagePreviewSrc={imagePreviewSrc}
                 videoPreviewSrc={videoPreviewSrc}
                 onBackgroundBlurChange={handleBackgroundBlurChange}
-                onAllowComponentDownloadChange={(enabled) =>
-                  void handleAllowComponentDownload(enabled)
-                }
-                onPrepareVideoOptimizer={() => void handlePrepareVideoOptimizer()}
                 onClearBackground={handleClearBackground}
                 onApplyStoredBackground={(type) => void handleApplyStoredBackground(type)}
                 onChooseBackground={(type) => void handleChooseBackground(type)}
@@ -221,16 +183,11 @@ export function SettingsPage({
               className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500"
             >
               <WindowSettingsSection
-                launchAtLogin={settings.launch_at_login}
-                closeBehavior={settings.close_behavior}
-                miniRestoreMode={settings.mini_restore_mode}
-                miniModeWidth={settings.mini_mode_width}
-                miniModeHeight={settings.mini_mode_height}
-                onLaunchAtLoginChange={(enabled) => void handleLaunchAtLogin(enabled)}
-                onCloseBehaviorChange={(behavior) => void handleCloseBehavior(behavior)}
-                onMiniRestoreModeChange={(mode) => void handleMiniRestoreMode(mode)}
-                onMiniModeSizeChange={(width, height) => void handleMiniModeSize(width, height)}
-              />
+                  launchAtLogin={settings.launch_at_login}
+                  closeBehavior={settings.close_behavior}
+                  onLaunchAtLoginChange={(enabled) => void handleLaunchAtLogin(enabled)}
+                  onCloseBehaviorChange={(behavior) => void handleCloseBehavior(behavior)}
+                />
             </TabsContent>
 
             <TabsContent
@@ -247,19 +204,10 @@ export function SettingsPage({
               <StorageSettingsSection
                 storageDisplayPath={settings.storage_display_path}
                 storageMessage={storageMessage}
-                hasLegacy={hasLegacy}
-                legacyRoots={legacyRoots}
-                migrationProgress={migrationProgress}
-                migrationComplete={migrationComplete}
-                removeSource={removeSource}
                 isMigrating={isMigrating}
                 migrationRunning={migrationRunning}
                 onChooseFolder={() => void handleChooseFolder()}
                 onRestoreDefaultStorage={() => void handleRestoreDefaultStorage()}
-                onRemoveSourceChange={setRemoveSource}
-                onStartMigration={() => void handleStartMigration()}
-                onCancelMigration={() => void handleCancelMigration()}
-                onMigrateNow={() => void handleMigrateNow()}
               />
             </TabsContent>
           </div>
@@ -268,3 +216,18 @@ export function SettingsPage({
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

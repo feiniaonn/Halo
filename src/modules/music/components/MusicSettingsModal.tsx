@@ -24,6 +24,13 @@ const MINI_KEY_LABELS: Record<MusicMiniVisibleKey, string> = {
   next: "下一首",
 };
 
+const HOTKEY_LABELS: Record<MusicHotkeyAction, string> = {
+  previous: "上一首",
+  play_pause: "播放/暂停",
+  next: "下一首",
+  restore_mini_home: "恢复主页（迷你模式）",
+};
+
 function normalizeSourceKind(kind: string): string {
   if (kind === "browser") return "浏览器";
   if (kind === "native") return "本地软件";
@@ -129,7 +136,7 @@ export function MusicSettingsModal({
             <p className="text-xs text-muted-foreground">设置加载中...</p>
           ) : (
             <div className="space-y-4">
-              <Card className="glass-card border-none flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3">
+              <Card className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/5 bg-white/[0.015] px-4 py-3 shadow-sm">
                 <div>
                   <h2 className="text-sm font-semibold text-foreground">把音乐控制调成你习惯的手感</h2>
                   <p className="mt-0.5 text-[11px] text-muted-foreground">
@@ -184,7 +191,7 @@ export function MusicSettingsModal({
 
               {activeTab === "general" && (
                 <div className="space-y-4 animate-in fade-in duration-300">
-                  <Card className="glass-card border-none space-y-2.5 rounded-xl p-4">
+                  <Card className="rounded-xl border border-white/5 bg-white/[0.015] space-y-2.5 p-4 shadow-sm">
                     <div>
                       <h3 className="text-sm font-semibold">播放控制</h3>
                       <p className="mt-0.5 text-[11px] text-muted-foreground">
@@ -241,9 +248,34 @@ export function MusicSettingsModal({
                         />
                       </label>
                     </div>
+
+                    <div className="grid gap-2.5 md:grid-cols-2">
+                      <label className="flex flex-col gap-1 text-xs md:col-span-2">
+                        <span className="text-[10px] text-muted-foreground">{HOTKEY_LABELS.restore_mini_home}</span>
+                        <input
+                          ref={(node) => {
+                            if (node && hotkeyInputRefs && typeof hotkeyInputRefs === "object" && "current" in hotkeyInputRefs && hotkeyInputRefs.current) {
+                              Object.assign(hotkeyInputRefs.current, { restore_mini_home: node });
+                            }
+                          }}
+                          placeholder="默认 Control+Shift+H，可点击后按组合键重录"
+                          readOnly
+                          value={hotkeyFieldValue("restore_mini_home")}
+                          onClick={() => onStartHotkeyCapture("restore_mini_home")}
+                          onFocus={() => onStartHotkeyCapture("restore_mini_home")}
+                          className={cn(
+                            "rounded-lg border border-white/10 bg-black/10 dark:bg-white/5 px-2.5 py-1.5 outline-none transition-all cursor-pointer hover:border-white/20",
+                            hotkeyCapture?.action === "restore_mini_home" ? "border-primary/60 ring-1 ring-primary/50" : "",
+                          )}
+                        />
+                        <span className="text-[10px] text-muted-foreground/70">
+                          该快捷键独立于播放控制热键，迷你模式下始终可用。
+                        </span>
+                      </label>
+                    </div>
                   </Card>
 
-                  <Card className="glass-card border-none space-y-2.5 rounded-xl p-4">
+                  <Card className="rounded-xl border border-white/5 bg-white/[0.015] space-y-2.5 p-4 shadow-sm">
                     <div>
                       <h3 className="text-sm font-semibold">迷你模式显示</h3>
                       <p className="mt-0.5 text-[11px] text-muted-foreground">自定义迷你模式显示哪些控制键和信息。</p>
@@ -306,7 +338,7 @@ export function MusicSettingsModal({
 
               {activeTab === "lyrics" && (
                 <div className="space-y-4 animate-in fade-in duration-300">
-                  <Card className="glass-card border-none space-y-2.5 rounded-xl p-4">
+                  <Card className="rounded-xl border border-white/5 bg-white/[0.015] space-y-2.5 p-4 shadow-sm">
                     <div>
                       <h3 className="text-sm font-semibold">歌词显示</h3>
                       <p className="mt-0.5 text-[11px] text-muted-foreground">
@@ -399,7 +431,7 @@ export function MusicSettingsModal({
 
               {activeTab === "hotkeys" && (
                 <div className="space-y-4 animate-in fade-in duration-300">
-                  <Card className="glass-card border-none space-y-2.5 rounded-xl p-4">
+                  <Card className="rounded-xl border border-white/5 bg-white/[0.015] space-y-2.5 p-4 shadow-sm">
                     <div>
                       <h3 className="text-sm font-semibold">快捷键</h3>
                       <p className="mt-0.5 text-[11px] text-muted-foreground">
@@ -504,7 +536,7 @@ export function MusicSettingsModal({
                     </div>
                   </Card>
 
-                  <Card className="glass-card border-none space-y-2.5 rounded-xl p-4">
+                  <Card className="rounded-xl border border-white/5 bg-white/[0.015] space-y-2.5 p-4 shadow-sm">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <h3 className="text-sm font-semibold">可控应用白名单</h3>
@@ -576,7 +608,7 @@ export function MusicSettingsModal({
                 initial={{ scale: 0.9, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.9, opacity: 0 }}
-                className="relative w-full max-w-sm rounded-xl glass-card p-4 shadow-2xl border border-white/10 bg-background/90"
+                className="relative w-full max-w-sm rounded-2xl border border-white/5 bg-background/95 p-4 shadow-xl backdrop-blur-3xl"
               >
                 <div className="flex flex-col gap-2">
                   <h4 className="text-sm font-semibold">有未保存的更改</h4>

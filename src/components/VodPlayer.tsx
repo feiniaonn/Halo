@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import Hls, { type HlsConfig } from 'hls.js';
+import Hls from 'hls.js';
 import { cn } from '@/lib/utils';
 import { VodProxyImage } from '@/components/VodProxyImage';
-import { VodPlaybackDiagnosticsPanel } from '@/modules/media/components/VodPlaybackDiagnosticsPanel';
+import { VodKernelStatusBadge } from '@/modules/media/components/VodKernelStatusBadge';
 import {
   buildVodKernelPlan,
   type VodKernelDisplay,
@@ -13,8 +13,8 @@ import {
 import {
   clearSpiderPlayerPayloadCache,
   formatPlaybackTime,
-  getVodPlaybackDiagnostics,
   resolveEpisodePlayback,
+  type VodResolvedStream,
   withTimeout,
 } from '@/modules/media/services/vodPlayback';
 import { waitForBrowserVideoStartup } from '@/modules/media/services/vodBrowserVideoStartup';
@@ -22,10 +22,11 @@ import {
   buildPlaybackResolutionFailureLog,
   buildPlaybackResolutionLog,
 } from '@/modules/media/services/vodPlaybackLogging';
-import type { VodPlaybackDiagnosticsReport } from '@/modules/media/services/vodPlaybackDiagnosticsView';
 import {
   acquireVodPlaybackLock,
   buildVodPlaybackLockKey,
+  clearVodPlaybackLock,
+  clearVodPlaybackLocksByPrefix,
   releaseVodPlaybackLock,
 } from '@/modules/media/services/vodPlaybackSingleflight';
 import {
@@ -80,6 +81,12 @@ interface KernelAttemptResult {
   retryable: boolean;
 }
 
+interface ReusableResolvedPlayback {
+  key: string;
+  stream: VodResolvedStream;
+  streamKind: VodStreamKind;
+}
+
 function inferReasonCode(reason: string): string {
   const lower = reason.toLowerCase();
   if (lower.includes('403')) return 'upstream_403';
@@ -94,7 +101,6 @@ function inferReasonCode(reason: string): string {
 
 const KERNEL_MODE_OPTIONS: Array<{ value: VodKernelMode; label: string }> = [
   { value: 'direct', label: 'HLS 直连' },
-  { value: 'proxy', label: 'HLS 代理' },
   { value: 'mpv', label: 'MPV 内核' },
   { value: 'potplayer', label: 'PotPlayer' },
 ];
@@ -142,13 +148,13 @@ export function VodPlayer({
   routes,
   initialRouteIdx,
   initialEpisodeIdx,
-  initialKernelMode: _initialKernelMode,
+  initialKernelMode: rawInitialKernelMode,
   parses,
   requestHeaders,
   playbackRules,
   proxyDomains: _proxyDomains,
   hostMappings,
-  adHosts,
+  adHosts: _adHosts,
   onClose,
   onMpvActiveChange,
 }: VodPlayerProps) {
@@ -167,14 +173,17 @@ export function VodPlayer({
   const streamProbeCacheRef = useRef(new Map<string, Promise<VodStreamProbeResult>>());
   const nativeEngineRef = useRef<NativePlayerEngine | null>(null);
   const mpvRelaySessionIdRef = useRef<string | null>(null);
+  const reusableResolvedPlaybackRef = useRef<ReusableResolvedPlayback | null>(null);
 
   const dragRegionStyle = useMemo(() => ({ WebkitAppRegion: 'drag' }) as CSSProperties, []);
   const noDragRegionStyle = useMemo(() => ({ WebkitAppRegion: 'no-drag' }) as CSSProperties, []);
+  const initialKernelMode = rawInitialKernelMode === 'proxy' ? 'direct' : rawInitialKernelMode;
 
   const [activeRouteIdx, setActiveRouteIdx] = useState(initialRouteIdx);
   const [activeEpisodeIdx, setActiveEpisodeIdx] = useState(initialEpisodeIdx);
-  const [kernelMode, setKernelMode] = useState<VodKernelMode>('direct');
-  const kernelModeRef = useRef<VodKernelMode>('direct');
+  const [kernelMode, setKernelMode] = useState<VodKernelMode>(initialKernelMode);
+  const kernelModeRef = useRef<VodKernelMode>(initialKernelMode);
+  const [activeKernelDisplay, setActiveKernelDisplay] = useState<VodKernelDisplay | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [playbackNotice, setPlaybackNotice] = useState<string | null>(null);
@@ -185,8 +194,6 @@ export function VodPlayer({
   const [aspectRatioIdx, setAspectRatioIdx] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [playbackDiagnosticsReport, setPlaybackDiagnosticsReport] =
-    useState<VodPlaybackDiagnosticsReport | null>(null);
 
   const ASPECT_RATIOS = useMemo(
     () => [
@@ -221,6 +228,11 @@ export function VodPlayer({
   const activeRoute = routes[activeRouteIdx] ?? null;
   const activeEpisode: VodEpisode | null = activeRoute?.episodes[activeEpisodeIdx] ?? null;
 
+  const buildEpisodePlaybackKey = useCallback(
+    (routeName: string, episode: VodEpisode) => `${routeName}::${episode.name}::${episode.url}`,
+    [],
+  );
+
   const termLog = useCallback((message: string, level: 'info' | 'warn' | 'error' = 'info') => {
     console[level](message);
     invoke('rust_log', { message, level }).catch(() => void 0);
@@ -243,108 +255,6 @@ export function VodPlayer({
       }, 3200);
     }
   }, []);
-
-  const updatePlaybackDiagnosticsReport = useCallback((
-    report: Omit<VodPlaybackDiagnosticsReport, 'updatedAt'>,
-  ) => {
-    setPlaybackDiagnosticsReport({
-      ...report,
-      updatedAt: Date.now(),
-    });
-  }, []);
-
-  const TauriHlsLoader = useMemo(() => {
-    return class extends (Hls.DefaultConfig.loader as unknown as new (c: unknown) => {
-      load: (ctx: unknown, cfg: unknown, cbs: unknown) => void;
-    }) {
-      constructor(config: unknown) {
-        super(config);
-        const originalLoad = this.load.bind(this);
-        this.load = async (context: unknown, config: unknown, callbacks: unknown) => {
-          const ctx = context as {
-            url: string;
-            type?: string;
-            responseType?: string;
-            frag?: unknown;
-            keyInfo?: unknown;
-          };
-          const cbs = callbacks as {
-            onSuccess: (
-              response: { url: string; data: ArrayBuffer | string },
-              stats: unknown,
-              ctx: unknown,
-              networkDetails?: unknown,
-            ) => void;
-            onError: (
-              error: { code: number; text: string },
-              ctx: unknown,
-              networkDetails?: unknown,
-              stats?: unknown,
-            ) => void;
-          };
-          const now = performance.now();
-          const makeStats = (loaded = 0) => ({
-            aborted: false,
-            loaded,
-            total: loaded,
-            retry: 0,
-            chunkCount: 0,
-            bwEstimate: 0,
-            loading: { start: now, first: now, end: now },
-            parsing: { start: now, end: now },
-            buffering: { start: now, first: now, end: now },
-          });
-          const url = ctx.url;
-          const isManifest =
-            ctx.type === 'manifest' ||
-            ctx.type === 'level' ||
-            ctx.type === 'audioTrack' ||
-            ctx.type === 'subtitleTrack';
-          const isBinary =
-            ctx.responseType === 'arraybuffer' ||
-            ctx.frag !== undefined ||
-            ctx.keyInfo !== undefined;
-
-          if (isManifest || isBinary) {
-            try {
-              if (isManifest) {
-                const text = await invoke<string>('proxy_hls_manifest', {
-                  url,
-                  headers: activeHeadersRef.current,
-                  playbackRules,
-                  blockedHosts: adHosts,
-                });
-                cbs.onSuccess({ url, data: text }, makeStats(text.length), context, null);
-                return;
-              }
-              if (isBinary) {
-                const headers = { ...(activeHeadersRef.current ?? {}) };
-                const b64 = await invoke<string>('proxy_hls_segment', {
-                  url,
-                  headers: Object.keys(headers).length > 0 ? headers : null,
-                  playbackRules,
-                  blockedHosts: adHosts,
-                });
-                const binary = atob(b64);
-                const bytes = new Uint8Array(binary.length);
-                for (let i = 0; i < binary.length; i += 1) {
-                  bytes[i] = binary.charCodeAt(i);
-                }
-                cbs.onSuccess({ url, data: bytes.buffer }, makeStats(bytes.length), context, null);
-                return;
-              }
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              cbs.onError({ code: 0, text: message }, context, null, makeStats(0));
-              return;
-            }
-          }
-
-          originalLoad(context, config, callbacks);
-        };
-      }
-    };
-  }, [adHosts, playbackRules]);
 
   const measureNativeHostBounds = useCallback(async (): Promise<NativeHostBounds> => {
     if (!viewportRef.current) {
@@ -386,10 +296,13 @@ export function VodPlayer({
           attemptTokenRef.current += 1;
           if (!preservePlaybackLock) {
             releaseActivePlaybackLock();
+            clearVodPlaybackLocksByPrefix(`${playbackInstanceIdRef.current}:`);
           }
           hlsRef.current?.destroy();
           hlsRef.current = null;
           activeHeadersRef.current = null;
+          reusableResolvedPlaybackRef.current = null;
+          streamProbeCacheRef.current.clear();
           nativeEngineRef.current = null;
           const relaySessionId = mpvRelaySessionIdRef.current;
           mpvRelaySessionIdRef.current = null;
@@ -404,6 +317,7 @@ export function VodPlayer({
             video.load();
           }
           setIsNativePlayerActive(false);
+          setActiveKernelDisplay(null);
           setPlaybackPosition(0);
           setPlaybackDuration(0);
         });
@@ -793,25 +707,10 @@ export function VodPlayer({
         return { ok: false, retryable: false, reason: 'video element unavailable' };
       }
 
-      if (forcedKernel === 'hls-proxy' && !isM3u8) {
-        return {
-          ok: false,
-          retryable: false,
-          reason: 'Current stream is not HLS, cannot use HLS proxy',
-        };
-      }
-
       if (isM3u8 && Hls.isSupported()) {
-        const wantsProxy = forcedKernel === 'hls-proxy';
-        const customFragmentLoader = TauriHlsLoader as unknown as NonNullable<HlsConfig['fLoader']>;
-        const customPlaylistLoader = TauriHlsLoader as unknown as NonNullable<HlsConfig['pLoader']>;
-
         setIsNativePlayerActive(false);
         nativeEngineRef.current = null;
-        termLog(
-          `[VodPlayer] init start kernel=${wantsProxy ? 'hls-proxy' : 'hls-direct'} url=${url}`,
-          'info',
-        );
+        termLog(`[VodPlayer] init start kernel=hls-direct url=${url}`, 'info');
 
         const hls = new Hls({
           maxBufferLength: 120,
@@ -819,48 +718,7 @@ export function VodPlayer({
           backBufferLength: 60,
           maxBufferSize: 300 * 1024 * 1024,
           startLevel: -1,
-          fLoader: wantsProxy ? customFragmentLoader : undefined,
-          pLoader: wantsProxy ? customPlaylistLoader : undefined,
         });
-
-        let manifestBlobUrl: string | null = null;
-        let manifestSourceUrl = url;
-        try {
-          if (wantsProxy) {
-            const manifest = await invoke<string>('proxy_hls_manifest', {
-              url,
-              headers,
-              playbackRules,
-              blockedHosts: adHosts,
-            });
-            const baseDir = url.replace(/\/[^/]*$/, '/');
-            const rewritten = manifest
-              .split('\n')
-              .map((line) => {
-                const trimmed = line.trim();
-                if (!trimmed || trimmed.startsWith('#') || /^https?:\/\//i.test(trimmed)) {
-                  return line;
-                }
-                try {
-                  return new URL(trimmed, baseDir).href;
-                } catch {
-                  return line;
-                }
-              })
-              .join('\n');
-            manifestBlobUrl = URL.createObjectURL(
-              new Blob([rewritten], { type: 'application/vnd.apple.mpegurl' }),
-            );
-            manifestSourceUrl = manifestBlobUrl;
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          hls.destroy();
-          if (manifestBlobUrl) {
-            URL.revokeObjectURL(manifestBlobUrl);
-          }
-          return { ok: false, retryable: false, reason: `HLS preprocess failed: ${message}` };
-        }
 
         const startupResult = await new Promise<KernelAttemptResult>((resolve) => {
           let settled = false;
@@ -891,7 +749,7 @@ export function VodPlayer({
               return;
             }
             startupPromise = waitForBrowserVideoStartup(video, {
-              label: wantsProxy ? 'HLS proxy playback' : 'HLS direct playback',
+              label: 'HLS direct playback',
               timeoutMs: HLS_STARTUP_TIMEOUT_MS,
               isAttemptCurrent: () => attemptId === attemptTokenRef.current,
             })
@@ -924,7 +782,7 @@ export function VodPlayer({
               return;
             }
             try {
-              hls.loadSource(manifestSourceUrl);
+              hls.loadSource(url);
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
               finish({ ok: false, retryable: false, reason: `HLS loadSource failed: ${message}` });
@@ -953,17 +811,11 @@ export function VodPlayer({
             finish({
               ok: false,
               retryable: false,
-              reason: wantsProxy
-                ? 'HLS proxy manifest startup timeout'
-                : 'HLS direct manifest startup timeout',
+              reason: 'HLS direct manifest startup timeout',
             });
           }, HLS_STARTUP_TIMEOUT_MS);
           hls.attachMedia(video);
         });
-
-        if (manifestBlobUrl) {
-          URL.revokeObjectURL(manifestBlobUrl);
-        }
 
         if (startupResult.ok) {
           hlsRef.current = hls;
@@ -1003,21 +855,32 @@ export function VodPlayer({
       }
     },
     [
-      adHosts,
       appendMpvTestLog,
       destroyPlayer,
       measureNativeHostBounds,
-      playbackRules,
       showPlaybackNotice,
       termLog,
-      TauriHlsLoader,
       waitForVideoElement,
     ],
   );
 
   const playEpisode = useCallback(
-    async (episode: VodEpisode, routeName: string) => {
+    async (
+      episode: VodEpisode,
+      routeName: string,
+      options?: { reusableResolvedPlayback?: ReusableResolvedPlayback | null },
+    ) => {
+      const episodePlaybackKey = buildEpisodePlaybackKey(routeName, episode);
+      const reusableResolvedPlayback =
+        options?.reusableResolvedPlayback?.key === episodePlaybackKey
+          ? options.reusableResolvedPlayback
+          : null;
+      if (!reusableResolvedPlayback) {
+        reusableResolvedPlaybackRef.current = null;
+      }
       const playbackLockKey = `${playbackInstanceIdRef.current}:${buildVodPlaybackLockKey(routeName, episode, kernelModeRef.current)}`;
+      clearVodPlaybackLock(playbackLockKey);
+      streamProbeCacheRef.current.clear();
       if (activePlaybackLockRef.current) {
         releaseVodPlaybackLock(
           activePlaybackLockRef.current.key,
@@ -1041,6 +904,7 @@ export function VodPlayer({
       const requestId = ++playRequestIdRef.current;
       setLoading(true);
       setError(null);
+      setActiveKernelDisplay(null);
       showPlaybackNotice('正在解析播放地址...');
       setPlaybackPosition(0);
       setPlaybackDuration(0);
@@ -1051,12 +915,24 @@ export function VodPlayer({
         `[vod] playback session start route=${routeName} episode=${episode.name} log_path=${mpvLogPath}`,
       );
 
-      let stream;
+      let stream: VodResolvedStream;
+      let streamKind: VodStreamKind = reusableResolvedPlayback?.streamKind ?? 'unknown';
+      if (reusableResolvedPlayback) {
+        stream = {
+          ...reusableResolvedPlayback.stream,
+          headers: reusableResolvedPlayback.stream.headers
+            ? { ...reusableResolvedPlayback.stream.headers }
+            : null,
+        };
+        termLog(
+          `[VodPlayer] reuse_resolved_stream route=${routeName} episode=${episode.name} kernel=${kernelModeRef.current}`,
+          'info',
+        );
+      } else {
       try {
         stream = await fetchEpisodePlayback(episode, routeName);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        const diagnostics = getVodPlaybackDiagnostics(error);
         if (requestId !== playRequestIdRef.current) {
           termLog(
             `[VodPlayer] stale playback_resolve_failed ignored route=${routeName} episode=${episode.name} reason=${reason}`,
@@ -1075,17 +951,9 @@ export function VodPlayer({
           routeName,
           episodeName: episode.name,
           reason,
-          diagnostics,
         });
         termLog(resolveFailLog, 'error');
         appendMpvTestLog(resolveFailLog.replace('[VodPlayer]', '[vod]'));
-        updatePlaybackDiagnosticsReport({
-          routeName,
-          episodeName: episode.name,
-          status: 'error',
-          reason,
-          diagnostics,
-        });
         setError(`解析播放地址失败：${reason}`);
         showPlaybackNotice(null);
         setLoading(false);
@@ -1097,6 +965,7 @@ export function VodPlayer({
           activePlaybackLockRef.current = null;
         }
         return;
+      }
       }
 
       if (requestId !== playRequestIdRef.current) {
@@ -1110,8 +979,9 @@ export function VodPlayer({
         return;
       }
 
-      let streamKind: VodStreamKind = 'unknown';
-      if (stream.skipProbe) {
+      if (reusableResolvedPlayback) {
+        streamKind = reusableResolvedPlayback.streamKind;
+      } else if (stream.skipProbe) {
         streamKind = inferVodStreamKind(stream.url);
         termLog(
           `[VodPlayer] stream_probe skipped reason=stream_marked_skip_probe infer_kind=${streamKind} final_url=${stream.url}`,
@@ -1146,8 +1016,17 @@ export function VodPlayer({
 
       const plannedStreamKind =
         streamKind !== 'unknown' ? streamKind : inferVodStreamKind(stream.url);
+      reusableResolvedPlaybackRef.current = {
+        key: episodePlaybackKey,
+        stream: {
+          ...stream,
+          headers: stream.headers ? { ...stream.headers } : null,
+        },
+        streamKind: plannedStreamKind,
+      };
       const kernelPlan = buildVodKernelPlan(kernelModeRef.current, {
         streamKind: plannedStreamKind,
+        preferProxy: Boolean(stream.preferProxy),
       });
       const resolveLog = buildPlaybackResolutionLog({
         routeName,
@@ -1160,14 +1039,6 @@ export function VodPlayer({
       termLog(resolveLog, 'info');
       appendMpvTestLog(resolveLog.replace('[VodPlayer]', '[vod]'));
       termLog(`[VodPlayer] kernel_plan=[${kernelPlan.join(',')}]`, 'info');
-      updatePlaybackDiagnosticsReport({
-        routeName,
-        episodeName: episode.name,
-        status: 'success',
-        resolvedBy: stream.resolvedBy,
-        finalUrl: stream.url,
-        diagnostics: getVodPlaybackDiagnostics(stream),
-      });
 
       let lastFailReason = '未知错误';
       try {
@@ -1193,6 +1064,7 @@ export function VodPlayer({
           if (requestId !== playRequestIdRef.current) return;
 
           if (result.ok) {
+            setActiveKernelDisplay(selectedKernel);
             termLog(`[VodPlayer] kernel_attempt success kernel=${selectedKernel} attempt=${ki + 1}/${kernelPlan.length} next_action=playing`, 'info');
             setError(null);
             showPlaybackNotice(null);
@@ -1232,11 +1104,11 @@ export function VodPlayer({
     [
       appendMpvTestLog,
       attemptPlayUrl,
+      buildEpisodePlaybackKey,
       fetchEpisodePlayback,
       probeResolvedStream,
       showPlaybackNotice,
       termLog,
-      updatePlaybackDiagnosticsReport,
     ],
   );
 
@@ -1360,14 +1232,24 @@ export function VodPlayer({
 
   const handleKernelChange = useCallback(
     (nextMode: VodKernelMode) => {
-      setKernelMode(nextMode);
-      kernelModeRef.current = nextMode;
-      clearSpiderPlayerPayloadCache();
+      const normalizedMode = nextMode === 'proxy' ? 'direct' : nextMode;
+      setKernelMode(normalizedMode);
+      kernelModeRef.current = normalizedMode;
       if (activeEpisode && activeRoute) {
-        void playEpisode(activeEpisode, activeRoute.sourceName);
+        const episodePlaybackKey = buildEpisodePlaybackKey(activeRoute.sourceName, activeEpisode);
+        const reusableResolvedPlayback =
+          reusableResolvedPlaybackRef.current?.key === episodePlaybackKey
+            ? reusableResolvedPlaybackRef.current
+            : null;
+        if (!reusableResolvedPlayback) {
+          clearSpiderPlayerPayloadCache();
+        }
+        void playEpisode(activeEpisode, activeRoute.sourceName, {
+          reusableResolvedPlayback,
+        });
       }
     },
-    [activeEpisode, activeRoute, playEpisode],
+    [activeEpisode, activeRoute, buildEpisodePlaybackKey, playEpisode],
   );
 
   const canSeek = playbackDuration > 0.1;
@@ -1545,6 +1427,11 @@ export function VodPlayer({
                 ))}
               </select>
 
+              <VodKernelStatusBadge
+                requestedMode={kernelMode}
+                activeKernel={activeKernelDisplay}
+              />
+
               {onClose && (
                 <button
                   onClick={onClose}
@@ -1686,11 +1573,6 @@ export function VodPlayer({
               </button>
             </div>
           )}
-
-          <VodPlaybackDiagnosticsPanel
-            report={playbackDiagnosticsReport}
-            loading={loading}
-          />
         </div>
       </div>
     </div>

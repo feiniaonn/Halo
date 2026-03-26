@@ -181,7 +181,11 @@ pub async fn probe_stream_kind(
         }
     }
 
-    let probe_url = result.final_url.as_deref().unwrap_or(&resolved.url).to_string();
+    let probe_url = result
+        .final_url
+        .as_deref()
+        .unwrap_or(&resolved.url)
+        .to_string();
     let should_fetch_full_hls_manifest = result.kind == "hls";
     let mut get_req = client.get(&probe_url);
     if !should_fetch_full_hls_manifest {
@@ -238,8 +242,7 @@ pub async fn probe_stream_kind(
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_hls_manifest_anomaly, detect_kind_from_content_type,
-        is_audio_only_content_type,
+        detect_hls_manifest_anomaly, detect_kind_from_content_type, is_audio_only_content_type,
     };
 
     #[test]

@@ -43,7 +43,7 @@ function SourceEditor({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        className="min-h-[100px] w-full resize-none rounded-xl border border-input bg-muted/30 px-4 py-3 font-mono text-sm outline-none transition-all placeholder:text-muted-foreground/50 focus:bg-background focus:ring-2 focus:ring-primary/50"
+        className="min-h-[100px] w-full resize-none rounded-xl border border-input bg-muted/30 px-4 py-3 font-mono text-sm outline-none transition-all placeholder:text-muted-foreground/50 focus:bg-background/80 backdrop-blur-xl focus:ring-2 focus:ring-primary/50"
         spellCheck={false}
       />
       <div className="flex items-center justify-end gap-2">

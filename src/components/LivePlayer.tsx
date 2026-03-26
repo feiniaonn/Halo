@@ -59,6 +59,13 @@ type PendingPlayRequest = {
     trigger: PlayTrigger;
     kernelPlanOverride: HlsKernel[] | null;
 };
+type PlayLineFn = (
+    index: number,
+    hlsKernelAttempt?: number,
+    recoverAttempt?: number,
+    trigger?: PlayTrigger,
+    kernelPlanOverride?: HlsKernel[] | null
+) => Promise<void>;
 type LineKernelHealthRecord = Record<HlsKernel, KernelHealthCell>;
 type LiveProxyMetrics = {
     segment_count: number;
@@ -154,7 +161,7 @@ export function LivePlayer({
     initialGroup,
     initialChannel,
     initialLineIndex,
-    initialKernelMode,
+    initialKernelMode: _initialKernelMode,
     onClose,
     onMpvActiveChange
 }: {
@@ -211,8 +218,8 @@ export function LivePlayer({
     const previousStreamKeyRef = useRef<string | null>(null);
     const manualLineLockUntilRef = useRef(0);
     const switchRateLimiterRef = useRef<SwitchRateLimiterState>(createSwitchRateLimiterState());
-    const [hlsKernelMode, setHlsKernelMode] = useState<HlsKernelMode>(initialKernelMode ?? "mpv");
-    const hlsKernelModeRef = useRef<HlsKernelMode>(initialKernelMode ?? "mpv");
+    const [hlsKernelMode, setHlsKernelMode] = useState<HlsKernelMode>("mpv");
+    const hlsKernelModeRef = useRef<HlsKernelMode>("mpv");
     const [bufferAheadSeconds, setBufferAheadSeconds] = useState(0);
     const [bufferFillPercent, setBufferFillPercent] = useState(0);
     const startupTargetRef = useRef(10);
@@ -251,6 +258,8 @@ export function LivePlayer({
         streamKey: string | null;
         attemptToken: number;
     } | null>(null);
+    const destroyPlayersRef = useRef<() => void>(() => void 0);
+    const playLineRef = useRef<PlayLineFn>(async () => void 0);
 
 
     useEffect(() => {
@@ -642,6 +651,70 @@ export function LivePlayer({
         return [...available, ...blocked];
     }, [getOrCreateKernelHealth, hasSensitiveHeaders]);
 
+    const isMpvIpcWarmupError = useCallback((message: string): boolean => {
+        return (
+            message.includes("Failed to open named pipe") ||
+            message.includes("IPC stream closed before receiving a command response")
+        );
+    }, []);
+
+    const waitForMpvIpcWarmup = useCallback(async (attempt: number) => {
+        await new Promise((resolve) => window.setTimeout(resolve, 180 * (attempt + 1)));
+    }, []);
+
+    const setMpvPropertyWithRetry = useCallback(async (
+        property: string,
+        value: string,
+        attemptId: number
+    ) => {
+        let lastError: unknown = null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+                if (!isMountedRef.current || attemptId !== attemptTokenRef.current) return;
+                await setMpvProperty(property, value, MPV_WINDOW_LABEL);
+                return;
+            } catch (error) {
+                lastError = error;
+                const message = error instanceof Error ? error.message : String(error);
+                if (attempt >= 2 || !isMpvIpcWarmupError(message) || !mpvInitializedRef.current) {
+                    throw error;
+                }
+                termLog(
+                    `[LivePlayer] mpv ipc warmup retry property=${property} attempt=${attempt + 1}`,
+                    "warn"
+                );
+                await waitForMpvIpcWarmup(attempt);
+            }
+        }
+        throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "unknown mpv property error"));
+    }, [isMpvIpcWarmupError, termLog, waitForMpvIpcWarmup]);
+
+    const runMpvCommandWithRetry = useCallback(async (
+        commandName: string,
+        args: unknown[],
+        attemptId: number
+    ) => {
+        let lastError: unknown = null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+                if (!isMountedRef.current || attemptId !== attemptTokenRef.current) return null;
+                return await mpvCommand(commandName, args, MPV_WINDOW_LABEL);
+            } catch (error) {
+                lastError = error;
+                const message = error instanceof Error ? error.message : String(error);
+                if (attempt >= 2 || !isMpvIpcWarmupError(message) || !mpvInitializedRef.current) {
+                    throw error;
+                }
+                termLog(
+                    `[LivePlayer] mpv ipc warmup retry command=${commandName} attempt=${attempt + 1}`,
+                    "warn"
+                );
+                await waitForMpvIpcWarmup(attempt);
+            }
+        }
+        throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "unknown mpv command error"));
+    }, [isMpvIpcWarmupError, termLog, waitForMpvIpcWarmup]);
+
     const clearStartupWaitTimer = useCallback(() => {
         if (waitForBufferTimerRef.current !== null) {
             window.clearInterval(waitForBufferTimerRef.current);
@@ -845,6 +918,10 @@ export function LivePlayer({
         setActiveKernelDisplay("idle");
         setLatency(null);
     }, [clearManifestWatchdog, clearStartupWaitTimer, setActiveKernelDisplay]);
+
+    useEffect(() => {
+        destroyPlayersRef.current = destroyPlayers;
+    }, [destroyPlayers]);
 
     const playLine = useCallback(async (
         index: number,
@@ -1186,16 +1263,19 @@ export function LivePlayer({
                     termLog("[LivePlayer] Initializing mpv kernel", "info");
 
                     const mpvArgs = [
-                        "--profile=low-latency",
                         "--cache=yes",
-                        "--cache-secs=20",
-                        "--demuxer-max-bytes=64MiB",
-                        "--demuxer-max-back-bytes=32MiB",
+                        "--cache-secs=30",
+                        "--demuxer-thread=yes",
+                        "--demuxer-readahead-secs=20",
+                        "--demuxer-max-bytes=128MiB",
+                        "--demuxer-max-back-bytes=64MiB",
                         "--hwdec=auto-safe",
+                        "--video-sync=display-resample",
+                        "--framedrop=no",
                         "--keep-open=yes",
                         "--force-window=yes",
                         "--background=color",
-                        "--background-color=#00000000",
+                        "--background-color=#000000",
                     ];
 
                     const mpvConfig: MpvConfig = {
@@ -1302,13 +1382,13 @@ export function LivePlayer({
                     try {
                         if (!isMountedRef.current || attemptId !== attemptTokenRef.current) return;
                         if (headerPairs.length > 0) {
-                            await setMpvProperty("http-header-fields", headerPairs.join(", "), MPV_WINDOW_LABEL);
+                            await setMpvPropertyWithRetry("http-header-fields", headerPairs.join(", "), attemptId);
                         }
                         if (referer) {
-                            await setMpvProperty("referrer", referer, MPV_WINDOW_LABEL);
+                            await setMpvPropertyWithRetry("referrer", referer, attemptId);
                         }
                         if (userAgent) {
-                            await setMpvProperty("user-agent", userAgent, MPV_WINDOW_LABEL);
+                            await setMpvPropertyWithRetry("user-agent", userAgent, attemptId);
                         }
                     } catch (e) {
                         termLog(
@@ -1319,7 +1399,7 @@ export function LivePlayer({
 
                     try {
                         if (!isMountedRef.current || attemptId !== attemptTokenRef.current) return;
-                        await mpvCommand("loadfile", [url, "replace"], MPV_WINDOW_LABEL);
+                        await runMpvCommandWithRetry("loadfile", [url, "replace"], attemptId);
                     } catch (e) {
                         const msg = e instanceof Error ? e.message : String(e);
                         noteKernelFailure(activeChannel, index, "mpv", "fatal");
@@ -1585,6 +1665,10 @@ export function LivePlayer({
         waitForStartupBufferAndPlay,
     ]);
 
+    useEffect(() => {
+        playLineRef.current = playLine;
+    }, [playLine]);
+
     // Handle Channel Change
     useEffect(() => {
         isMountedRef.current = true;
@@ -1599,13 +1683,13 @@ export function LivePlayer({
         setLineIndex(startupIndex);
         lineIndexRef.current = startupIndex;
         manualLineLockUntilRef.current = 0;
-        void playLine(startupIndex, 0, 0, "initial");
+        void playLineRef.current(startupIndex, 0, 0, "initial");
         return () => {
             isMountedRef.current = false;
             attemptTokenRef.current += 1;
-            destroyPlayers();
+            destroyPlayersRef.current();
         };
-    }, [activeChannel, destroyPlayers, playLine, resolveStartupLineIndex]);
+    }, [activeChannel, resolveStartupLineIndex]);
 
     useEffect(() => {
         const timer = window.setInterval(() => {
@@ -1847,9 +1931,10 @@ export function LivePlayer({
         };
     }, [activeChannel, applyAdaptiveStartupTargets]);
 
-    const handleKernelModeChange = (mode: HlsKernelMode) => {
-        hlsKernelModeRef.current = mode;
-        setHlsKernelMode(mode);
+    const handleKernelModeChange = (_mode: HlsKernelMode) => {
+        const nextMode: HlsKernelMode = "mpv";
+        hlsKernelModeRef.current = nextMode;
+        setHlsKernelMode(nextMode);
         setErrorInfo(null);
         void playLine(lineIndexRef.current, 0, 0, "manual");
     };
@@ -2195,14 +2280,15 @@ export function LivePlayer({
                             </select>
 
                             <select
-                                className="bg-zinc-900 border border-white/10 text-white rounded px-2 py-1 text-xs outline-none cursor-pointer hover:bg-zinc-800 transition-colors"
+                                className="bg-zinc-900 border border-white/10 text-white rounded px-2 py-1 text-xs outline-none transition-colors"
+                                disabled
                                 value={hlsKernelMode}
                                 onChange={(e) => handleKernelModeChange(e.target.value as HlsKernelMode)}
                                 title="播放内核"
                             >
-                                {KERNEL_MODE_OPTIONS.map((option) => (
-                                    <option key={option.value} value={option.value}>{option.label}</option>
-                                ))}
+                                <option value="mpv">
+                                    {KERNEL_MODE_OPTIONS.find((option) => option.value === "mpv")?.label ?? "MPV"}
+                                </option>
                             </select>
 
                             <button onClick={handleFullscreen} className="p-1.5 ml-1 rounded hover:bg-white/10 text-zinc-300 transition-colors" title="全屏">

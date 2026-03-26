@@ -17,6 +17,14 @@ type LiveLaunchState = {
   nonce: number;
 };
 
+function isSameLaunchPayload(
+  left: LivePlayerLaunchPayload | null | undefined,
+  right: LivePlayerLaunchPayload | null | undefined,
+): boolean {
+  if (!left || !right) return false;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function createLaunchState(payload: LivePlayerLaunchPayload): LiveLaunchState {
   return {
     payload,
@@ -54,7 +62,13 @@ export function LivePlayerWindowPage() {
     void listen<LivePlayerLaunchPayload>(EVENT_LIVE_PLAYER_LAUNCH, ({ payload }) => {
       if (!payload) return;
       console.log("[Live Page] Received push launch payload:", payload);
-      setLaunch(createLaunchState(payload));
+      setLaunch((current) => {
+        if (isSameLaunchPayload(current?.payload, payload)) {
+          console.log("[Live Page] Ignoring duplicate launch payload.");
+          return current;
+        }
+        return createLaunchState(payload);
+      });
       void getCurrentWindow().setFocus().catch(() => void 0);
     })
       .then((off) => {

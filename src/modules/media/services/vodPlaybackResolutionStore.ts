@@ -3,6 +3,7 @@ import {
   savePersistedVodPlaybackResolutionCache,
 } from "@/modules/media/services/vodPersistentCache";
 import {
+  deleteVodPlaybackResolutionCache,
   materializeResolvedStream,
   readVodPlaybackResolutionCache,
   snapshotResolvedStream,
@@ -10,6 +11,7 @@ import {
   writeVodPlaybackResolutionCache,
   type VodResolvedStreamLike,
 } from "@/modules/media/services/vodPlaybackResolutionCache";
+import { isVolatileWrappedMediaUrl } from "@/modules/media/services/vodPlaybackPayloadUtils";
 
 export interface VodPlaybackResolutionStorageContext {
   sourceKey?: string;
@@ -38,6 +40,10 @@ export async function readStoredVodPlaybackResolution(
   if (!persisted?.stream) {
     return null;
   }
+  if (isVolatileWrappedMediaUrl(persisted.stream.url)) {
+    deleteVodPlaybackResolutionCache(cacheKey);
+    return null;
+  }
 
   const stream = materializeResolvedStream(persisted.stream);
   writeVodPlaybackResolutionCache(cacheKey, stream);
@@ -56,6 +62,10 @@ export async function resolveWithStoredVodPlaybackResolution<T extends VodResolv
 
   return withVodPlaybackResolutionCache(cacheKey, async () => {
     const stream = await resolve();
+    if (isVolatileWrappedMediaUrl(stream.url)) {
+      deleteVodPlaybackResolutionCache(cacheKey);
+      return stream;
+    }
     const sourceKey = context.sourceKey?.trim() ?? "";
     if (sourceKey) {
       await savePersistedVodPlaybackResolutionCache(

@@ -355,11 +355,9 @@ mod tests {
 
         assert_eq!(cancelled, 1);
         assert!(result.is_err());
-        assert!(
-            result
-                .err()
-                .unwrap_or_default()
-                .contains("spider task cancelled")
-        );
+        assert!(result
+            .err()
+            .unwrap_or_default()
+            .contains("spider task cancelled"));
     }
 }

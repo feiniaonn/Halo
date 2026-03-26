@@ -76,6 +76,7 @@ export type MusicSettings = {
     previous: string | null;
     play_pause: string | null;
     next: string | null;
+    restore_mini_home: string | null;
   };
   music_lyrics_enabled: boolean;
   music_lyrics_show_translation: boolean;
@@ -107,9 +108,16 @@ export type LyricLine = {
   text: string;
   translation?: string | null;
   romanized?: string | null;
+  words?: LyricWord[];
 };
 
 export type MusicLyricsLine = LyricLine;
+
+export type LyricWord = {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+};
 
 export type MusicLyricsCandidate = {
   id: string;

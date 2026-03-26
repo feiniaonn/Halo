@@ -46,7 +46,7 @@ export function NowPlayingBlock({
               strokeDasharray="301.6"
               strokeDashoffset={301.6 - (301.6 * progress)}
               strokeLinecap="round"
-              className="text-primary transition-all duration-500 ease-linear drop-shadow-[0_0_3px_rgba(var(--primary),0.5)]"
+              className="text-primary will-change-[stroke-dashoffset] drop-shadow-[0_0_3px_rgba(var(--primary),0.5)]"
             />
           </svg>
         )}

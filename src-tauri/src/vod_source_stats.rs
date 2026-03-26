@@ -252,13 +252,16 @@ pub fn list_vod_site_rankings(
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
-        .query_map(params![source_key, normalized_repo_url, limit.max(1).min(100)], |row| {
-            Ok(VodSiteRankingRecord {
-                site_key: row.get(0)?,
-                success_count: row.get(1)?,
-                last_success_at: row.get(2)?,
-            })
-        })
+        .query_map(
+            params![source_key, normalized_repo_url, limit.max(1).min(100)],
+            |row| {
+                Ok(VodSiteRankingRecord {
+                    site_key: row.get(0)?,
+                    success_count: row.get(1)?,
+                    last_success_at: row.get(2)?,
+                })
+            },
+        )
         .map_err(|e| e.to_string())?;
 
     let mut out = Vec::new();
@@ -769,8 +772,11 @@ pub fn load_vod_detail_cache(
     }
 
     let conn = open_connection()?;
-    conn.execute("DELETE FROM vod_detail_cache WHERE expires_at <= ?1", params![now_ms])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM vod_detail_cache WHERE expires_at <= ?1",
+        params![now_ms],
+    )
+    .map_err(|e| e.to_string())?;
 
     let mut stmt = conn
         .prepare(

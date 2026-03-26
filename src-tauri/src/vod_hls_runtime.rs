@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
 use reqwest::Client;
 use url::Url;
 
@@ -300,6 +301,35 @@ fn looks_like_image_manifest_uri(line: &str) -> bool {
         .any(|token| lower.contains(token))
 }
 
+fn looks_like_html_wrapper_line(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    lower.starts_with("<!doctype html")
+        || lower.starts_with("<html")
+        || lower.starts_with("</html")
+        || lower.starts_with("<body")
+        || lower.starts_with("</body")
+        || lower.starts_with("<head")
+        || lower.starts_with("</head")
+        || lower.starts_with("<pre")
+        || lower.starts_with("</pre")
+        || lower.starts_with("<script")
+        || lower.starts_with("</script")
+        || lower.starts_with("<div")
+        || lower.starts_with("</div")
+}
+
+fn extract_manifest_payload(content: &str) -> String {
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    if let Some(index) = normalized.find("#EXTM3U") {
+        normalized[index..].to_string()
+    } else {
+        normalized
+    }
+}
+
 fn detect_manifest_payload_anomaly(manifest: &str) -> Option<&'static str> {
     let mut media_lines = 0usize;
     let mut image_lines = 0usize;
@@ -310,20 +340,20 @@ fn detect_manifest_payload_anomaly(manifest: &str) -> Option<&'static str> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+        if looks_like_html_wrapper_line(line) {
+            html_lines += 1;
+            continue;
+        }
         media_lines += 1;
         if looks_like_image_manifest_uri(line) {
             image_lines += 1;
-        }
-        let lower = line.to_ascii_lowercase();
-        if lower.starts_with("<!doctype html") || lower.starts_with("<html") {
-            html_lines += 1;
         }
     }
 
     if media_lines > 0 && image_lines == media_lines {
         return Some("manifest payload only contains image segments");
     }
-    if media_lines > 0 && html_lines == media_lines {
+    if media_lines == 0 && html_lines > 0 {
         return Some("manifest payload only contains html bodies");
     }
     None
@@ -335,6 +365,9 @@ fn rewrite_manifest_content(manifest: &str, base_url: &Url) -> String {
         let trimmed = raw_line.trim();
         if trimmed.is_empty() {
             rewritten.push('\n');
+            continue;
+        }
+        if looks_like_html_wrapper_line(trimmed) {
             continue;
         }
 
@@ -361,54 +394,47 @@ fn rewrite_manifest_content(manifest: &str, base_url: &Url) -> String {
 }
 
 async fn fetch_manifest_text_once(
-    client: &Client,
+    _client: &Client,
     url: &str,
     headers: &Option<HashMap<String, String>>,
-    force_close: bool,
-    force_identity_encoding: bool,
-    add_range: bool,
+    _force_close: bool,
+    _force_identity_encoding: bool,
+    _add_range: bool,
 ) -> Result<(Url, String), String> {
-    let resolved = crate::media_cmds::resolve_media_request(url, headers.clone());
-    let request_client = if force_close
-        || force_identity_encoding
-        || add_range
-        || resolved.matched_proxy_rule.is_some()
-    {
-        crate::media_cmds::build_rescue_transport_client(&resolved, true, Duration::from_secs(15))?
-    } else {
-        crate::media_cmds::build_transport_client(&resolved, true, Duration::from_secs(15))
-            .unwrap_or_else(|_| client.clone())
-    };
-
-    let mut builder = apply_hls_like_headers(
-        request_client.get(&resolved.url),
-        force_close,
-        force_identity_encoding,
-    );
-    if add_range {
-        builder = builder.header("Range", "bytes=0-");
-    }
-    builder = crate::media_cmds::apply_request_headers(builder, &resolved.headers);
-
-    let resp = builder
-        .send()
-        .await
-        .map_err(|err| format!("manifest request failed for {}: {err}", resolved.url))?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+    let response = crate::media_cmds::execute_media_transport_request(
+        crate::media_cmds::MediaTransportRequest {
+            url: url.to_string(),
+            options: crate::media_cmds::MediaTransportOptions {
+                timeout: Some(Duration::from_secs(15).as_millis() as u64),
+                headers: headers
+                    .as_ref()
+                    .and_then(|value| serde_json::to_value(value).ok()),
+                ..Default::default()
+            },
+            request_id: Some("vod-relay-manifest".to_string()),
+            source: Some("vod-relay-manifest".to_string()),
+        },
+    )
+    .await?;
+    if !response.ok {
+        let body = base64::engine::general_purpose::STANDARD
+            .decode(response.body_base64.as_bytes())
+            .ok()
+            .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+            .unwrap_or_default();
         let snippet: String = body.chars().take(240).collect();
         return Err(format!(
             "manifest fetch failed: {} for {}, body: {}",
-            status, resolved.url, snippet
+            response.status, response.url, snippet
         ));
     }
 
-    let final_url = resp.url().clone();
-    let content = resp
-        .text()
-        .await
-        .map_err(|err| format!("manifest read failed for {}: {err}", final_url))?;
+    let final_url = Url::parse(&response.url)
+        .map_err(|err| format!("manifest final url parse failed: {err}"))?;
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(response.body_base64.as_bytes())
+        .map_err(|err| format!("manifest decode failed for {}: {err}", response.url))?;
+    let content = String::from_utf8_lossy(&body).to_string();
     Ok((final_url, content))
 }
 
@@ -453,9 +479,12 @@ async fn fetch_media_manifest(
     for _ in 0..4 {
         let (final_url, content) =
             fetch_manifest_text_with_retry(&client, &rescue_client, &current_url, headers).await?;
-        let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+        let normalized = extract_manifest_payload(&content);
         if !normalized.trim_start().starts_with("#EXTM3U") {
-            return Err(format!("manifest response is not m3u8 for {current_url}"));
+            let preview = normalized.lines().take(8).collect::<Vec<_>>().join("\n");
+            return Err(format!(
+                "manifest response is not m3u8 for {current_url}: {preview}"
+            ));
         }
         if let Some(anomaly) = detect_manifest_payload_anomaly(&normalized) {
             return Err(format!(
@@ -689,7 +718,7 @@ pub(crate) async fn serve_segment(
                 anomaly, source_url
             ));
         }
-        
+
         // Strip image headers from TS segments if present
         let cleaned_bytes = strip_image_header(response.bytes);
 
@@ -732,7 +761,8 @@ pub(crate) fn release_session(session_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_manifest_payload_anomaly, rewrite_manifest_for_local, rewrite_tag_uri_to_local,
+        detect_manifest_payload_anomaly, extract_manifest_payload, rewrite_manifest_content,
+        rewrite_manifest_for_local, rewrite_tag_uri_to_local,
     };
 
     #[test]
@@ -762,5 +792,24 @@ mod tests {
             detect_manifest_payload_anomaly(manifest),
             Some("manifest payload only contains image segments")
         );
+    }
+
+    #[test]
+    fn strips_html_wrapper_lines_from_manifest() {
+        let manifest = "#EXTM3U\n<pre>\n#EXTINF:2.7,\nsegment-1.ts\n</pre>\n</body>\n</html>\n";
+        let base_url = url::Url::parse("http://wrapper.example.com/live/index.m3u8").unwrap();
+        let rewritten = rewrite_manifest_content(manifest, &base_url);
+        assert!(rewritten.contains("#EXTM3U"));
+        assert!(rewritten.contains("http://wrapper.example.com/live/segment-1.ts"));
+        assert!(!rewritten.contains("<pre>"));
+        assert!(!rewritten.contains("</pre>"));
+        assert!(!rewritten.contains("</html>"));
+    }
+
+    #[test]
+    fn extract_manifest_payload_skips_wrapper_prefix() {
+        let payload = "<pre>\n#EXTM3U\n#EXTINF:2.7,\nsegment-1.ts\n</pre>\n";
+        let normalized = extract_manifest_payload(payload);
+        assert!(normalized.starts_with("#EXTM3U"));
     }
 }

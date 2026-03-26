@@ -304,20 +304,26 @@ async fn spawn_daemon_process(app: &AppHandle) -> Result<Arc<SpiderDaemonProcess
                 }
                 let output = if next_line_is_debug_result {
                     next_line_is_debug_result = false;
-                    format!("SPIDER_DEBUG: result [{}]", crate::spider_cmds_exec::summarize_daemon_stderr_payload(trimmed))
+                    format!(
+                        "SPIDER_DEBUG: result [{}]",
+                        crate::spider_cmds_exec::summarize_daemon_stderr_payload(trimmed)
+                    )
                 } else if trimmed == "SPIDER_DEBUG: result" {
                     next_line_is_debug_result = true;
                     continue;
-                } else if let Some(payload) = trimmed.strip_prefix("DEBUG: invokeMethod result value: [").and_then(|s| s.strip_suffix(']')) {
-                    format!("DEBUG: invokeMethod result value: [{}]", crate::spider_cmds_exec::summarize_daemon_stderr_payload(payload))
+                } else if let Some(payload) = trimmed
+                    .strip_prefix("DEBUG: invokeMethod result value: [")
+                    .and_then(|s| s.strip_suffix(']'))
+                {
+                    format!(
+                        "DEBUG: invokeMethod result value: [{}]",
+                        crate::spider_cmds_exec::summarize_daemon_stderr_payload(payload)
+                    )
                 } else {
                     trimmed.to_string()
                 };
                 eprintln!("[SpiderDaemon:Log] {}", output);
-                crate::spider_cmds::append_spider_debug_log(&format!(
-                    "[SpiderDaemon] {}",
-                    output
-                ));
+                crate::spider_cmds::append_spider_debug_log(&format!("[SpiderDaemon] {}", output));
             }
         });
     }
@@ -432,12 +438,10 @@ async fn send_shutdown_command(process: &Arc<SpiderDaemonProcess>) -> Result<(),
 
 fn parse_daemon_response(envelope: DaemonEnvelope) -> Result<DaemonCallResponse, String> {
     if !envelope.ok {
-        return Err(
-            envelope
-                .error
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "spider daemon returned an unknown error".to_string()),
-        );
+        return Err(envelope
+            .error
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "spider daemon returned an unknown error".to_string()));
     }
 
     let class_name = envelope
@@ -468,7 +472,10 @@ fn parse_daemon_response(envelope: DaemonEnvelope) -> Result<DaemonCallResponse,
         Some(value) => value.to_string(),
     };
 
-    Ok(DaemonCallResponse { class_name, payload })
+    Ok(DaemonCallResponse {
+        class_name,
+        payload,
+    })
 }
 
 pub(crate) async fn daemon_call(
@@ -493,12 +500,8 @@ pub(crate) async fn daemon_call(
     });
     let payload_text = payload.to_string();
 
-    if let Err(err) = write_daemon_message(
-        &process,
-        &payload_text,
-        "write spider daemon stdin failed",
-    )
-    .await
+    if let Err(err) =
+        write_daemon_message(&process, &payload_text, "write spider daemon stdin failed").await
     {
         remove_pending_request(&process, request_id).await;
         request_guard.disarm();

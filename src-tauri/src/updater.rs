@@ -139,8 +139,8 @@ fn build_official_updater(
     endpoint: &str,
     timeout: Duration,
 ) -> Result<tauri_plugin_updater::Updater, String> {
-    let parsed = Url::parse(endpoint.trim())
-        .map_err(|e| format!("Updater endpoint is invalid: {e}"))?;
+    let parsed =
+        Url::parse(endpoint.trim()).map_err(|e| format!("Updater endpoint is invalid: {e}"))?;
 
     app.updater_builder()
         .endpoints(vec![parsed])
@@ -264,7 +264,12 @@ pub async fn updater_probe_endpoint(
     let target = endpoint
         .filter(|value| !value.trim().is_empty())
         .map(|value| normalize_endpoint_input(&value))
-        .or_else(|| config_store().lock().ok().map(|value| value.endpoint.clone()))
+        .or_else(|| {
+            config_store()
+                .lock()
+                .ok()
+                .map(|value| value.endpoint.clone())
+        })
         .unwrap_or_default();
 
     if target.trim().is_empty() {

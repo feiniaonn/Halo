@@ -1,6 +1,6 @@
 import type { VodKernelMode } from '../types/vodWindow.types';
 
-export type VodKernelDisplay = 'mpv' | 'hls-proxy' | 'hls-direct' | 'potplayer';
+export type VodKernelDisplay = 'mpv' | 'hls-direct' | 'potplayer';
 export type VodKernelPlanStreamKind =
   | 'unknown'
   | 'hls'
@@ -14,41 +14,36 @@ export const VOD_KERNEL_MAX_ATTEMPTS = 3;
 export const VOD_KERNEL_LABELS: Record<VodKernelDisplay, string> = {
   mpv: 'MPV 内核',
   'hls-direct': 'HLS 直连',
-  'hls-proxy': 'HLS 代理',
   potplayer: 'PotPlayer',
 };
 
 export function toVodKernelDisplay(mode: VodKernelMode): VodKernelDisplay {
-  if (mode === 'proxy') return 'hls-proxy';
-  if (mode === 'direct') return 'hls-direct';
   if (mode === 'potplayer') return 'potplayer';
-  return 'mpv';
+  if (mode === 'mpv') return 'mpv';
+  return 'hls-direct';
 }
 
 export function fromVodKernelDisplay(display: VodKernelDisplay): VodKernelMode {
-  if (display === 'hls-proxy') return 'proxy';
-  if (display === 'hls-direct') return 'direct';
   if (display === 'potplayer') return 'potplayer';
-  return 'mpv';
+  if (display === 'mpv') return 'mpv';
+  return 'direct';
 }
 
 function buildHlsKernelPlan(startDisplay: VodKernelDisplay): VodKernelDisplay[] {
   switch (startDisplay) {
-    case 'hls-direct':
-      return ['hls-direct', 'hls-proxy', 'mpv'];
-    case 'hls-proxy':
-      return ['hls-proxy', 'mpv', 'hls-direct'];
     case 'potplayer':
-      return ['potplayer', 'mpv', 'hls-proxy'];
+      return ['potplayer'];
     case 'mpv':
+      return ['mpv', 'hls-direct'];
+    case 'hls-direct':
     default:
-      return ['mpv', 'hls-proxy', 'hls-direct'];
+      return ['hls-direct', 'mpv'];
   }
 }
 
 export function buildVodKernelPlan(
   startMode: VodKernelMode,
-  options?: { streamKind?: VodKernelPlanStreamKind | null },
+  options?: { streamKind?: VodKernelPlanStreamKind | null; preferProxy?: boolean },
 ): VodKernelDisplay[] {
   const startDisplay = toVodKernelDisplay(startMode);
   if (options?.streamKind !== 'hls') {

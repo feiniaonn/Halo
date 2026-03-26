@@ -1,124 +1,147 @@
 import {
-    Sidebar,
-    SidebarContent,
-    SidebarFooter,
-    SidebarHeader,
-    SidebarMenu,
-    SidebarMenuButton,
-    SidebarMenuItem,
-    useSidebar,
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 import appBrandIcon from "@/assets/halo-app-icon.png";
-import { LayoutDashboard, Music, Film, Settings } from "lucide-react";
+import { Film, LayoutDashboard, Music, Settings, Activity } from "lucide-react";
 
-type Page = "dashboard" | "media" | "music" | "settings";
+type Page = "dashboard" | "media" | "music" | "island" | "settings";
 
 const navItems = [
-    { id: "dashboard", label: "仪表盘", icon: LayoutDashboard },
-    { id: "music", label: "音乐", icon: Music },
-    { id: "media", label: "点播", icon: Film },
-    { id: "settings", label: "设置", icon: Settings },
+  { id: "dashboard", label: "仪表盘", icon: LayoutDashboard },
+  { id: "music", label: "音乐库", icon: Music },
+  { id: "media", label: "点播中心", icon: Film },
+  { id: "island", label: "环岛", icon: Activity },
+  { id: "settings", label: "系统设置", icon: Settings },
 ] as const;
 
 export function AppSidebar({
-    currentPage,
-    onNavigate,
-    hasUpdate,
+  currentPage,
+  onNavigate,
+  hasUpdate,
 }: {
-    currentPage?: Page;
-    onNavigate?: (page: Page) => void;
-    hasUpdate?: boolean;
+  currentPage?: Page;
+  onNavigate?: (page: Page) => void;
+  hasUpdate?: boolean;
 }) {
-    const { state, toggleSidebar } = useSidebar();
-    const isCollapsed = state === "collapsed";
+  const { state, toggleSidebar } = useSidebar();
+  const isCollapsed = state === "collapsed";
 
-    return (
-        <Sidebar
-            collapsible="icon"
-            className="z-10 bg-transparent shadow-none border-none"
-        >
-            <SidebarHeader className={cn(
-                "h-[72px] flex items-center justify-center transition-all duration-300",
-                isCollapsed ? "px-1" : "px-4"
-            )}>
-                {isCollapsed ? (
-                    <button
-                        type="button"
-                        onClick={toggleSidebar}
-                        className="size-9 rounded-full bg-primary/20 flex items-center justify-center shrink-0 hover:bg-primary/30 transition-all cursor-pointer outline-none active:scale-95"
-                        title="展开侧边栏"
-                    >
-                        <img
-                            src={appBrandIcon}
-                            alt="Halo"
-                            className="size-7 rounded-full object-cover"
-                            draggable={false}
-                        />
-                    </button>
-                ) : (
-                    <div className="flex w-full items-center justify-between">
-                        <div className="flex items-center gap-3">
-                            <div className="size-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                                <img
-                                    src={appBrandIcon}
-                                    alt="Halo"
-                                    className="size-6 rounded-full object-cover"
-                                    draggable={false}
-                                />
-                            </div>
-                            <span className="text-xl font-bold tracking-tight text-foreground">Halo</span>
-                        </div>
-                        <button
-                            type="button"
-                            onClick={toggleSidebar}
-                            className="flex size-7 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 transition-colors outline-none cursor-pointer"
-                            title="收起侧边栏"
-                        >
-                            <svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                                <line x1="9" y1="3" x2="9" y2="21" />
-                            </svg>
-                        </button>
-                    </div>
-                )}
-            </SidebarHeader>
+  return (
+    <Sidebar collapsible="icon" className="z-10 border-none bg-transparent shadow-none">
+      <SidebarHeader
+        className={cn(
+          "flex items-center justify-center pt-8 transition-all duration-300",
+          isCollapsed ? "px-0" : "px-0",
+        )}
+      >
+        {isCollapsed ? (
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            title="展开侧栏"
+            aria-label="展开侧栏"
+            aria-expanded={false}
+            className="halo-interactive halo-focusable flex size-10 mt-1 items-center justify-center rounded-lg border border-transparent bg-transparent hover:bg-muted/50 transition-colors"
+          >
+            <img src={appBrandIcon} alt="Halo" className="size-6 rounded-md object-cover opacity-80" draggable={false} />
+          </button>
+        ) : (
+          <div className="flex w-full items-center justify-between px-3 py-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-card border border-border shadow-sm">
+                <img
+                  src={appBrandIcon}
+                  alt="Halo"
+                  className="size-5 rounded object-cover"
+                  draggable={false}
+                />
+              </div>
+              <div className="min-w-0">
+                <div className="truncate text-[16px] font-semibold tracking-tight text-foreground">Halo</div>
+              </div>
+            </div>
 
-            <SidebarContent className={cn("pt-4 transition-all duration-300", isCollapsed ? "px-1" : "px-2")}>
-                <SidebarMenu className="gap-2">
-                    {navItems.map((item) => (
-                        <SidebarMenuItem key={item.id}>
-                            <SidebarMenuButton
-                                onClick={() => onNavigate?.(item.id)}
-                                isActive={currentPage === item.id}
-                                tooltip={item.label}
-                                className={cn(
-                                    "rounded-xl relative overflow-hidden transition-all duration-300",
-                                    isCollapsed ? "py-6 px-0 justify-center size-10! mx-auto" : "py-6 px-4",
-                                    currentPage === item.id
-                                        ? "bg-white/20 dark:bg-black/20 text-foreground shadow-sm hover:bg-white/20 dark:hover:bg-black/20"
-                                        : "text-muted-foreground hover:text-foreground hover:bg-white/10 dark:hover:bg-black/10"
-                                )}
-                            >
-                                <div className={cn("absolute inset-0 bg-gradient-to-r from-primary/10 to-transparent opacity-0 transition-opacity duration-300", currentPage === item.id && "opacity-100")} />
-                                <item.icon className={cn("shrink-0 relative z-10", isCollapsed ? "size-6" : "size-5")} />
-                                {!isCollapsed && (
-                                    <span className="flex min-w-0 flex-1 items-center justify-between gap-2 relative z-10 text-sm font-medium">
-                                        <span className="truncate">{item.label}</span>
-                                        {item.id === "settings" && hasUpdate && (
-                                            <span className="size-2 shrink-0 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
-                                        )}
-                                    </span>
-                                )}
-                                {isCollapsed && item.id === "settings" && hasUpdate && (
-                                    <span className="absolute top-3 right-3 h-2 w-2 shrink-0 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
-                                )}
-                            </SidebarMenuButton>
-                        </SidebarMenuItem>
-                    ))}
-                </SidebarMenu>
-            </SidebarContent>
-            <SidebarFooter />
-        </Sidebar>
-    );
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              title="收起侧栏"
+              aria-label="收起侧栏"
+              aria-expanded={true}
+              className="halo-interactive halo-focusable flex size-8 items-center justify-center rounded-[calc(var(--radius-lg)-6px)] border border-transparent bg-transparent text-muted-foreground/40 hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-all"
+            >
+              <svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                <path d="M15 5l-6 7 6 7" />
+              </svg>
+            </button>
+          </div>
+        )}
+      </SidebarHeader>
+
+      <SidebarContent className={cn("px-4 transition-all duration-300 mt-6", isCollapsed && "px-0")}>
+
+          <SidebarMenu className="gap-5">
+            {navItems.map((item) => {
+              const active = currentPage === item.id;
+              return (
+                <SidebarMenuItem key={item.id}>
+                  <SidebarMenuButton
+                    onClick={() => onNavigate?.(item.id)}
+                    isActive={active}
+                    tooltip={item.label}
+                    className={cn(
+                      "halo-interactive relative overflow-hidden transition-all duration-200",
+                      "rounded-lg px-4 py-3.5",
+                      isCollapsed && "mx-auto size-10! justify-center p-0!",
+                      active
+                        ? "bg-muted text-foreground shadow-sm"
+                        : "bg-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                    )}
+                  >
+
+                    <item.icon className={cn("relative z-10 shrink-0", isCollapsed ? "size-5" : "size-4.5")} />
+
+                    {!isCollapsed && (
+                      <span className="relative z-10 flex min-w-0 flex-1 items-center justify-between gap-3">
+                        <span className="block truncate text-[13px] font-medium tracking-wide">
+                          {item.label}
+                        </span>
+                        {item.id === "settings" && hasUpdate ? (
+                          <span className="size-2 rounded-full bg-amber-300 shadow-[0_0_10px_rgba(255,183,88,0.9)]" />
+                        ) : null}
+                      </span>
+                    )}
+
+                    {isCollapsed && item.id === "settings" && hasUpdate && (
+                      <span className="absolute top-2 right-2 size-2 rounded-full bg-amber-300 shadow-[0_0_10px_rgba(255,183,88,0.9)]" />
+                    )}
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              );
+            })}
+          </SidebarMenu>
+      </SidebarContent>
+
+      <SidebarFooter className={cn("px-0 pb-3", isCollapsed && "hidden")}>
+        <div className="mt-4 flex flex-col items-center justify-center gap-0.5 opacity-30 transition-opacity hover:opacity-100">
+          <span className="text-[9px] font-semibold tracking-[0.2em] text-muted-foreground uppercase">
+            Created By
+          </span>
+          <a rel="noreferrer" className="text-xs font-bold tracking-widest text-foreground cursor-default">
+            DEERFLOW
+          </a>
+        </div>
+      </SidebarFooter>
+    </Sidebar>
+  );
 }
+
+
+

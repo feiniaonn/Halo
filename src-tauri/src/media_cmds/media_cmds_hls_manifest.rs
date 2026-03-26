@@ -1,12 +1,12 @@
+use base64::Engine;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::time::Duration;
 use url::Url;
 
-use super::super::{apply_request_headers, resolve_media_request};
+use super::super::{execute_media_transport_request, MediaTransportOptions, MediaTransportRequest};
 use super::{
-    apply_hls_like_headers, build_rescue_client, build_rescue_transport_client,
-    build_transport_client, filter_media_manifest_content, matches_host_pattern, retry_backoff_ms,
+    build_rescue_client, filter_media_manifest_content, matches_host_pattern, retry_backoff_ms,
     should_retry_fetch_error, update_live_metrics_on_manifest_status, update_live_metrics_on_retry,
     TvBoxPlaybackRuleInput, MANIFEST_FETCH_MAX_ATTEMPTS,
 };
@@ -81,12 +81,44 @@ fn extract_single_variant(manifest: &str) -> Option<String> {
     }
 }
 
+fn looks_like_html_wrapper_line(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    lower.starts_with("<!doctype html")
+        || lower.starts_with("<html")
+        || lower.starts_with("</html")
+        || lower.starts_with("<body")
+        || lower.starts_with("</body")
+        || lower.starts_with("<head")
+        || lower.starts_with("</head")
+        || lower.starts_with("<pre")
+        || lower.starts_with("</pre")
+        || lower.starts_with("<script")
+        || lower.starts_with("</script")
+        || lower.starts_with("<div")
+        || lower.starts_with("</div")
+}
+
+fn extract_manifest_payload(content: &str) -> String {
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    if let Some(index) = normalized.find("#EXTM3U") {
+        normalized[index..].to_string()
+    } else {
+        normalized
+    }
+}
+
 fn rewrite_manifest_content(manifest: &str, base_url: &Url) -> String {
     let mut rewritten = String::new();
     for raw_line in manifest.lines() {
         let trimmed = raw_line.trim();
         if trimmed.is_empty() {
             rewritten.push('\n');
+            continue;
+        }
+        if looks_like_html_wrapper_line(trimmed) {
             continue;
         }
 
@@ -144,55 +176,49 @@ fn apply_manifest_regex_rules(
 }
 
 async fn fetch_manifest_text_once(
-    client: &Client,
+    _client: &Client,
     url: &str,
     headers: &Option<HashMap<String, String>>,
-    force_close: bool,
-    force_identity_encoding: bool,
-    add_range: bool,
+    _force_close: bool,
+    _force_identity_encoding: bool,
+    _add_range: bool,
 ) -> Result<(Url, String), String> {
-    let resolved = resolve_media_request(url, headers.clone());
-    let request_client = if force_close
-        || force_identity_encoding
-        || add_range
-        || resolved.matched_proxy_rule.is_some()
-    {
-        build_rescue_transport_client(&resolved, true, Duration::from_secs(15))?
-    } else {
-        build_transport_client(&resolved, true, Duration::from_secs(15))
-            .unwrap_or_else(|_| client.clone())
-    };
-    let mut builder = apply_hls_like_headers(
-        request_client.get(&resolved.url),
-        &resolved.url,
-        force_close,
-        force_identity_encoding,
-    );
-    if add_range {
-        builder = builder.header("Range", "bytes=0-");
-    }
-    builder = apply_request_headers(builder, &resolved.headers);
+    let response = execute_media_transport_request(MediaTransportRequest {
+        url: url.to_string(),
+        options: MediaTransportOptions {
+            timeout: Some(Duration::from_secs(15).as_millis() as u64),
+            headers: headers
+                .as_ref()
+                .and_then(|value| serde_json::to_value(value).ok()),
+            ..Default::default()
+        },
+        request_id: Some("hls-manifest".to_string()),
+        source: Some("hls-manifest".to_string()),
+    })
+    .await?;
 
-    let resp = builder
-        .send()
-        .await
-        .map_err(|e| format!("Manifest request failed for {}: {}", resolved.url, e))?;
-    if !resp.status().is_success() {
-        let status = resp.status();
+    if !response.ok {
+        let status = reqwest::StatusCode::from_u16(response.status)
+            .unwrap_or(reqwest::StatusCode::BAD_GATEWAY);
         update_live_metrics_on_manifest_status(status);
-        let body = resp.text().await.unwrap_or_default();
+        let body = base64::engine::general_purpose::STANDARD
+            .decode(response.body_base64.as_bytes())
+            .ok()
+            .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+            .unwrap_or_default();
         let snippet: String = body.chars().take(240).collect();
         return Err(format!(
             "Manifest fetch failed: {} for {}, body: {}",
-            status, resolved.url, snippet
+            response.status, response.url, snippet
         ));
     }
 
-    let final_url = resp.url().clone();
-    let content = resp
-        .text()
-        .await
-        .map_err(|e| format!("Manifest read failed for {}: {}", url, e))?;
+    let final_url =
+        Url::parse(&response.url).map_err(|e| format!("Manifest final url parse failed: {e}"))?;
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(response.body_base64.as_bytes())
+        .map_err(|e| format!("Manifest decode failed for {}: {}", response.url, e))?;
+    let content = String::from_utf8_lossy(&body).to_string();
     Ok((final_url, content))
 }
 
@@ -251,10 +277,14 @@ pub(super) async fn fetch_and_rewrite_manifest(
     for _ in 0..4 {
         let (final_url, content) =
             fetch_manifest_text_with_retry(client, &rescue_client, &current_url, headers).await?;
-        let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+        let normalized = extract_manifest_payload(&content);
 
         if !normalized.trim_start().starts_with("#EXTM3U") {
-            return Err(format!("Manifest response is not M3U8 for {}", current_url));
+            let preview = normalized.lines().take(8).collect::<Vec<_>>().join("\n");
+            return Err(format!(
+                "Manifest response is not M3U8 for {}: {}",
+                current_url, preview
+            ));
         }
 
         if let Some(variant) = extract_single_variant(&normalized) {
@@ -324,5 +354,22 @@ mod tests {
 
         assert!(filtered.contains("https://media.example.com/live/seg-1.ts"));
         assert!(!filtered.contains("https://ads.example.net/ad.ts"));
+    }
+
+    #[test]
+    fn extract_manifest_payload_skips_wrapper_prefix() {
+        let wrapped = "<pre>\n#EXTM3U\n#EXTINF:5,\nseg-1.ts\n</pre>";
+        let normalized = extract_manifest_payload(wrapped);
+        assert!(normalized.starts_with("#EXTM3U"));
+    }
+
+    #[test]
+    fn rewrite_manifest_drops_html_wrapper_lines() {
+        let base = Url::parse("https://media.example.com/live/index.m3u8").expect("base url");
+        let manifest = "#EXTM3U\n#EXTINF:5,\nseg-1.ts\n</pre>\n</html>\n";
+        let rewritten = rewrite_manifest_content(manifest, &base);
+        assert!(rewritten.contains("https://media.example.com/live/seg-1.ts"));
+        assert!(!rewritten.contains("</pre>"));
+        assert!(!rewritten.contains("</html>"));
     }
 }

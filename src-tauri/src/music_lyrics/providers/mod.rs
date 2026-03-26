@@ -1,6 +1,8 @@
-﻿pub mod kugou;
+pub mod kugou;
 pub mod kuwo;
 pub mod lrclib;
 pub mod netease;
 pub mod qqmusic;
+pub mod qqmusic_cache;
+pub mod qqmusic_qrc;
 pub mod scrape;

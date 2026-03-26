@@ -10,6 +10,17 @@ export default defineConfig({
       "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'framer-motion', 'zustand'],
+          ui: ['radix-ui', 'lucide-react', 'clsx', 'tailwind-merge'],
+          media: ['hls.js', 'flv.js', 'dashjs', 'mpegts.js']
+        }
+      }
+    }
+  },
   server: {
     watch: {
       // Keep HMR focused on app files instead of workspace notes/logs.

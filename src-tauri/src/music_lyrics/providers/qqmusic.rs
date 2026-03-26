@@ -175,6 +175,7 @@ pub async fn fetch(artist: &str, title: &str) -> Vec<ProviderLyricsCandidate> {
             translation_lrc,
             romanized_lrc: None,
             plain_text: Some(primary_lrc),
+            word_timed_primary: None,
         });
     }
 

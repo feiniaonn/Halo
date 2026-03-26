@@ -1,13 +1,11 @@
- 
- 
- import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { FloatingPlayer } from "./FloatingPlayer";
 import { TitleBar } from "./TitleBar";
 import { AppSidebar } from "./AppSidebar";
-import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
-type Page = "dashboard" | "media" | "music" | "settings";
+type Page = "dashboard" | "media" | "music" | "island" | "settings";
 type ToggleAnchorRect = {
   left: number;
   top: number;
@@ -59,8 +57,10 @@ export function AppLayout({
   const shellRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-setCustomBgFailed(false);
+    const resetTimer = window.requestAnimationFrame(() => {
+      setCustomBgFailed(false);
+    });
+    return () => window.cancelAnimationFrame(resetTimer);
   }, [bgType, bgPath]);
 
   useEffect(() => {
@@ -115,45 +115,45 @@ setCustomBgFailed(false);
     const keyframes =
       connectedAnimation.phase === "expand"
         ? [
-          {
-            transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`,
-            opacity: 0,
-            boxShadow: "0 0 0 rgba(0,0,0,0)",
-            offset: 0,
-          },
-          {
-            transform: `translate(${dx * 0.46}px, ${(dy * 0.46) + arc}px) scale(${sx + (1 - sx) * 0.72}, ${sy + (1 - sy) * 0.72})`,
-            opacity: 1,
-            boxShadow: "0 12px 28px rgba(0,0,0,0.18)",
-            offset: 0.68,
-          },
-          {
-            transform: "translate(0px, 0px) scale(1, 1)",
-            opacity: 1,
-            boxShadow: "0 16px 34px rgba(0,0,0,0.22)",
-            offset: 1,
-          },
-        ]
+            {
+              transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`,
+              opacity: 0,
+              boxShadow: "0 0 0 rgba(0,0,0,0)",
+              offset: 0,
+            },
+            {
+              transform: `translate(${dx * 0.46}px, ${dy * 0.46 + arc}px) scale(${sx + (1 - sx) * 0.72}, ${sy + (1 - sy) * 0.72})`,
+              opacity: 1,
+              boxShadow: "0 12px 28px rgba(0,0,0,0.18)",
+              offset: 0.68,
+            },
+            {
+              transform: "translate(0px, 0px) scale(1, 1)",
+              opacity: 1,
+              boxShadow: "0 16px 34px rgba(0,0,0,0.22)",
+              offset: 1,
+            },
+          ]
         : [
-          {
-            transform: "translate(0px, 0px) scale(1, 1)",
-            opacity: 1,
-            boxShadow: "0 14px 30px rgba(0,0,0,0.2)",
-            offset: 0,
-          },
-          {
-            transform: `translate(${dx * 0.58}px, ${(dy * 0.58) + arc}px) scale(${1 + (sx - 1) * 0.55}, ${1 + (sy - 1) * 0.55})`,
-            opacity: 1,
-            boxShadow: "0 10px 22px rgba(0,0,0,0.16)",
-            offset: 0.72,
-          },
-          {
-            transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`,
-            opacity: 0,
-            boxShadow: "0 0 0 rgba(0,0,0,0)",
-            offset: 1,
-          },
-        ];
+            {
+              transform: "translate(0px, 0px) scale(1, 1)",
+              opacity: 1,
+              boxShadow: "0 14px 30px rgba(0,0,0,0.2)",
+              offset: 0,
+            },
+            {
+              transform: `translate(${dx * 0.58}px, ${dy * 0.58 + arc}px) scale(${1 + (sx - 1) * 0.55}, ${1 + (sy - 1) * 0.55})`,
+              opacity: 1,
+              boxShadow: "0 10px 22px rgba(0,0,0,0.16)",
+              offset: 0.72,
+            },
+            {
+              transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`,
+              opacity: 0,
+              boxShadow: "0 0 0 rgba(0,0,0,0)",
+              offset: 1,
+            },
+          ];
 
     el.style.transformOrigin = "50% 50%";
     el.style.willChange = "transform, opacity, box-shadow";
@@ -170,10 +170,10 @@ setCustomBgFailed(false);
   }, [connectedAnimation]);
 
   const showCustomBg = hasCustomBg && !customBgFailed;
-  const shellRadius = isMiniMode ? 32 : 10;
+  const shellRadius = isMiniMode ? 32 : 22;
   const normalizedBgBlur = Math.min(36, Math.max(0, Math.round(bgBlur * 10) / 10));
-  const backgroundScale = 1.02 + Math.min(0.16, normalizedBgBlur / 220);
-  const fogOpacity = Math.min(0.56, 0.2 + normalizedBgBlur * 0.01);
+  const backgroundScale = 1.03 + Math.min(0.18, normalizedBgBlur / 220);
+  const fogOpacity = Math.min(0.6, 0.28 + normalizedBgBlur * 0.01);
   const shellStyle = {
     borderRadius: `${shellRadius}px`,
     "--halo-bg-blur": `${normalizedBgBlur}px`,
@@ -182,7 +182,7 @@ setCustomBgFailed(false);
 
   if (isMiniMode) {
     return (
-      <div 
+      <div
         className="halo-mini-root relative h-full w-full overflow-hidden bg-transparent select-none"
         style={{ borderRadius: `${shellRadius}px` }}
       >
@@ -195,35 +195,25 @@ setCustomBgFailed(false);
     <div
       ref={shellRef}
       className={cn(
-        "halo-shell relative isolate flex h-full w-full flex-col overflow-hidden",
+        "halo-shell relative isolate flex h-full w-full flex-col overflow-hidden text-foreground",
         "transition-[border-radius,opacity,box-shadow,filter] duration-320 ease-[cubic-bezier(0.22,1,0.36,1)]",
       )}
       style={shellStyle}
       data-bg-active={showCustomBg ? "true" : "false"}
       data-bg-kind={showCustomBg ? bgType : "none"}
     >
-      {/* Background Layer */}
-      <>
-        <div className="absolute inset-0 z-[-3] bg-background text-foreground transition-colors duration-500" />
-        {/* Global Ambient Blobs for subtle Glassmorphism baseline */}
-        {!showCustomBg && (
-          <>
-            <div className="ambient-blob bg-[rgb(14,176,201)]/10 dark:bg-[rgb(14,176,201)]/15 w-[50vw] h-[50vw] left-[-10%] top-[-10%]" />
-            <div className="ambient-blob bg-white/40 dark:bg-black/40 w-[40vw] h-[40vw] right-[-5%] top-[20%]" style={{ animationDelay: '-5s' }} />
-          </>
-        )}
-      </>
+      <div className="pointer-events-none absolute inset-0 z-[-4] bg-background" />
 
       {showCustomBg && (
-        <div className="absolute inset-0 z-[-2] overflow-hidden pointer-events-none">
+        <div className="pointer-events-none absolute inset-0 z-[-2] overflow-hidden">
           {bgType === "image" ? (
             <img
               key={bgPath}
               src={bgPath}
               alt="Background"
-              className="absolute inset-0 h-full w-full object-cover opacity-82"
+              className="absolute inset-0 h-full w-full object-cover"
               style={{
-                filter: `blur(${normalizedBgBlur}px)`,
+                filter: `blur(${normalizedBgBlur}px) saturate(1.2) brightness(0.9)`,
                 transform: `scale(${backgroundScale})`,
               }}
               onLoad={() => {
@@ -233,8 +223,7 @@ setCustomBgFailed(false);
                   }),
                 );
               }}
-              onError={(e) => {
-                console.error("BG Image load failed:", bgPath, e);
+              onError={() => {
                 setCustomBgFailed(true);
                 window.dispatchEvent(
                   new CustomEvent("halo:bg-load-error", {
@@ -252,9 +241,9 @@ setCustomBgFailed(false);
               loop
               muted
               playsInline
-              className="absolute inset-0 h-full w-full object-cover opacity-78"
+              className="absolute inset-0 h-full w-full object-cover"
               style={{
-                filter: `blur(${normalizedBgBlur}px)`,
+                filter: `blur(${normalizedBgBlur}px) saturate(1.2) brightness(0.9)`,
                 transform: `scale(${backgroundScale})`,
               }}
               onLoadedData={() => {
@@ -265,8 +254,7 @@ setCustomBgFailed(false);
                   }),
                 );
               }}
-              onError={(e) => {
-                console.error("BG Video load failed:", bgPath, e);
+              onError={() => {
                 setCustomBgFailed(true);
                 window.dispatchEvent(
                   new CustomEvent("halo:bg-load-error", {
@@ -278,52 +266,36 @@ setCustomBgFailed(false);
             />
           )}
 
-          <div
-            className={cn(
-              "absolute inset-0",
-              bgType === "video" ? "bg-background/34" : "bg-background/28",
-            )}
-            style={{ opacity: fogOpacity }}
-          />
+          <div className="absolute inset-0 bg-background/5" />
         </div>
       )}
 
-      {showCustomBg && (
-        <div
-          className={cn(
-            "pointer-events-none absolute inset-0 z-[-1]",
-            "bg-background/56",
-          )}
-        />
-      )}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-[-1] h-px bg-[linear-gradient(90deg,transparent,rgba(0,0,0,0.1),transparent)]" />
 
-      <TitleBar
-        isMiniMode={isMiniMode}
-        isTransitioning={miniTransitioning}
-        onToggleMini={onToggleMini}
-      />
-      
-      <SidebarProvider defaultOpen={true} className="flex flex-1 overflow-hidden bg-transparent">
-        <AppSidebar
-          currentPage={currentPage}
-          onNavigate={onNavigate}
-          hasUpdate={hasUpdate}
-        />
+      <TitleBar isMiniMode={isMiniMode} isTransitioning={miniTransitioning} onToggleMini={onToggleMini} />
+
+      <SidebarProvider defaultOpen className="relative flex flex-1 overflow-hidden bg-transparent">
+        <AppSidebar currentPage={currentPage} onNavigate={onNavigate} hasUpdate={hasUpdate} />
+
         <SidebarInset
           className={cn(
-            "bg-transparent flex-1 m-0 shadow-none border-none min-w-0 transition-all duration-300",
-            currentPage === "media" ? "overflow-hidden" : "overflow-y-auto overflow-x-hidden",
-            "px-8 pt-1 pb-3",
+            "relative my-3 mr-3 min-w-0 flex-1 overflow-hidden rounded-[var(--radius-xl)]",
+            showCustomBg
+              ? "bg-transparent px-5 pt-4 pb-4 md:px-6 shadow-[0_8px_40px_rgba(0,0,0,0.06)]"
+              : "bg-background/20 px-5 pt-4 pb-4 md:px-6 shadow-[0_8px_40px_rgba(0,0,0,0.06)] backdrop-blur-3xl border border-border/20",
           )}
         >
           {globalHint && (
-            <div className="mb-3 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            <div className="relative z-10 mb-4 flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm tracking-wide text-amber-200">
+              <span className="size-1.5 rounded-full bg-amber-400" />
               {globalHint}
             </div>
           )}
-          {children}
+
+          <div className="relative z-10 h-full">{children}</div>
         </SidebarInset>
       </SidebarProvider>
+
       <FloatingPlayer />
     </div>
   );

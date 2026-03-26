@@ -1,3 +1,5 @@
+import { isVolatileWrappedMediaUrl } from "@/modules/media/services/vodPlaybackPayloadUtils";
+
 type VodPlaybackDiagnosticsSnapshot = {
   startedAt?: number;
   steps: Array<{
@@ -14,6 +16,7 @@ export type VodResolvedStreamSnapshot = {
   headers: Record<string, string> | null;
   resolvedBy: 'spider' | 'direct' | 'jiexi' | 'jiexi-webview';
   skipProbe?: boolean;
+  preferProxy?: boolean;
   diagnostics: VodPlaybackDiagnosticsSnapshot | null;
 };
 
@@ -22,6 +25,7 @@ export type VodResolvedStreamLike = {
   headers: Record<string, string> | null;
   resolvedBy: 'spider' | 'direct' | 'jiexi' | 'jiexi-webview';
   skipProbe?: boolean;
+  preferProxy?: boolean;
 };
 
 const VOD_PLAYBACK_RESOLUTION_CACHE_TTL_MS = 2 * 60 * 1000;
@@ -38,6 +42,11 @@ const inflightResolutionCache = new Map<string, Promise<VodResolvedStreamSnapsho
 export function clearVodPlaybackResolutionCache(): void {
   resolvedStreamCache.clear();
   inflightResolutionCache.clear();
+}
+
+export function deleteVodPlaybackResolutionCache(key: string): void {
+  resolvedStreamCache.delete(key);
+  inflightResolutionCache.delete(key);
 }
 
 function cloneHeaders(headers: Record<string, string> | null): Record<string, string> | null {
@@ -71,6 +80,7 @@ export function snapshotResolvedStream(stream: VodResolvedStreamLike): VodResolv
     headers: cloneHeaders(stream.headers),
     resolvedBy: stream.resolvedBy,
     skipProbe: stream.skipProbe,
+    preferProxy: stream.preferProxy,
     diagnostics: readHiddenDiagnostics(stream),
   };
 }
@@ -83,6 +93,7 @@ export function materializeResolvedStream(
     headers: cloneHeaders(snapshot.headers),
     resolvedBy: snapshot.resolvedBy,
     skipProbe: snapshot.skipProbe,
+    preferProxy: snapshot.preferProxy,
   };
   if (snapshot.diagnostics) {
     Object.defineProperty(stream, 'diagnostics', {
@@ -95,10 +106,18 @@ export function materializeResolvedStream(
   return stream;
 }
 
+function shouldCacheResolvedStream(stream: VodResolvedStreamLike): boolean {
+  return !isVolatileWrappedMediaUrl(stream.url);
+}
+
 export function writeVodPlaybackResolutionCache(
   key: string,
   stream: VodResolvedStreamLike,
 ): void {
+  if (!shouldCacheResolvedStream(stream)) {
+    deleteVodPlaybackResolutionCache(key);
+    return;
+  }
   resolvedStreamCache.set(key, {
     snapshot: snapshotResolvedStream(stream),
     expiresAt: Date.now() + VOD_PLAYBACK_RESOLUTION_CACHE_TTL_MS,
@@ -113,6 +132,10 @@ export function readVodPlaybackResolutionCache(
     return null;
   }
   if (cached.expiresAt <= Date.now()) {
+    resolvedStreamCache.delete(key);
+    return null;
+  }
+  if (isVolatileWrappedMediaUrl(cached.snapshot.url)) {
     resolvedStreamCache.delete(key);
     return null;
   }

@@ -34,6 +34,10 @@ impl Default for MusicSettings {
         bindings.insert("play_pause".to_string(), None);
         bindings.insert("next".to_string(), None);
         bindings.insert("previous".to_string(), None);
+        bindings.insert(
+            "restore_mini_home".to_string(),
+            Some("Control+Shift+H".to_string()),
+        );
 
         Self {
             music_control_target_mode: "auto".to_string(),
@@ -85,7 +89,7 @@ fn normalize_settings(mut value: MusicSettings) -> MusicSettings {
         value.music_mini_visible_keys = vec!["play_pause".into(), "next".into()];
     }
 
-    for key in ["previous", "play_pause", "next"] {
+    for key in ["previous", "play_pause", "next", "restore_mini_home"] {
         value
             .music_hotkeys_bindings
             .entry(key.to_string())

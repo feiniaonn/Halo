@@ -1,6 +1,6 @@
 import type { VodEpisode, VodKernelMode } from "@/modules/media/types/vodWindow.types";
 
-const PLAYBACK_LOCK_TTL_MS = 30_000;
+const PLAYBACK_LOCK_TTL_MS = 8_000;
 
 type ActivePlaybackLock = {
   token: string;
@@ -48,4 +48,19 @@ export function releaseVodPlaybackLock(key: string, token: string): void {
     return;
   }
   activePlaybackLocks.delete(key);
+}
+
+export function clearVodPlaybackLock(key: string): void {
+  activePlaybackLocks.delete(key);
+}
+
+export function clearVodPlaybackLocksByPrefix(prefix: string): void {
+  if (!prefix.trim()) {
+    return;
+  }
+  for (const key of Array.from(activePlaybackLocks.keys())) {
+    if (key.startsWith(prefix)) {
+      activePlaybackLocks.delete(key);
+    }
+  }
 }

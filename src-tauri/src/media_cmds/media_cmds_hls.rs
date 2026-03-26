@@ -910,33 +910,32 @@ fn strip_image_header(payload: Vec<u8>) -> Vec<u8> {
     if payload.len() < 188 {
         return payload;
     }
-    
+
     // Check for common image signatures: PNG, GIF, BMP, JPEG
     let is_png = payload.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
     let is_gif = payload.starts_with(b"GIF87a") || payload.starts_with(b"GIF89a");
     let is_bmp = payload.starts_with(b"BM");
     let is_jpeg = payload.starts_with(&[0xFF, 0xD8, 0xFF]);
-    
+
     if !is_png && !is_gif && !is_bmp && !is_jpeg {
         return payload; // No known image header detected
     }
-    
+
     // The image header is a disguise. We shouldn't blindly hope the TS is at 0.
     // A TS sync byte (0x47) must occur every 188 bytes in an unaligned or aligned payload.
     // Try scanning for a valid TS sync byte pattern. Usually, the image header is small
     // (e.g., just the PNG signature + IHDR chunk, maybe 50-100 bytes long, then the TS data begins).
     let max_scan = 2048.min(payload.len().saturating_sub(188 * 2));
     for offset in 0..max_scan {
-        if payload[offset] == 0x47 
-           && payload[offset + 188] == 0x47 
-           && payload[offset + 376] == 0x47 {
+        if payload[offset] == 0x47 && payload[offset + 188] == 0x47 && payload[offset + 376] == 0x47
+        {
             // Found a sequence of at least three 0x47 bytes separated by 188 bytes!
             // This is almost certainly the start of the TS stream.
             return payload[offset..].to_vec();
         }
     }
-    
-    // If we can't find the TS pattern, return the original data. The player might still 
+
+    // If we can't find the TS pattern, return the original data. The player might still
     // fail, but we shouldn't damage potentially valid (though unconventional) data.
     payload
 }
@@ -1239,7 +1238,7 @@ fn schedule_manifest_prefetch(stream_key: String) {
                         manifest_backoff_until_ms = now_ms().saturating_add(10_000);
                         update_live_metrics_on_prefetch_backoff();
                         println!(
-                            "[Frontend Warn] [LivePlayer] prefetch_backoff_enter: stream={} reason={}",
+                            "[Frontend Warn] [HlsProxy] prefetch_backoff_enter: stream={} reason={}",
                             stream_key, err
                         );
                     }

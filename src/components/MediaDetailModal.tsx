@@ -71,11 +71,11 @@ function MetaBlock({
 }) {
   if (!value?.trim()) return null;
   return (
-    <div className="rounded-2xl border border-border/60 bg-background/72 p-3.5 shadow-[0_16px_34px_-28px_rgba(var(--primary),0.32)]">
-      <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+    <div className="rounded-2xl border border-border/60 bg-background/72 p-4 md:p-5 shadow-[0_16px_34px_-28px_rgba(var(--primary),0.32)] md:shadow-md">
+      <div className="mb-2 text-[12px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
         {label}
       </div>
-      <div className="text-sm leading-6 text-foreground/90 whitespace-pre-wrap break-all">{value}</div>
+      <div className="text-[14.5px] leading-[1.8] text-foreground/90 whitespace-pre-wrap break-all">{value}</div>
     </div>
   );
 }
@@ -345,7 +345,7 @@ export function MediaDetailModal({
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         showCloseButton={false}
-        className="flex h-[min(88vh,900px)] w-[min(1120px,94vw)] max-w-none flex-col gap-0 overflow-hidden rounded-[28px] border-border/55 bg-background/92 p-0 shadow-[0_38px_120px_-56px_rgba(15,23,42,0.72)] backdrop-blur-2xl"
+        className="flex h-[min(88vh,900px)] w-[min(1250px,96vw)] max-w-none flex-col gap-0 overflow-hidden rounded-[28px] border-border/55 bg-background/92 p-0 shadow-[0_38px_120px_-56px_rgba(15,23,42,0.72)] backdrop-blur-2xl"
       >
         <DialogTitle className="sr-only">{displayTitle}</DialogTitle>
 
@@ -379,7 +379,7 @@ export function MediaDetailModal({
             <div className="flex flex-1 flex-col items-center justify-center p-6 text-center">
               <AlertCircle className="mb-4 size-16 text-destructive/80" />
               <p className="mb-2 text-xl font-bold text-foreground">详情解析失败</p>
-              <p className="max-w-md text-sm leading-6 text-muted-foreground break-all">{error}</p>
+              <p className="max-w-md text-[14.5px] leading-[1.8] text-muted-foreground break-all">{error}</p>
             </div>
           ) : !detail && !shouldShowDispatchFallback ? (
             <div className="flex flex-1 flex-col items-center justify-center p-6 text-center">
@@ -390,8 +390,8 @@ export function MediaDetailModal({
             <ScrollArea className="min-h-0 flex-1">
               <div className="space-y-6 p-5 md:p-7">
                 <div className="rounded-[30px] border border-border/55 bg-[linear-gradient(145deg,rgba(var(--primary),0.08),rgba(var(--background),0.82)_45%,rgba(var(--primary),0.03))] p-5 shadow-[0_24px_56px_-38px_rgba(var(--primary),0.74)]">
-                  <div className="grid gap-5 sm:grid-cols-[130px_minmax(0,1fr)] lg:grid-cols-[150px_minmax(0,1fr)]">
-                    <div className="overflow-hidden rounded-[20px] border border-white/55 bg-background/80 shadow-[0_18px_36px_-26px_rgba(15,23,42,0.52)] self-start">
+                  <div className="flex gap-5 md:gap-6">
+                    <div className="w-[110px] sm:w-[130px] md:w-[140px] shrink-0 overflow-hidden rounded-[20px] border border-white/55 bg-background/80 shadow-[0_18px_36px_-26px_rgba(15,23,42,0.52)] self-start">
                       <VodProxyImage
                         src={displayDetail.vod_pic || ""}
                         alt={displayDetail.vod_name}
@@ -399,10 +399,10 @@ export function MediaDetailModal({
                       />
                     </div>
 
-                    <div className="min-w-0 space-y-4">
+                    <div className="min-w-0 space-y-5 md:space-y-6">
                       <div className="space-y-2">
                         <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-primary/70">Selected Title</div>
-                        <h2 className="text-[1.5rem] font-semibold leading-tight tracking-tight text-foreground whitespace-pre-wrap break-words md:text-[1.7rem]">
+                        <h2 className="text-[1.35rem] font-semibold leading-tight tracking-tight text-foreground whitespace-pre-wrap break-words text-[1.35rem] md:text-[1.6rem]">
                           {displayDetail.vod_name}
                         </h2>
                         <div className="flex flex-wrap gap-2 pt-1">
@@ -420,15 +420,15 @@ export function MediaDetailModal({
                         </div>
                       </div>
 
-                      <div className="grid gap-3 xl:grid-cols-2">
+                      <div className="flex flex-col gap-3 md:gap-4">
                         <MetaBlock label="导演" value={displayDetail.vod_director} />
-                        <MetaBlock label="演员" value={displayDetail.vod_actor} />
                       </div>
                     </div>
                   </div>
                 </div>
 
-                <MetaBlock label="剧情简介" value={displayDetail.vod_content?.replace(/<[^>]*>?/gm, '').trim() || "暂无剧情简介"} />
+                <MetaBlock label="演员" value={displayDetail.vod_actor} />
+                  <MetaBlock label="剧情简介" value={displayDetail.vod_content?.replace(/<[^>]*>?/gm, '').trim() || "暂无剧情简介"} />
 
                 {playWarning && (
                   <div className="flex items-start gap-3 rounded-2xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 shadow-sm dark:text-amber-200">
@@ -501,7 +501,7 @@ export function MediaDetailModal({
                               <div className="space-y-1">
                                 <div className="text-sm font-semibold text-foreground">切到 {candidate.siteName} 播放</div>
                                 <div className="text-xs text-muted-foreground break-all">{candidate.matchTitle}</div>
-                                <div className="text-[11px] text-muted-foreground">
+                                <div className="text-[12px] text-muted-foreground">
                                   {candidate.routes?.length
                                     ? `${candidate.routes.length} routes`
                                     : "Click to resolve detail"}
@@ -520,7 +520,7 @@ export function MediaDetailModal({
 
                     {dispatchBackendStatuses.length > 0 && (
                       <div className="space-y-2 rounded-xl border border-border/50 bg-muted/15 px-3 py-3">
-                        <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                        <div className="text-[12px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
                           Dispatch Diagnostics
                         </div>
                         <div className="space-y-2">

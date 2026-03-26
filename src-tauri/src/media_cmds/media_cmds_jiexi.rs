@@ -100,7 +100,8 @@ fn sanitize_playable_url_candidate(value: String) -> String {
         .replace("\\/", "/")
         .replace("&amp;", "&")
         .replace("\\u0026", "&");
-    let direct = extract_first_http_url(&normalized).unwrap_or_else(|| trim_url_punctuation(&normalized));
+    let direct =
+        extract_first_http_url(&normalized).unwrap_or_else(|| trim_url_punctuation(&normalized));
     trim_url_punctuation(&strip_encoded_url_tail(&direct))
 }
 
@@ -142,7 +143,8 @@ fn decode_playable_url_candidate(mut cand: String) -> String {
         }
     }
 
-    if cand.contains("%3A") || cand.contains("%2F") || cand.contains("%3a") || cand.contains("%2f") {
+    if cand.contains("%3A") || cand.contains("%2F") || cand.contains("%3a") || cand.contains("%2f")
+    {
         if let Ok(u) = url::Url::parse(&format!("http://localhost?q={}", cand)) {
             if let Some((_, decoded)) = u.query_pairs().next() {
                 if decoded.starts_with("http") {
@@ -173,7 +175,9 @@ fn extract_playable_url_from_text(text: &str) -> Option<String> {
         for pointer in pointers {
             if let Some(url) = json_val.pointer(pointer).and_then(|v| v.as_str()) {
                 let clean = url.trim();
-                let decoded = sanitize_playable_url_candidate(decode_playable_url_candidate(clean.to_string()));
+                let decoded = sanitize_playable_url_candidate(decode_playable_url_candidate(
+                    clean.to_string(),
+                ));
                 if decoded.starts_with("http") {
                     return Some(decoded);
                 }
@@ -181,13 +185,15 @@ fn extract_playable_url_from_text(text: &str) -> Option<String> {
         }
     }
 
-    let decoded_trimmed = sanitize_playable_url_candidate(decode_playable_url_candidate(trimmed.to_string()));
+    let decoded_trimmed =
+        sanitize_playable_url_candidate(decode_playable_url_candidate(trimmed.to_string()));
     if decoded_trimmed.starts_with("http") && looks_like_direct_media_url(&decoded_trimmed) {
         return Some(decoded_trimmed);
     }
     if trimmed.starts_with("http") {
         let sanitized_trimmed = sanitize_playable_url_candidate(trimmed.to_string());
-        if sanitized_trimmed.starts_with("http") && looks_like_direct_media_url(&sanitized_trimmed) {
+        if sanitized_trimmed.starts_with("http") && looks_like_direct_media_url(&sanitized_trimmed)
+        {
             return Some(sanitized_trimmed);
         }
     }
@@ -213,11 +219,13 @@ fn extract_playable_url_from_text(text: &str) -> Option<String> {
                 None
             }
         });
-    
+
     if matched.is_none() {
         let regex_blind_decoding =
             sanitize_playable_url_candidate(decode_playable_url_candidate(normalized.to_string()));
-        if regex_blind_decoding.starts_with("http") && looks_like_direct_media_url(&regex_blind_decoding) {
+        if regex_blind_decoding.starts_with("http")
+            && looks_like_direct_media_url(&regex_blind_decoding)
+        {
             return Some(regex_blind_decoding);
         }
     }
@@ -228,6 +236,23 @@ fn extract_playable_url_from_text(text: &str) -> Option<String> {
 fn looks_like_m3u8_manifest(text: &str) -> bool {
     let trimmed = text.trim_start_matches('\u{feff}').trim_start();
     trimmed.starts_with("#EXTM3U")
+}
+
+fn extract_manifest_payload(text: &str) -> String {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    if let Some(index) = normalized.find("#EXTM3U") {
+        normalized[index..].to_string()
+    } else {
+        normalized
+    }
+}
+
+fn looks_like_expired_wrapped_media_link(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+    normalized.contains("链接失效")
+        || normalized.contains("请重新获取")
+        || normalized.contains("link expired")
+        || normalized.contains("expired")
 }
 
 fn looks_like_image_segment_line(line: &str) -> bool {
@@ -263,10 +288,11 @@ fn manifest_looks_like_nonvideo_hls(text: &str) -> bool {
 }
 
 fn extract_playable_target_from_wrapped_response(text: &str, target_url: &str) -> Option<String> {
-    if let Some(found) = extract_playable_url_from_text(text) {
+    let normalized = extract_manifest_payload(text);
+    if let Some(found) = extract_playable_url_from_text(&normalized) {
         return Some(found);
     }
-    if looks_like_m3u8_manifest(text) && !manifest_looks_like_nonvideo_hls(text) {
+    if looks_like_m3u8_manifest(&normalized) && !manifest_looks_like_nonvideo_hls(&normalized) {
         let normalized = target_url.trim();
         if normalized.starts_with("http") && !looks_like_image_url(normalized) {
             return Some(normalized.to_string());
@@ -365,6 +391,9 @@ pub async fn resolve_wrapped_media_url(
     let text = request_jiexi_text(&client, &target_url, &target_url, &extra_headers).await?;
     if let Some(found) = extract_playable_target_from_wrapped_response(&text, &target_url) {
         return Ok(found);
+    }
+    if looks_like_expired_wrapped_media_link(&text) {
+        return Err("wrapped_media_link_expired".to_string());
     }
 
     let trimmed = text.trim().to_string();
@@ -745,7 +774,7 @@ pub async fn resolve_jiexi_webview(
 mod tests {
     use super::{
         extract_playable_target_from_wrapped_response, extract_playable_url_from_text,
-        manifest_looks_like_nonvideo_hls,
+        looks_like_expired_wrapped_media_link, manifest_looks_like_nonvideo_hls,
     };
 
     #[test]
@@ -793,10 +822,26 @@ mod tests {
     }
 
     #[test]
+    fn returns_wrapped_target_when_body_contains_pre_wrapped_hls_manifest() {
+        let target = "http://wrapper.example.com/api/getM3u8?url=wrapped";
+        let body = "<pre>\n#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:5,\nsegment.ts\n</pre>";
+        assert_eq!(
+            extract_playable_target_from_wrapped_response(body, target).as_deref(),
+            Some(target)
+        );
+    }
+
+    #[test]
     fn rejects_wrapped_target_when_manifest_points_to_images() {
         let target = "http://wrapper.example.com/api/getM3u8?url=wrapped";
         let body = "#EXTM3U\n#EXTINF:10,\nhttps://cdn.example.com/poster-1.png\n#EXTINF:10,\nhttps://cdn.example.com/poster-2.jpg\n";
         assert!(manifest_looks_like_nonvideo_hls(body));
         assert!(extract_playable_target_from_wrapped_response(body, target).is_none());
+    }
+
+    #[test]
+    fn detects_expired_wrapped_media_pages() {
+        let body = "<pre>靓仔链接失效了 请重新获取</pre>";
+        assert!(looks_like_expired_wrapped_media_link(body));
     }
 }

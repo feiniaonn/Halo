@@ -1752,7 +1752,7 @@ dependencies = [
 
 [[package]]
 name = "halo"
-version = "0.3.116"
+version = "0.3.117"
 dependencies = [
  "aes",
  "axum",
@@ -1763,6 +1763,7 @@ dependencies = [
  "dirs 5.0.1",
  "encoding_rs",
  "env_logger",
+ "flate2",
  "hickory-resolver",
  "image",
  "indexmap 2.13.0",

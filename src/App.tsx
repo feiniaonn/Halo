@@ -1,12 +1,16 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { useIslandSizes } from "@/hooks/useIslandSizes";
+import { applyCurrentWindowRect } from "@/lib/windowGeometry";
+import { resolveMiniIslandLayout, resolveMiniWindowLogicalSize } from "@/modules/island/layout";
 import { HomePage as HomePageStatic } from "@/pages/HomePage";
 import { MediaPage as MediaPageStatic } from "@/pages/MediaPage";
 import { MiniPlayerPage as MiniPlayerPageStatic } from "@/pages/MiniPlayerPage";
 import { MusicPage as MusicPageStatic } from "@/pages/MusicPage";
 import { SettingsPage as SettingsPageStatic } from "@/pages/SettingsPage";
-import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
+import { IslandPage as IslandPageStatic } from "@/pages/IslandPage";
 import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc, isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
@@ -14,7 +18,6 @@ import { message } from "@tauri-apps/plugin-dialog";
 import { EVENT_SETTINGS_BG_VIDEO_OPTIMIZED, EVENT_WINDOW_FORCE_MINI_MODE } from "@/modules/shared/services/events";
 import { getAppSettings, importBackgroundAsset, setBackground } from "@/modules/settings/services/settingsService";
 import { initializeMusicHotkeyManager } from "@/modules/music/services/musicHotkeyManager";
-import type { MiniRestoreMode } from "@/modules/settings/types/settings.types";
 
 const HomePage = import.meta.env.DEV
   ? HomePageStatic
@@ -47,7 +50,14 @@ const MiniPlayerPage = import.meta.env.DEV
     return { default: mod.MiniPlayerPage };
   });
 
-type Page = "dashboard" | "media" | "music" | "settings";
+const IslandPage = import.meta.env.DEV
+  ? IslandPageStatic
+  : lazy(async () => {
+    const mod = await import("@/pages/IslandPage");
+    return { default: mod.IslandPage };
+  });
+
+type Page = "dashboard" | "media" | "music" | "island" | "settings";
 type BackgroundVideoOptimizedPayload = {
   original_path: string;
   optimized_path: string;
@@ -55,16 +65,19 @@ type BackgroundVideoOptimizedPayload = {
 
 function PageLoadingFallback() {
   return (
-    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-      页面加载中...
+    <div className="flex h-full items-center justify-center px-6">
+      <div className="flex w-full max-w-md items-center gap-4 rounded-2xl border border-white/5 bg-white/[0.015] px-5 py-4 text-sm text-muted-foreground shadow-lg backdrop-blur-2xl">
+        <div className="halo-skeleton size-11 rounded-[calc(var(--radius-xl)-2px)]" />
+        <div className="flex flex-1 flex-col gap-2">
+          <div className="halo-skeleton h-3 w-28 rounded-full" />
+          <div className="halo-skeleton h-2.5 w-40 rounded-full opacity-80" />
+        </div>
+      </div>
     </div>
   );
 }
 
-function normalizeMiniRestoreMode(value: string | null | undefined): MiniRestoreMode {
-  if (value === "button" || value === "double_click" || value === "both") return value;
-  return "both";
-}
+
 
 function normalizeBackgroundBlur(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -75,10 +88,6 @@ function normalizeBackgroundBlur(value: unknown): number {
 function toAssetSrcPath(fsPath: string): string {
   // WebView2 release builds are more sensitive to backslash paths.
   return fsPath.replace(/\\/g, "/");
-}
-
-function looksLikeMiniWindow(width: number, height: number): boolean {
-  return width <= 750 && height <= 90;
 }
 
 type WindowRect = {
@@ -104,28 +113,8 @@ type ConnectedAnimationPayload = {
   easing: string;
 };
 
-function rectFromCenter(cx: number, cy: number, size: number): ToggleAnchorRect {
-  return {
-    left: cx - size / 2,
-    top: cy - size / 2,
-    width: size,
-    height: size,
-  };
-}
-
-function normalizeAnchorRect(
-  anchor: ToggleAnchorRect | undefined,
-  viewportWidth: number,
-  viewportHeight: number,
-): ToggleAnchorRect {
-  const fallback = rectFromCenter(viewportWidth / 2, Math.max(18, viewportHeight * 0.08), 26);
-  if (!anchor) return fallback;
-  const centerX = Math.min(Math.max(anchor.left + anchor.width / 2, 0), viewportWidth);
-  const centerY = Math.min(Math.max(anchor.top + anchor.height / 2, 0), viewportHeight);
-  return rectFromCenter(centerX, centerY, Math.max(22, Math.min(anchor.width, anchor.height, 34)));
-}
-
 function App() {
+  const prefersReducedMotion = useReducedMotion();
   const [page, setPage] = useState<Page>("dashboard");
   const [hasUpdate, setHasUpdate] = useState(false);
   const isTauri = useMemo(() => isTauriRuntime(), []);
@@ -141,13 +130,14 @@ function App() {
   const [bgFsPath, setBgFsPath] = useState<string | null>(null);
   const [bgBlur, setBgBlur] = useState<number>(12);
   const [bgRev, setBgRev] = useState(0);
-  const [miniRestoreMode, setMiniRestoreMode] = useState<MiniRestoreMode>("both");
+
   const [miniModeWidth, setMiniModeWidth] = useState(700);
   const [miniModeHeight, setMiniModeHeight] = useState(50);
   const [updateCheckHint, setUpdateCheckHint] = useState<string | null>(null);
   const [miniTransitioning, setMiniTransitioning] = useState(false);
   const [miniAnimDirection, setMiniAnimDirection] = useState<"enter" | "exit" | null>(null);
   const [connectedAnimation, setConnectedAnimation] = useState<ConnectedAnimationPayload | null>(null);
+  const { sizes: islandSizes } = useIslandSizes();
   const isMiniModeRef = useRef(isMiniMode);
   const restoreStateRef = useRef(restoreState);
   const miniToggleLockRef = useRef(false);
@@ -181,6 +171,33 @@ function App() {
     return `${bgSrc}${joiner}v=${bgRev}`;
   }, [bgSrc, bgRev]);
 
+  const miniIslandLayout = useMemo(
+    () => resolveMiniIslandLayout(islandSizes.capsuleWidth, islandSizes.capsuleHeight),
+    [islandSizes.capsuleHeight, islandSizes.capsuleWidth],
+  );
+
+  const pageVariants = useMemo(
+    () => ({
+      active: {
+        opacity: 1,
+        pointerEvents: "auto" as const,
+      },
+      inactive: {
+        opacity: 0,
+        pointerEvents: "none" as const,
+      },
+    }),
+    [],
+  );
+
+  const pageTransition = useMemo(
+    () => ({
+      duration: prefersReducedMotion ? 0.01 : 0.12,
+      ease: "easeOut" as const,
+    }),
+    [prefersReducedMotion],
+  );
+
   useEffect(() => {
     isMiniModeRef.current = isMiniMode;
   }, [isMiniMode]);
@@ -213,7 +230,6 @@ function App() {
         const cfgPath = cfg.background_path ?? null;
         const cfgImagePath = cfg.background_image_path ?? null;
         const cfgVideoPath = cfg.background_video_path ?? null;
-        const cfgMiniRestoreMode = normalizeMiniRestoreMode(cfg.mini_restore_mode);
         const cfgBlur = normalizeBackgroundBlur(cfg.background_blur ?? localStorage.getItem("halo_bg_blur"));
         let t: "none" | "image" | "video" = "none";
         let p: string | null = null;
@@ -245,7 +261,6 @@ function App() {
         setBgFsPath(p);
         setBgBlur(cfgBlur);
         setBgRev((prev) => prev + 1);
-        setMiniRestoreMode(cfgMiniRestoreMode);
         setMiniModeWidth(cfg.mini_mode_width ?? 700);
         setMiniModeHeight(cfg.mini_mode_height ?? 50);
 
@@ -263,7 +278,6 @@ function App() {
         setBgFsPath(legacyPath);
         setBgBlur(legacyBlur);
         setBgRev((prev) => prev + 1);
-        setMiniRestoreMode("both");
       }
     })();
   }, [isTauri]);
@@ -293,28 +307,13 @@ function App() {
     localStorage.setItem("halo_bg_blur", String(normalized));
   };
 
-  const playConnectedAnimation = useCallback(
-    async (
-      phase: "expand" | "collapse",
-      from: ToggleAnchorRect,
-      to: ToggleAnchorRect,
-      durationMs: number,
-      easing: string,
-    ) => {
-      const id = Date.now() + Math.random();
-      setConnectedAnimation({ id, phase, from, to, durationMs, easing });
-      await new Promise((resolve) => window.setTimeout(resolve, durationMs + 24));
-      setConnectedAnimation((prev) => (prev?.id === id ? null : prev));
-    },
-    [],
-  );
-
   const setMiniMode = useCallback(async (
     enable: boolean,
     forceCalibrate = false,
-    anchorRect?: ToggleAnchorRect,
+    _anchorRect?: ToggleAnchorRect,
   ) => {
     if (!isTauri) return;
+    void _anchorRect;
     if (miniToggleLockRef.current) return;
     const previousMode = isMiniModeRef.current;
     if (enable === previousMode && !(enable && forceCalibrate)) return;
@@ -323,15 +322,19 @@ function App() {
     try {
       const win = getCurrentWindow();
       const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
-      const ENABLE_CONNECTED_ANIMATION = true;
-      const CONNECTED_MS = 280;
-      const PREPARE_MS = 60;
-      const FINISH_MS = 80;
+      const nextFrame = () => new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
+      const PREPARE_MS = prefersReducedMotion ? 0 : 8;
+      const FINISH_MS = prefersReducedMotion ? 0 : 12;
       const readRect = async (): Promise<WindowRect> => {
         const size = await win.innerSize();
         const pos = await win.innerPosition();
         return { width: size.width, height: size.height, x: pos.x, y: pos.y };
       };
+      const isMiniRect = (rect: WindowRect, target: WindowRect) =>
+        Math.abs(rect.width - target.width) <= 4 &&
+        Math.abs(rect.height - target.height) <= 4 &&
+        Math.abs(rect.x - target.x) <= 12 &&
+        Math.abs(rect.y - target.y) <= 12;
       const buildFallbackRestore = async (
         pos?: { x: number; y: number },
       ): Promise<WindowRect> => {
@@ -357,14 +360,17 @@ function App() {
         const mSize = monitor?.size;
         const mPos = monitor?.position;
         const scaleFactor = monitor?.scaleFactor ?? await win.scaleFactor();
-        const logicalWidth =
+        const logicalSize = resolveMiniWindowLogicalSize(
+          miniIslandLayout,
           typeof miniModeWidthRef.current === "number" && miniModeWidthRef.current > 0
             ? miniModeWidthRef.current
-            : 700;
-        const logicalHeight =
+            : 700,
           typeof miniModeHeightRef.current === "number" && miniModeHeightRef.current > 0
             ? miniModeHeightRef.current
-            : 50;
+            : 50,
+        );
+        const logicalWidth = logicalSize.width;
+        const logicalHeight = logicalSize.height;
         const width = Math.max(1, Math.round(logicalWidth * scaleFactor));
         const height = Math.max(1, Math.round(logicalHeight * scaleFactor));
         const x = mSize
@@ -376,15 +382,13 @@ function App() {
         return { width, height, x, y };
       };
       const applyWindowRect = async (rect: WindowRect, stage: "enter-mini" | "exit-mini") => {
-        const [sizeResult, posResult] = await Promise.allSettled([
-          win.setSize(new PhysicalSize(rect.width, rect.height)),
-          win.setPosition(new PhysicalPosition(rect.x, rect.y)),
-        ]);
-        if (sizeResult.status === "rejected") {
-          throw new Error(`${stage}: setSize failed: ${String(sizeResult.reason)}`);
-        }
-        if (posResult.status === "rejected") {
-          throw new Error(`${stage}: setPosition failed: ${String(posResult.reason)}`);
+        try {
+          await applyCurrentWindowRect(rect);
+        } catch (error) {
+          const wrappedError = new Error(`${stage}: set window bounds failed`);
+          (wrappedError as Error & { cause?: unknown }).cause =
+            error instanceof Error ? error : new Error(String(error));
+          throw wrappedError;
         }
       };
 
@@ -401,40 +405,17 @@ function App() {
           void 0;
         }
         const current = await readRect();
+        const target = await buildMiniTarget(current);
         const hasValidRestore =
           !!restoreStateRef.current &&
-          !looksLikeMiniWindow(restoreStateRef.current.width, restoreStateRef.current.height);
+          !isMiniRect(restoreStateRef.current, target);
         if (!hasValidRestore || !previousMode) {
-          const nextRestore = looksLikeMiniWindow(current.width, current.height)
+          const nextRestore = isMiniRect(current, target)
             ? await buildFallbackRestore({ x: current.x, y: current.y })
             : current;
           setRestoreState(nextRestore);
           restoreStateRef.current = nextRestore;
         }
-
-        const sourceViewport = { width: window.innerWidth, height: window.innerHeight };
-        const sourceRect: ToggleAnchorRect = {
-          left: 0,
-          top: 0,
-          width: sourceViewport.width,
-          height: sourceViewport.height,
-        };
-        const collapseTo = normalizeAnchorRect(
-          anchorRect,
-          sourceViewport.width,
-          sourceViewport.height,
-        );
-        if (ENABLE_CONNECTED_ANIMATION) {
-          await playConnectedAnimation(
-            "collapse",
-            sourceRect,
-            collapseTo,
-            CONNECTED_MS,
-            "cubic-bezier(0.19, 1, 0.22, 1)",
-          );
-        }
-
-        const target = await buildMiniTarget(current);
         await win.setDecorations(false);
         await win.setAlwaysOnTop(true);
         await win.setResizable(true);
@@ -443,11 +424,13 @@ function App() {
         } catch {
           void 0;
         }
+        setConnectedAnimation(null);
+        setIsMiniMode(true);
+        isMiniModeRef.current = true;
+        await nextFrame();
         await sleep(PREPARE_MS);
         await applyWindowRect(target, "enter-mini");
         await win.setResizable(false);
-        setIsMiniMode(true);
-        isMiniModeRef.current = true;
         try {
           await win.setSkipTaskbar(true);
         } catch {
@@ -460,21 +443,13 @@ function App() {
       }
 
       let restore = restoreStateRef.current;
-      if (!restore || looksLikeMiniWindow(restore.width, restore.height)) {
+      const current = await readRect();
+      const miniTarget = await buildMiniTarget(current);
+      if (!restore || isMiniRect(restore, miniTarget)) {
         restore = await buildFallbackRestore();
         setRestoreState(restore);
         restoreStateRef.current = restore;
       }
-
-      const miniViewport = {
-        width: Math.max(1, window.innerWidth),
-        height: Math.max(1, window.innerHeight),
-      };
-      const miniAnchor = normalizeAnchorRect(anchorRect, miniViewport.width, miniViewport.height);
-      const miniAnchorCenter = {
-        x: (miniAnchor.left + miniAnchor.width / 2) / miniViewport.width,
-        y: (miniAnchor.top + miniAnchor.height / 2) / miniViewport.height,
-      };
 
       try {
         await win.unminimize();
@@ -496,31 +471,9 @@ function App() {
       await sleep(PREPARE_MS);
       await applyWindowRect(restore, "exit-mini");
       await win.setAlwaysOnTop(false);
+      setConnectedAnimation(null);
       setIsMiniMode(false);
       isMiniModeRef.current = false;
-      await sleep(16);
-
-      const expandViewport = { width: window.innerWidth, height: window.innerHeight };
-      const expandSource = rectFromCenter(
-        miniAnchorCenter.x * expandViewport.width,
-        miniAnchorCenter.y * expandViewport.height,
-        24,
-      );
-      const expandTarget: ToggleAnchorRect = {
-        left: 0,
-        top: 0,
-        width: expandViewport.width,
-        height: expandViewport.height,
-      };
-      if (ENABLE_CONNECTED_ANIMATION) {
-        await playConnectedAnimation(
-          "expand",
-          expandSource,
-          expandTarget,
-          CONNECTED_MS,
-          "cubic-bezier(0.25, 0.46, 0.45, 0.94)",
-        );
-      }
       await sleep(FINISH_MS);
       setMiniTransitioning(false);
       setMiniAnimDirection(null);
@@ -539,7 +492,7 @@ function App() {
     } finally {
       miniToggleLockRef.current = false;
     }
-  }, [isTauri, playConnectedAnimation]);
+  }, [isTauri, miniIslandLayout, prefersReducedMotion]);
 
   const toggleMiniMode = useCallback((anchorRect?: ToggleAnchorRect) => {
     void setMiniMode(!isMiniModeRef.current, false, anchorRect);
@@ -686,32 +639,72 @@ function App() {
             <MiniPlayerPage
               onToggleMini={toggleMiniMode}
               isTransitioning={miniTransitioning}
-              miniRestoreMode={miniRestoreMode}
+
               bgType={bgType}
               bgPath={bgSrcWithRev}
               bgBlur={bgBlur}
             />
           ) : (
-            <>
-              <div className={page === "dashboard" ? "h-full" : "hidden"}><HomePage onNavigate={setPage} /></div>
-              <div className={page === "media" ? "flex flex-col h-full" : "hidden"}><MediaPage /></div>
-              <div className={page === "music" ? "flex flex-col h-full" : "hidden"}><MusicPage /></div>
-              <div className={page === "settings" ? "flex flex-col h-full" : "hidden"}>
+            <div className="relative h-full w-full halo-page-stage">
+              <motion.div
+                initial={false}
+                animate={page === "dashboard" ? "active" : "inactive"}
+                variants={pageVariants}
+                transition={pageTransition}
+                className="absolute inset-0 overflow-y-auto overflow-x-hidden will-change-transform"
+              >
+                <HomePage />
+              </motion.div>
+              <motion.div
+                initial={false}
+                animate={page === "media" ? "active" : "inactive"}
+                variants={pageVariants}
+                transition={pageTransition}
+                className="absolute inset-0 flex flex-col overflow-hidden will-change-transform"
+              >
+                <MediaPage />
+              </motion.div>
+              <motion.div
+                initial={false}
+                animate={page === "music" ? "active" : "inactive"}
+                variants={pageVariants}
+                transition={pageTransition}
+                className="absolute inset-0 flex flex-col overflow-hidden will-change-transform"
+              >
+                <MusicPage />
+              </motion.div>
+                              <motion.div
+                  initial={false}
+                  animate={page === "island" ? "active" : "inactive"}
+                  variants={pageVariants}
+                  transition={pageTransition}
+                  className="absolute inset-0 flex flex-col overflow-hidden will-change-transform"
+                >
+                                    <IslandPage
+                                                            onSaveMiniModeSize={async (w, h) => {
+                      try {
+                        const { setMiniModeSize } = await import("@/modules/settings/services/settingsService");
+                        await setMiniModeSize(w, h);
+                      } catch (e) { console.error(e); }
+                    }}
+                  />
+                </motion.div>
+                <motion.div
+                initial={false}
+                animate={page === "settings" ? "active" : "inactive"}
+                variants={pageVariants}
+                transition={pageTransition}
+                className="absolute inset-0 flex flex-col overflow-y-auto overflow-x-hidden will-change-transform"
+              >
                 <SettingsPage
                   bgType={bgType}
                   bgFsPath={bgFsPath}
                   bgBlur={bgBlur}
-                  miniRestoreMode={miniRestoreMode}
-                  miniModeWidth={miniModeWidth}
-                  miniModeHeight={miniModeHeight}
                   onBgChange={updateBackground}
                   onBgBlurChange={updateBackgroundBlur}
-                  onMiniRestoreModeChange={setMiniRestoreMode}
-                  onMiniModeWidthChange={setMiniModeWidth}
-                  onMiniModeHeightChange={setMiniModeHeight}
                 />
-              </div>
-            </>
+              </motion.div>
+            </div>
           )}
         </Suspense>
       </AppLayout>

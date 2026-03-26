@@ -32,21 +32,23 @@ function Format-ByteSize([double]$bytes) {
 function Get-PublishContext {
   $scriptDir = $PSScriptRoot
   if ([string]::IsNullOrWhiteSpace($scriptDir)) { $scriptDir = (Get-Location).Path }
-  $projectRoot = Join-Path $scriptDir '..'
-  $artifactRoot = Join-Path $projectRoot 'release-artifacts'
+  $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..'))
+  $artifactRoot = Join-Path $projectRoot '发布产物'
   $ctx = [ordered]@{
     ScriptDir = $scriptDir
     ProjectRoot = $projectRoot
     OneClickDir = $scriptDir
+    PublishCacheDir = Join-Path $scriptDir '.publish-cache'
     ArtifactRoot = $artifactRoot
-    ExeOutDir = Join-Path $artifactRoot 'exe'
-    UpdateDir = Join-Path $artifactRoot 'meta'
+    ExeOutDir = Join-Path $artifactRoot '安装包'
+    UpdateDir = Join-Path $artifactRoot '更新元数据'
     TauriConfigPath = Join-Path $projectRoot 'src-tauri\tauri.conf.json'
     CargoTomlPath = Join-Path $projectRoot 'src-tauri\Cargo.toml'
     PackageJsonPath = Join-Path $projectRoot 'package.json'
     DeployConfigPath = Join-Path $scriptDir 'deploy.config.json'
     NoticePath = Join-Path $scriptDir '更新公告.txt'
     SecretsPath = Join-Path $scriptDir '.publish-secrets.json'
+    ManagedPrivateKeyPath = Join-Path $scriptDir '.publish-cache\tauri-update.minisign.key'
     BuildScriptPath = Join-Path $projectRoot 'scripts\build-installers-unsigned.ps1'
     NsisDir = Join-Path $projectRoot 'src-tauri\target\release\bundle\nsis'
     RemoteDir = '/opt/halo-update'
@@ -108,8 +110,230 @@ function Save-JsonObject([string]$path, [object]$obj) {
   [System.IO.File]::WriteAllText($path, ($json -replace "`r?`n", "`r`n"), $utf8)
 }
 
+function Ensure-Directory([string]$path) {
+  if ([string]::IsNullOrWhiteSpace($path)) {
+    throw '目录路径不能为空。'
+  }
+  if (-not (Test-Path -LiteralPath $path)) {
+    New-Item -ItemType Directory -Path $path | Out-Null
+  }
+}
+
+function Test-UsableFilePath([string]$path) {
+  return (-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path -LiteralPath $path -PathType Leaf))
+}
+
+function Read-MultilineBlock([string]$prompt, [string]$endMarker = 'END') {
+  Write-Host $prompt -ForegroundColor DarkCyan
+  Write-Host "完成后单独输入 $endMarker 并回车。" -ForegroundColor DarkGray
+  $lines = [System.Collections.Generic.List[string]]::new()
+  while ($true) {
+    $line = Read-Host
+    if ($line -eq $endMarker) { break }
+    $lines.Add($line)
+  }
+  return (($lines -join "`r`n").Trim())
+}
+
+function Try-DecodeBase64Utf8([string]$value) {
+  $compact = ($value -replace '\s', '').Trim()
+  if ([string]::IsNullOrWhiteSpace($compact)) {
+    return $null
+  }
+
+  try {
+    $bytes = [Convert]::FromBase64String($compact)
+    return [System.Text.Encoding]::UTF8.GetString($bytes)
+  } catch {
+    return $null
+  }
+}
+
+function Convert-ToManagedPrivateKeyFileContent([string]$content) {
+  $normalized = ($content -replace "`0", '').Trim()
+  if ([string]::IsNullOrWhiteSpace($normalized)) {
+    throw '私钥内容不能为空。'
+  }
+
+  $decoded = Try-DecodeBase64Utf8 -value $normalized
+  if (-not [string]::IsNullOrWhiteSpace($decoded) -and $decoded -match 'untrusted comment: .+secret key') {
+    return ($normalized -replace '\s', '')
+  }
+
+  if ($normalized -match 'untrusted comment: .+secret key') {
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $plainText = ($normalized -replace "`r?`n", "`n")
+    return [Convert]::ToBase64String($utf8.GetBytes($plainText))
+  }
+
+  throw '这里需要粘贴完整的 minisign `.key` 文件内容，不是密码。'
+}
+
+function Get-ConfiguredUpdaterPubKey([hashtable]$ctx) {
+  try {
+    $tauri = Read-JsonObject -path $ctx.TauriConfigPath
+    if (
+      $null -ne $tauri -and
+      $null -ne $tauri.plugins -and
+      $null -ne $tauri.plugins.updater -and
+      -not [string]::IsNullOrWhiteSpace($tauri.plugins.updater.pubkey)
+    ) {
+      return ([string]$tauri.plugins.updater.pubkey).Trim()
+    }
+  } catch {
+    return ''
+  }
+
+  return ''
+}
+
+function Get-DiscoveredPrivateKeyCandidates([hashtable]$ctx) {
+  $userProfile = [Environment]::GetFolderPath('UserProfile')
+  if ([string]::IsNullOrWhiteSpace($userProfile)) {
+    return @()
+  }
+
+  $tauriDir = Join-Path $userProfile '.tauri'
+  if (-not (Test-Path -LiteralPath $tauriDir -PathType Container)) {
+    return @()
+  }
+
+  $configuredPubKey = Get-ConfiguredUpdaterPubKey -ctx $ctx
+  $candidates = @(
+    Get-ChildItem -LiteralPath $tauriDir -File -Filter '*.key' -ErrorAction SilentlyContinue |
+      ForEach-Object {
+        $pubPath = "$($_.FullName).pub"
+        $matchesConfiguredPubKey = $false
+        if (-not [string]::IsNullOrWhiteSpace($configuredPubKey) -and (Test-UsableFilePath $pubPath)) {
+          try {
+            $pubKey = (Get-Content -Raw -LiteralPath $pubPath).Trim()
+            $matchesConfiguredPubKey = ($pubKey -eq $configuredPubKey)
+          } catch {
+            $matchesConfiguredPubKey = $false
+          }
+        }
+
+        [pscustomobject]@{
+          Path = $_.FullName
+          MatchesConfiguredPubKey = $matchesConfiguredPubKey
+        }
+      }
+  )
+
+  if ($candidates.Count -eq 0) {
+    return @()
+  }
+
+  return @(
+    $candidates |
+      Sort-Object @{ Expression = 'MatchesConfiguredPubKey'; Descending = $true }, @{ Expression = 'Path'; Descending = $false }
+  )
+}
+
+function Save-ManagedPrivateKey([hashtable]$ctx, [string]$content) {
+  $normalized = Convert-ToManagedPrivateKeyFileContent -content $content
+
+  Ensure-Directory $ctx.PublishCacheDir
+  $utf8 = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($ctx.ManagedPrivateKeyPath, $normalized, $utf8)
+  return $ctx.ManagedPrivateKeyPath
+}
+
+function Resolve-PrivateKeyPath([hashtable]$ctx, [object]$secrets) {
+  if (Test-UsableFilePath $secrets.privateKeyPath) {
+    return [ordered]@{
+      Path = $secrets.privateKeyPath
+      Changed = $false
+      Imported = $false
+      Message = $null
+    }
+  }
+
+  if (Test-UsableFilePath $ctx.ManagedPrivateKeyPath) {
+    return [ordered]@{
+      Path = $ctx.ManagedPrivateKeyPath
+      Changed = ($secrets.privateKeyPath -ne $ctx.ManagedPrivateKeyPath)
+      Imported = $false
+      Message = "已自动切换到缓存私钥：$($ctx.ManagedPrivateKeyPath)"
+    }
+  }
+
+  $discoveredPrivateKeys = @(Get-DiscoveredPrivateKeyCandidates -ctx $ctx)
+  $matchedPrivateKeys = @($discoveredPrivateKeys | Where-Object { $_.MatchesConfiguredPubKey })
+  if ($matchedPrivateKeys.Count -ge 1) {
+    $candidate = $matchedPrivateKeys[0].Path
+    return [ordered]@{
+      Path = $candidate
+      Changed = ($secrets.privateKeyPath -ne $candidate)
+      Imported = $false
+      Message = "已自动发现与当前 updater 公钥匹配的私钥：$candidate"
+    }
+  }
+  if ($discoveredPrivateKeys.Count -eq 1) {
+    $candidate = $discoveredPrivateKeys[0].Path
+    return [ordered]@{
+      Path = $candidate
+      Changed = ($secrets.privateKeyPath -ne $candidate)
+      Imported = $false
+      Message = "已自动发现 Tauri 默认私钥：$candidate"
+    }
+  }
+
+  while ($true) {
+    Write-Host ''
+    if (-not [string]::IsNullOrWhiteSpace($secrets.privateKeyPath)) {
+      Write-WarnMsg "签名私钥文件不存在：$($secrets.privateKeyPath)"
+    } else {
+      Write-WarnMsg '当前没有可用的签名私钥。'
+    }
+    Write-Host '请选择签名私钥处理方式：'
+    Write-Host '  1. 输入私钥文件路径'
+    Write-Host '  2. 粘贴完整 `.key` 文件内容并重建文件（不是密码）'
+
+    $choice = (Read-Host '输入选项 [1-2]').Trim()
+    switch ($choice) {
+      '1' {
+        $inputPath = Read-Host '请输入 Tauri 更新签名私钥文件路径（minisign 私钥）'
+        if ([string]::IsNullOrWhiteSpace($inputPath)) {
+          Write-WarnMsg '路径不能为空，请重试。'
+          continue
+        }
+        $candidate = $inputPath.Trim().Trim('"')
+        if (-not (Test-UsableFilePath $candidate)) {
+          Write-WarnMsg '路径无效，请重试。'
+          continue
+        }
+        return [ordered]@{
+          Path = $candidate
+          Changed = ($secrets.privateKeyPath -ne $candidate)
+          Imported = $false
+          Message = $null
+        }
+      }
+      '2' {
+        try {
+          $content = Read-MultilineBlock '请粘贴完整的 minisign `.key` 文件内容（不是密码）'
+          $managedPath = Save-ManagedPrivateKey -ctx $ctx -content $content
+          return [ordered]@{
+            Path = $managedPath
+            Changed = ($secrets.privateKeyPath -ne $managedPath)
+            Imported = $true
+            Message = "私钥已重建并保存到：$managedPath"
+          }
+        } catch {
+          Write-WarnMsg $_.Exception.Message
+          continue
+        }
+      }
+      default {
+        Write-WarnMsg '输入无效，请重试。'
+      }
+    }
+  }
+}
+
 function Ensure-LocalDirectories([hashtable]$ctx) {
-  foreach ($dir in @($ctx.ArtifactRoot, $ctx.ExeOutDir, $ctx.UpdateDir)) {
+  foreach ($dir in @($ctx.PublishCacheDir, $ctx.ArtifactRoot, $ctx.ExeOutDir, $ctx.UpdateDir)) {
     if (-not (Test-Path -LiteralPath $dir)) {
       New-Item -ItemType Directory -Path $dir | Out-Null
     }
@@ -138,19 +362,25 @@ function Load-OrInit-Secrets([hashtable]$ctx) {
 
   $changed = $false
 
-  while ([string]::IsNullOrWhiteSpace($secrets.privateKeyPath) -or -not (Test-Path -LiteralPath $secrets.privateKeyPath)) {
-    if (-not [string]::IsNullOrWhiteSpace($secrets.privateKeyPath)) {
-      Write-WarnMsg "签名私钥文件不存在：$($secrets.privateKeyPath)"
-    }
-    $inputPath = Read-Host '请输入 Tauri 更新签名私钥文件路径（minisign 私钥）'
-    if ([string]::IsNullOrWhiteSpace($inputPath)) { continue }
-    $candidate = $inputPath.Trim().Trim('"')
-    if (-not (Test-Path -LiteralPath $candidate)) {
-      Write-WarnMsg "路径无效，请重试。"
-      continue
-    }
-    $secrets.privateKeyPath = $candidate
+  $privateKeySelection = Resolve-PrivateKeyPath -ctx $ctx -secrets $secrets
+  if (-not [string]::IsNullOrWhiteSpace($privateKeySelection.Message)) {
+    Write-Info $privateKeySelection.Message
+  }
+  if ($secrets.privateKeyPath -ne $privateKeySelection.Path) {
+    $secrets.privateKeyPath = $privateKeySelection.Path
     $changed = $true
+  }
+  if ($privateKeySelection.Changed -and -not [string]::IsNullOrWhiteSpace($secrets.privateKeyPasswordEnc)) {
+    $passwordPrompt = if ($privateKeySelection.Imported) {
+      '已重建私钥文件。直接回车沿用已保存密码，输入 reset 重新输入密码'
+    } else {
+      '已切换私钥文件。直接回车沿用已保存密码，输入 reset 重新输入密码'
+    }
+    $reuseSavedPassword = (Read-Host $passwordPrompt).Trim()
+    if ($reuseSavedPassword -match '^(reset|r|y|yes)$') {
+      $secrets.privateKeyPasswordEnc = ''
+      $changed = $true
+    }
   }
 
   $pwdPlain = ''
@@ -696,11 +926,34 @@ function Prepare-ReleaseArtifacts {
     $sigPath = Sign-Installer -ctx $ctx -installerPath $installerInUpdate.FullName -privateKeyPath $privateKeyPath -privateKeyPassword $privateKeyPassword
   }
   $latestPath = Generate-LatestJson -ctx $ctx -installerPath $installerInUpdate.FullName -sigPath $sigPath -version $version
+  Write-ArtifactSummary -ctx $ctx -installerPath $installerInUpdate.FullName -sigPath $sigPath -latestPath $latestPath
 
   return [ordered]@{
     InstallerPath = $installerInUpdate.FullName
     SigPath = $sigPath
     LatestPath = $latestPath
+  }
+}
+
+function Write-ArtifactSummary {
+  param(
+    [hashtable]$ctx,
+    [string]$installerPath,
+    [string]$sigPath,
+    [string]$latestPath
+  )
+
+  Write-Ok "发布产物目录：$($ctx.ArtifactRoot)"
+  Write-Info "安装包目录：$($ctx.ExeOutDir)"
+  Write-Info "更新元数据目录：$($ctx.UpdateDir)"
+  if (-not [string]::IsNullOrWhiteSpace($installerPath)) {
+    Write-Info "安装包：$installerPath"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($sigPath)) {
+    Write-Info "签名文件：$sigPath"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($latestPath)) {
+    Write-Info "更新清单：$latestPath"
   }
 }
 
@@ -736,6 +989,8 @@ function Ensure-ReleaseArtifactsForPush {
     Write-WarnMsg '未找到 latest.json，将自动生成。'
     $latestPath = Generate-LatestJson -ctx $ctx -installerPath $installer.FullName -sigPath $sigPath -version $version
   }
+
+  Write-ArtifactSummary -ctx $ctx -installerPath $installer.FullName -sigPath $sigPath -latestPath $latestPath
 
   return [ordered]@{
     InstallerPath = $installer.FullName

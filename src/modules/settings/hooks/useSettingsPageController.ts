@@ -20,14 +20,12 @@ export function useSettingsPageController({
   bgBlur,
   onBgChange,
   onBgBlurChange,
-  onMiniRestoreModeChange,
   onMiniModeWidthChange,
   onMiniModeHeightChange,
 }: {
   bgType: "none" | "image" | "video";
   bgFsPath?: string | null;
   bgBlur: number;
-  miniRestoreMode?: MiniRestoreMode;
   miniModeWidth?: number;
   miniModeHeight?: number;
   onBgChange?: (type: "none" | "image" | "video", path: string | null) => void;
@@ -100,7 +98,6 @@ export function useSettingsPageController({
   const {
     handleLaunchAtLogin,
     handleCloseBehavior,
-    handleMiniRestoreMode,
     handleMiniModeSize,
   } = useWindowSettings({
     isTauri,
@@ -108,7 +105,6 @@ export function useSettingsPageController({
     setSettings,
     formatErrorMessage: formatSettingsError,
     setStorageMessage,
-    onMiniRestoreModeChange,
     onMiniModeSizeChange,
   });
 
@@ -212,7 +208,6 @@ export function useSettingsPageController({
     handleChooseBackground,
     handleLaunchAtLogin,
     handleCloseBehavior,
-    handleMiniRestoreMode,
     handleMiniModeSize,
     handleChooseFolder,
     handleRestoreDefaultStorage,
@@ -221,3 +216,4 @@ export function useSettingsPageController({
     handleMigrateNow,
   };
 }
+

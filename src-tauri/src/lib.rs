@@ -7,6 +7,7 @@ pub mod media_cmds;
 mod music;
 mod music_control;
 mod music_lyrics;
+mod music_qqmusic_cache;
 mod music_settings;
 mod native_player;
 mod settings;
@@ -15,11 +16,11 @@ mod spider_artifact_download;
 mod spider_bridge_payload;
 mod spider_cmds;
 mod spider_cmds_dex;
-mod spider_daemon;
 mod spider_cmds_exec;
 mod spider_cmds_profile;
 mod spider_cmds_runtime;
 mod spider_compat;
+mod spider_daemon;
 pub mod spider_diag;
 mod spider_fast_paths;
 mod spider_local_runtime_android;
@@ -32,6 +33,7 @@ mod system_overview;
 mod updater;
 mod vod_hls_relay;
 mod vod_hls_runtime;
+pub mod vod_playback_diag;
 mod vod_source_stats;
 
 use db::PlayRecord;
@@ -61,11 +63,28 @@ use url::Url;
 const COVER_DATA_URL_MAX_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) const MPV_TEST_LOG_FILE: &str = "mpv_log.txt";
 static MPV_TEST_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+#[cfg(target_os = "windows")]
+static WINDOW_HIT_TEST_REGIONS: OnceLock<
+    Mutex<std::collections::HashMap<isize, RoundedHitRegion>>,
+> = OnceLock::new();
+#[cfg(target_os = "windows")]
+static WINDOW_HIT_TEST_ORIGINAL_PROCS: OnceLock<Mutex<std::collections::HashMap<isize, isize>>> =
+    OnceLock::new();
 
 #[cfg(target_os = "windows")]
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\Halo.SingleInstance.com.tauri-app.halo";
 #[cfg(target_os = "windows")]
 const MAIN_WINDOW_TITLE: &str = "halo";
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug)]
+struct RoundedHitRegion {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    radius: i32,
+}
 
 #[cfg(target_os = "windows")]
 fn to_wide_null(value: &str) -> Vec<u16> {
@@ -116,6 +135,144 @@ fn ensure_single_instance() -> Result<bool, String> {
 #[cfg(target_os = "windows")]
 fn should_enforce_single_instance() -> bool {
     !cfg!(debug_assertions)
+}
+
+#[cfg(target_os = "windows")]
+fn window_hit_test_regions() -> &'static Mutex<std::collections::HashMap<isize, RoundedHitRegion>> {
+    WINDOW_HIT_TEST_REGIONS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(target_os = "windows")]
+fn window_hit_test_original_procs() -> &'static Mutex<std::collections::HashMap<isize, isize>> {
+    WINDOW_HIT_TEST_ORIGINAL_PROCS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(target_os = "windows")]
+fn point_in_rounded_rect(point_x: i32, point_y: i32, region: RoundedHitRegion) -> bool {
+    let left = region.x;
+    let top = region.y;
+    let right = left + region.width.max(1);
+    let bottom = top + region.height.max(1);
+
+    if point_x < left || point_x >= right || point_y < top || point_y >= bottom {
+        return false;
+    }
+
+    let radius = region
+        .radius
+        .max(0)
+        .min(region.width.max(1) / 2)
+        .min(region.height.max(1) / 2);
+
+    if radius <= 0 {
+        return true;
+    }
+
+    let inner_left = left + radius;
+    let inner_right = right - radius;
+    let inner_top = top + radius;
+    let inner_bottom = bottom - radius;
+
+    if point_x >= inner_left && point_x < inner_right {
+        return true;
+    }
+
+    if point_y >= inner_top && point_y < inner_bottom {
+        return true;
+    }
+
+    let corner_center_x = if point_x < inner_left {
+        inner_left
+    } else {
+        inner_right - 1
+    };
+    let corner_center_y = if point_y < inner_top {
+        inner_top
+    } else {
+        inner_bottom - 1
+    };
+    let dx = point_x - corner_center_x;
+    let dy = point_y - corner_center_y;
+
+    dx * dx + dy * dy <= radius * radius
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn halo_hit_test_window_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::{LRESULT, POINT};
+    use windows::Win32::Graphics::Gdi::ScreenToClient;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallWindowProcW, DefWindowProcW, HTTRANSPARENT, WM_NCHITTEST, WNDPROC,
+    };
+
+    if msg == WM_NCHITTEST {
+        let window_key = hwnd.0 as isize;
+        let active_region = window_hit_test_regions()
+            .lock()
+            .ok()
+            .and_then(|regions| regions.get(&window_key).copied());
+
+        if let Some(region) = active_region {
+            let mut point = POINT {
+                x: (lparam.0 & 0xffff) as i16 as i32,
+                y: ((lparam.0 >> 16) & 0xffff) as i16 as i32,
+            };
+
+            if unsafe { ScreenToClient(hwnd, &mut point) }.as_bool()
+                && !point_in_rounded_rect(point.x, point.y, region)
+            {
+                return LRESULT(HTTRANSPARENT as isize);
+            }
+        }
+    }
+
+    let previous_proc = window_hit_test_original_procs()
+        .lock()
+        .ok()
+        .and_then(|procs| procs.get(&(hwnd.0 as isize)).copied())
+        .map(|proc| unsafe { std::mem::transmute::<isize, WNDPROC>(proc) });
+
+    if let Some(proc) = previous_proc {
+        unsafe { CallWindowProcW(proc, hwnd, msg, wparam, lparam) }
+    } else {
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_window_hit_test_subclass<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
+
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let window_key = hwnd.0 as isize;
+    let mut procs = window_hit_test_original_procs()
+        .lock()
+        .map_err(|_| "window hit test proc lock poisoned".to_string())?;
+
+    if procs.contains_key(&window_key) {
+        return Ok(());
+    }
+
+    let previous_proc = unsafe {
+        SetWindowLongPtrW(
+            hwnd,
+            GWLP_WNDPROC,
+            halo_hit_test_window_proc as *const () as usize as isize,
+        )
+    };
+    if previous_proc == 0 {
+        return Err("SetWindowLongPtrW for hit test subclass failed".to_string());
+    }
+
+    procs.insert(window_key, previous_proc);
+    Ok(())
 }
 
 fn dev_workspace_root() -> std::path::PathBuf {
@@ -263,6 +420,111 @@ fn clear_mpv_test_log() -> Result<(), String> {
 #[tauri::command]
 fn append_mpv_test_log(message: String) -> Result<(), String> {
     append_mpv_test_log_line(&message)
+}
+
+#[tauri::command]
+fn set_current_window_bounds_atomic(
+    window: tauri::WebviewWindow,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
+        };
+
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+        let next_width = width.max(1);
+        let next_height = height.max(1);
+
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                x,
+                y,
+                next_width,
+                next_height,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER,
+            );
+        }
+
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (window, x, y, width, height);
+        Err("atomic window bounds update is only available on Windows".to_string())
+    }
+}
+
+#[tauri::command]
+fn set_current_window_hit_region_rounded(
+    window: tauri::WebviewWindow,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    radius: i32,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Graphics::Gdi::SetWindowRgn;
+
+        ensure_window_hit_test_subclass(&window)?;
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+        let window_key = hwnd.0 as isize;
+        let normalized_region = RoundedHitRegion {
+            x,
+            y,
+            width: width.max(1),
+            height: height.max(1),
+            radius: radius.max(0),
+        };
+
+        let mut regions = window_hit_test_regions()
+            .lock()
+            .map_err(|_| "window hit test region lock poisoned".to_string())?;
+        regions.insert(window_key, normalized_region);
+        drop(regions);
+
+        let _ = unsafe { SetWindowRgn(hwnd, None, true) };
+
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (window, x, y, width, height, radius);
+        Err("rounded window hit region is only available on Windows".to_string())
+    }
+}
+
+#[tauri::command]
+fn clear_current_window_hit_region(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Graphics::Gdi::SetWindowRgn;
+
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+        let window_key = hwnd.0 as isize;
+
+        let mut regions = window_hit_test_regions()
+            .lock()
+            .map_err(|_| "window hit test region lock poisoned".to_string())?;
+        regions.remove(&window_key);
+        drop(regions);
+
+        let _ = unsafe { SetWindowRgn(hwnd, None, true) };
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        Err("clearing window hit region is only available on Windows".to_string())
+    }
 }
 
 #[tauri::command]
@@ -602,6 +864,9 @@ pub fn run() {
             native_player::native_player_destroy,
             clear_mpv_test_log,
             append_mpv_test_log,
+            set_current_window_bounds_atomic,
+            set_current_window_hit_region_rounded,
+            clear_current_window_hit_region,
             get_mpv_test_log_path,
             rust_log,
         ])

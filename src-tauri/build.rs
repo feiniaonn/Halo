@@ -25,7 +25,10 @@ fn latest_modified_in(path: &PathBuf) -> Option<SystemTime> {
 }
 
 fn bridge_rebuild_required(manifest_dir: &PathBuf) -> bool {
-    let output_jar = manifest_dir.join("resources").join("jar").join("bridge.jar");
+    let output_jar = manifest_dir
+        .join("resources")
+        .join("jar")
+        .join("bridge.jar");
     let output_modified = std::fs::metadata(&output_jar)
         .ok()
         .and_then(|metadata| metadata.modified().ok());
@@ -57,10 +60,13 @@ fn main() {
             .map(|value| value.trim() == "1")
             .unwrap_or(false)
         {
-            println!("cargo:warning=Skipping spider bridge rebuild because HALO_SKIP_BRIDGE_BUILD=1");
+            println!(
+                "cargo:warning=Skipping spider bridge rebuild because HALO_SKIP_BRIDGE_BUILD=1"
+            );
         } else {
-            let manifest_dir =
-                PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR missing"));
+            let manifest_dir = PathBuf::from(
+                std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR missing"),
+            );
             let script_path = manifest_dir.join("spider-bridge").join("build_bridge.ps1");
             if script_path.is_file() && bridge_rebuild_required(&manifest_dir) {
                 let status = Command::new("powershell")
@@ -75,7 +81,9 @@ fn main() {
                     panic!("spider bridge rebuild failed with status {status}");
                 }
             } else if script_path.is_file() {
-                println!("cargo:warning=Spider bridge rebuild skipped because outputs are up to date");
+                println!(
+                    "cargo:warning=Spider bridge rebuild skipped because outputs are up to date"
+                );
             } else {
                 println!(
                     "cargo:warning=Spider bridge build script not found: {}",

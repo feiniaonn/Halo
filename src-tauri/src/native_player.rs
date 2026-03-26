@@ -777,8 +777,7 @@ pub fn native_player_status(
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false);
 
-            let first_frame_rendered = time_pos.unwrap_or(0.0) > 0.05
-                || vo_configured;
+            let first_frame_rendered = time_pos.unwrap_or(0.0) > 0.05 || vo_configured;
             let state = if session.error_code.is_some() {
                 "error"
             } else if idle_active {

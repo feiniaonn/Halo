@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { MarqueeText } from "@/components/ui/MarqueeText";
+import { ACTIVE_LINE_LEAD_MS, KaraokeLineText } from "@/modules/music/components/KaraokeLineText";
 import { cn } from "@/lib/utils";
 import type {
   CurrentPlayingInfo,
@@ -35,16 +36,25 @@ const LYRICS_ROW_HEIGHT = 64;
 const LYRICS_VISIBLE_ROWS = 5;
 const LYRICS_CENTER_SLOT = Math.floor(LYRICS_VISIBLE_ROWS / 2);
 
-function renderLineText(line: LyricLine) {
+function renderLineText(
+  line: LyricLine,
+  options?: {
+    playbackMs?: number | null;
+    wordTimed?: boolean;
+  },
+) {
+  if (options?.wordTimed && line.words && line.words.length > 0) {
+    return <KaraokeLineText line={line} playbackMs={options.playbackMs ?? null} />;
+  }
   return <span>{resolveLyricLineDisplayText(line)}</span>;
 }
 
 function resolveRowMotion(distance: number): { opacity: number; scale: number } {
   if (distance <= 0) return { opacity: 1, scale: 1 };
-  if (distance === 1) return { opacity: 0.82, scale: 0.985 };
-  if (distance === 2) return { opacity: 0.58, scale: 0.967 };
-  if (distance === 3) return { opacity: 0.36, scale: 0.95 };
-  return { opacity: 0.22, scale: 0.938 };
+  if (distance === 1) return { opacity: 0.9, scale: 0.988 };
+  if (distance === 2) return { opacity: 0.76, scale: 0.972 };
+  if (distance === 3) return { opacity: 0.58, scale: 0.956 };
+  return { opacity: 0.42, scale: 0.944 };
 }
 
 function normalizeSubline(text: string | null | undefined): string | null {
@@ -151,13 +161,14 @@ export function MusicLyricsPanel({
 }: MusicLyricsPanelProps) {
   const lines = useMemo(() => response?.lines ?? [], [response?.lines]);
   const playbackMs = resolvePlaybackMs(playbackPositionSecs ?? current.position_secs, offsetMs);
+  const activeLinePlaybackMs = playbackMs == null ? null : playbackMs + ACTIVE_LINE_LEAD_MS;
   const providerLabel = resolveLyricsProviderLabel(response?.provider);
   const providerHint = response?.from_cache ? `${providerLabel}（缓存）` : providerLabel;
   const trackKey = `${current.artist ?? ""}::${current.title ?? ""}`;
 
   const currentLineIndex = useMemo(
-    () => findCurrentLyricLineIndex(lines, playbackMs),
-    [lines, playbackMs],
+    () => findCurrentLyricLineIndex(lines, activeLinePlaybackMs),
+    [activeLinePlaybackMs, lines],
   );
   const [stableCenterIndex, setStableCenterIndex] = useState(0);
 
@@ -185,8 +196,9 @@ export function MusicLyricsPanel({
 
   const scrollOffsetY = useMemo(() => -centerIndex * LYRICS_ROW_HEIGHT, [centerIndex]);
 
-  const baseContainer =
-    "glass-card rounded-xl border border-white/10 bg-black/[0.08] p-4 backdrop-blur-sm";
+  const panelShell =
+    "halo-lyrics-panel relative flex-1 min-h-[300px] overflow-hidden rounded-[24px] border bg-[var(--halo-lyrics-panel-bg)] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] backdrop-blur-xl";
+  const baseContainer = `${panelShell} p-4`;
 
   if (loading && (!response?.ok || lines.length === 0)) {
     return (
@@ -217,103 +229,128 @@ export function MusicLyricsPanel({
   }
 
   return (
-    <section className="flex-1 flex flex-col pt-2 min-h-[300px]">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 px-1 shrink-0">
-        <div className="flex gap-2">
-          <LyricsCandidateSelect
-            candidates={response.candidates}
-            value={activeCandidateId ?? response.candidate_id ?? ""}
-            onChange={onSelectCandidate}
-          />
-        </div>
-
-        <span className="rounded-md border border-white/5 bg-black/10 px-2.5 py-1 text-[10px] text-muted-foreground font-mono truncate max-w-[120px]" title={providerHint}>
-          {providerHint}
-        </span>
+    <section
+      className={cn(panelShell, "flex flex-col px-3 py-3")}
+      style={{ borderColor: "var(--halo-lyrics-panel-border)" }}
+    >
+      <div className="pointer-events-none absolute inset-0 z-0">
+        <div className="halo-lyrics-panel-layer absolute inset-0 bg-[linear-gradient(180deg,var(--halo-lyrics-panel-highlight),transparent_24%,transparent_76%,var(--halo-lyrics-panel-highlight))]" />
+        <div className="halo-lyrics-panel-glow absolute inset-x-10 top-0 h-24 rounded-full bg-[var(--halo-lyrics-panel-primary-glow)] blur-3xl" />
       </div>
 
-      <div
-        className="relative flex-1 overflow-hidden"
-        style={{
-          maskImage: "linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%)",
-          WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%)"
-        }}
-      >
-        <div
-          className="pointer-events-none absolute left-0 right-0 z-0 rounded-xl"
-          style={{
-            top: `${LYRICS_CENTER_SLOT * LYRICS_ROW_HEIGHT + 4}px`,
-            height: `${LYRICS_ROW_HEIGHT - 8}px`,
-          }}
-        >
-          {/* subtle glow for current line */}
-          <div className="absolute inset-0 bg-primary/5 rounded-xl blur-xl" />
+      <div className="relative z-10 flex h-full flex-col">
+        <div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-2 px-1">
+          <div className="flex gap-2">
+            <LyricsCandidateSelect
+              candidates={response.candidates}
+              value={activeCandidateId ?? response.candidate_id ?? ""}
+              onChange={onSelectCandidate}
+            />
+          </div>
+
+          <span
+            className="halo-lyrics-provider-chip max-w-[120px] truncate rounded-md border px-2.5 py-1 text-[10px] font-mono text-foreground/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+            style={{
+              borderColor: "var(--halo-lyrics-provider-border)",
+              backgroundColor: "var(--halo-lyrics-provider-bg)",
+            }}
+            title={providerHint}
+          >
+            {providerHint}
+          </span>
         </div>
 
         <div
-          className="absolute inset-x-0 will-change-transform transition-transform duration-[600ms] ease-[cubic-bezier(0.22,1,0.36,1)] z-[5]"
-          style={{ transform: `translateY(${scrollOffsetY}px)` }}
+          className="relative flex-1 overflow-hidden"
+          style={{
+            maskImage: "linear-gradient(to bottom, transparent 0%, black 18%, black 82%, transparent 100%)",
+            WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 18%, black 82%, transparent 100%)",
+          }}
         >
-          <div style={{ height: `${LYRICS_CENTER_SLOT * LYRICS_ROW_HEIGHT}px` }} />
-          {lines.map((line, index) => {
-            const distance = Math.abs(index - centerIndex);
-            const { opacity, scale } = resolveRowMotion(distance);
-            const isCenterSlot = index === centerIndex;
-            const translation = normalizeSubline(line.translation);
-            const romanized = normalizeSubline(line.romanized);
-            const secondary = showTranslation
-              ? translation
-              : showRomanized
-                ? romanized
-                : null;
+          <div
+            className="halo-lyrics-current-highlight pointer-events-none absolute left-0 right-0 z-0 rounded-xl"
+            style={{
+              top: `${LYRICS_CENTER_SLOT * LYRICS_ROW_HEIGHT + 4}px`,
+              height: `${LYRICS_ROW_HEIGHT - 8}px`,
+            }}
+          >
+            <div className="absolute inset-0 rounded-xl border bg-[var(--halo-lyrics-panel-bg-strong)]" style={{ borderColor: "var(--halo-lyrics-panel-border)" }} />
+            <div className="absolute inset-0 rounded-xl bg-[var(--halo-lyrics-panel-primary-glow)] blur-xl" />
+          </div>
 
-            return (
-              <div
-                key={`lyrics-row-${index}-${line.start_ms}`}
-                className={cn(
-                  "flex items-center px-4 transition-all duration-500 ease-out origin-left",
-                  isCenterSlot ? "text-foreground drop-shadow-[0_2px_8px_rgba(255,255,255,0.15)]" : "text-muted-foreground/60",
-                )}
-                style={{
-                  height: `${LYRICS_ROW_HEIGHT}px`,
-                  opacity,
-                  transform: `scale(${scale})`,
-                }}
-              >
-                <div className="min-w-0 flex flex-col gap-0.5 w-full">
-                  {isCenterSlot ? (
-                    <MarqueeText
-                      className="leading-tight transition-all duration-500 text-[20px] font-bold tracking-tight"
-                    >
-                      {renderLineText(line)}
-                    </MarqueeText>
-                  ) : (
-                    <p
-                      className="truncate leading-tight transition-all duration-500 text-[15px] font-medium"
-                    >
-                      {renderLineText(line)}
-                    </p>
+          <div
+            className="absolute inset-x-0 z-[5] will-change-transform transition-transform duration-[600ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
+            style={{ transform: `translateY(${scrollOffsetY}px)` }}
+          >
+            <div style={{ height: `${LYRICS_CENTER_SLOT * LYRICS_ROW_HEIGHT}px` }} />
+            {lines.map((line, index) => {
+              const distance = Math.abs(index - centerIndex);
+              const { opacity, scale } = resolveRowMotion(distance);
+              const isCenterSlot = index === centerIndex;
+              const translation = normalizeSubline(line.translation);
+              const romanized = normalizeSubline(line.romanized);
+              const secondary = showTranslation
+                ? translation
+                : showRomanized
+                  ? romanized
+                  : null;
+
+              return (
+                <div
+                  key={`lyrics-row-${index}-${line.start_ms}`}
+                  className={cn(
+                    "flex origin-left items-center px-4 transition-all duration-500 ease-out",
+                    isCenterSlot
+                      ? "text-foreground"
+                      : "text-[color:var(--halo-lyrics-row-color)]",
                   )}
-                  {secondary && (
-                    isCenterSlot ? (
-                      <MarqueeText
-                        className="transition-all duration-500 mt-0.5 text-[13px] text-foreground/80 font-medium"
-                      >
-                        {secondary}
-                      </MarqueeText>
-                    ) : (
+                  style={{
+                    height: `${LYRICS_ROW_HEIGHT}px`,
+                    opacity,
+                    transform: `scale(${scale})`,
+                    textShadow: isCenterSlot
+                      ? "var(--halo-lyrics-center-shadow)"
+                      : "var(--halo-lyrics-row-shadow)",
+                  }}
+                >
+                  <div className="min-w-0 w-full flex flex-col gap-0.5">
+                    {isCenterSlot ? (
+                        <MarqueeText
+                          className="text-[20px] font-bold leading-tight tracking-tight transition-all duration-500"
+                        >
+                          {renderLineText(line, {
+                            playbackMs,
+                            wordTimed: true,
+                          })}
+                        </MarqueeText>
+                      ) : (
                       <p
-                        className="truncate transition-all duration-500 mt-0.5 text-[11px] text-muted-foreground/50"
+                        className="truncate text-[15px] font-medium leading-tight tracking-[-0.01em] transition-all duration-500"
                       >
-                        {secondary}
+                        {renderLineText(line)}
                       </p>
-                    )
-                  )}
+                    )}
+                    {secondary && (
+                      isCenterSlot ? (
+                        <MarqueeText
+                          className="mt-0.5 text-[13px] font-medium text-foreground/84 transition-all duration-500"
+                        >
+                          {secondary}
+                        </MarqueeText>
+                      ) : (
+                        <p
+                          className="mt-0.5 truncate text-[11px] text-[color:var(--halo-lyrics-subline-color)] transition-all duration-500"
+                        >
+                          {secondary}
+                        </p>
+                      )
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-          <div style={{ height: `${LYRICS_CENTER_SLOT * LYRICS_ROW_HEIGHT}px` }} />
+              );
+            })}
+            <div style={{ height: `${LYRICS_CENTER_SLOT * LYRICS_ROW_HEIGHT}px` }} />
+          </div>
         </div>
       </div>
     </section>

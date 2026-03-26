@@ -38,11 +38,11 @@ function RuntimeDot({ state }: { state: SpiderSiteRuntimeState | null | undefine
   return (
     <span
       className={cn(
-        "shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
-        tone === "success" && "border-emerald-400/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-        tone === "warning" && "border-amber-400/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-        tone === "error" && "border-red-400/30 bg-red-500/10 text-red-700 dark:text-red-300",
-        tone === "neutral" && "border-border bg-muted text-muted-foreground",
+        "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+        tone === "success" && "border-emerald-400/24 bg-emerald-400/10 text-emerald-200",
+        tone === "warning" && "border-amber-400/24 bg-amber-400/10 text-amber-100",
+        tone === "error" && "border-rose-500/24 bg-rose-500/10 text-rose-100",
+        tone === "neutral" && "border-white/10 bg-white/[0.04] text-muted-foreground",
       )}
     >
       {getSpiderRuntimeLabel(state)}
@@ -68,8 +68,9 @@ export function MediaSourceOverview({
   return (
     <>
       <button
+        type="button"
         onClick={() => setSitePickerOpen(true)}
-        className="group relative flex h-9 items-center gap-2 rounded-full border border-white/10 bg-background/55 px-3 text-sm font-medium text-foreground/90 shadow-sm backdrop-blur-md transition-all hover:bg-accent hover:text-accent-foreground active:scale-95"
+        className="halo-media-source-trigger halo-interactive halo-focusable group relative flex h-10 items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3.5 text-sm font-medium text-foreground/90 shadow-[var(--halo-shadow-soft)]"
         aria-label={mode === "vod" ? "切换点播接口" : "切换直播源"}
       >
         {loadingConfig ? (
@@ -77,34 +78,33 @@ export function MediaSourceOverview({
         ) : (
           <Settings2 className="size-3.5 text-primary" />
         )}
-        <span className="max-w-[120px] truncate">
+        <span className="max-w-[140px] truncate">
           {loadingConfig ? "加载中..." : activeSite?.name ?? (mode === "vod" ? "切换接口" : "切换直播源")}
         </span>
         <ChevronRight className="size-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
       </button>
 
       <Dialog open={sitePickerOpen} onOpenChange={setSitePickerOpen}>
-        <DialogContent className="flex h-[80vh] max-w-[860px] flex-col overflow-hidden rounded-2xl border bg-background/95 p-0 shadow-2xl backdrop-blur-2xl">
-          {/* Header */}
-          <div className="flex shrink-0 flex-col gap-3 border-b px-5 py-4">
+        <DialogContent className="flex h-[82vh] max-w-[920px] flex-col overflow-hidden p-0">
+          <div className="flex shrink-0 flex-col gap-4 border-b border-white/8 px-5 py-5">
             <DialogHeader>
               <DialogTitle className="text-base font-semibold">
                 {mode === "vod" ? "切换点播接口" : "切换直播源"}
               </DialogTitle>
             </DialogHeader>
 
-            {/* Repo tabs */}
             {repoUrls.length > 0 && (
-              <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+              <div className="flex gap-2 overflow-x-auto pb-1">
                 {repoUrls.map((repo) => (
                   <button
                     key={repo.url}
+                    type="button"
                     onClick={() => onSelectRepo(repo)}
                     className={cn(
-                      "shrink-0 rounded-lg border px-3 py-1 text-xs font-semibold transition-all",
+                      "halo-interactive halo-focusable shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition-all duration-200",
                       activeRepoUrl === repo.url
-                        ? "border-primary/40 bg-primary text-primary-foreground shadow"
-                        : "border-border bg-muted/60 text-muted-foreground hover:border-primary/25 hover:text-foreground",
+                        ? "border-primary/20 bg-primary/12 text-primary shadow-[var(--halo-shadow-glow)]"
+                        : "border-white/8 bg-white/[0.04] text-muted-foreground hover:border-primary/16 hover:text-foreground",
                     )}
                   >
                     {repo.name}
@@ -114,43 +114,40 @@ export function MediaSourceOverview({
             )}
           </div>
 
-          {/* Sites list */}
           <ScrollArea className="flex-1 min-h-0">
-            <div className="px-3 py-2">
+            <div className="space-y-1.5 px-3 py-3">
               {sites.map((site) => {
                 const runtime = siteRuntimeStates[site.key];
                 const isActive = activeSiteKey === site.key;
                 return (
                   <button
                     key={site.key}
+                    type="button"
                     onClick={() => {
                       onSelectSite(site.key);
                       setSitePickerOpen(false);
                     }}
                     className={cn(
-                      "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors",
+                      "halo-interactive flex w-full items-center gap-3 rounded-[calc(var(--radius-xl)-4px)] border px-4 py-3 text-left transition-all duration-200",
                       isActive
-                        ? "bg-primary/10 text-foreground"
-                        : "text-foreground/80 hover:bg-muted",
+                        ? "border-primary/18 bg-primary/10 text-foreground shadow-[var(--halo-shadow-glow)]"
+                        : "border-transparent bg-transparent text-foreground/82 hover:border-white/8 hover:bg-white/[0.04]",
                     )}
                   >
-                    {/* Active indicator */}
-                    <span className={cn(
-                      "size-1.5 shrink-0 rounded-full",
-                      isActive ? "bg-primary" : "bg-muted-foreground/30"
-                    )} />
+                    <span
+                      className={cn(
+                        "size-2 shrink-0 rounded-full",
+                        isActive ? "bg-primary shadow-[0_0_10px_rgba(82,214,236,0.9)]" : "bg-muted-foreground/30",
+                      )}
+                    />
 
-                    {/* Name */}
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                      {site.name}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold">{site.name}</span>
+                      <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                        {site.type === 3 ? "Spider 接口" : `类型 ${site.type}`}
+                      </span>
                     </span>
 
-                    {/* Type */}
-                    <span className="shrink-0 text-[10px] text-muted-foreground uppercase tracking-wide">
-                      {site.type === 3 ? "Spider" : `T${site.type}`}
-                    </span>
-
-                    {/* Runtime badge */}
                     <RuntimeDot state={runtime} />
                   </button>
                 );

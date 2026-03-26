@@ -1,6 +1,5 @@
 import {
   getVodPlaybackDiagnosticsElapsedMs,
-  getVodPlaybackDiagnostics,
   type VodPlaybackDiagnostics,
   type VodResolvedStream,
 } from "@/modules/media/services/vodPlayback";
@@ -8,19 +7,6 @@ import {
 export function summarizePlaybackHeaderKeys(headers: Record<string, string> | null): string {
   const keys = Object.keys(headers ?? {}).map((key) => key.trim()).filter(Boolean).sort();
   return keys.length > 0 ? keys.join(",") : "none";
-}
-
-function formatPlaybackDiagnostics(diagnostics: VodPlaybackDiagnostics | null): string {
-  if (!diagnostics || diagnostics.steps.length === 0) {
-    return "none";
-  }
-  return diagnostics.steps
-    .map((step) => {
-      const elapsed = typeof step.elapsedMs === "number" ? `@${step.elapsedMs}ms` : "";
-      const budget = typeof step.budgetMs === "number" ? `/b${step.budgetMs}` : "";
-      return `${step.stage}:${step.status}${elapsed}${budget}:${step.detail.replace(/\s+/g, "_")}`;
-    })
-    .join("|");
 }
 
 export function buildPlaybackResolutionLog(input: {
@@ -31,8 +17,7 @@ export function buildPlaybackResolutionLog(input: {
   streamKind: string;
   kernelPlan: string[];
 }): string {
-  const diagnostics = getVodPlaybackDiagnostics(input.stream);
-  const elapsedMs = getVodPlaybackDiagnosticsElapsedMs(diagnostics);
+  const elapsedMs = getVodPlaybackDiagnosticsElapsedMs(input.stream.diagnostics ?? null);
   return [
     `[VodPlayer] playback_resolve`,
     `route=${input.routeName}`,
@@ -43,7 +28,6 @@ export function buildPlaybackResolutionLog(input: {
     `stream_kind=${input.streamKind}`,
     `kernel_plan=[${input.kernelPlan.join(",")}]`,
     `elapsed_ms=${elapsedMs ?? "na"}`,
-    `diagnostics=${formatPlaybackDiagnostics(diagnostics)}`,
   ].join(" ");
 }
 
@@ -61,6 +45,5 @@ export function buildPlaybackResolutionFailureLog(input: {
     `episode=${input.episodeName}`,
     `reason=${input.reason}`,
     `elapsed_ms=${elapsedMs ?? "na"}`,
-    `diagnostics=${formatPlaybackDiagnostics(diagnostics)}`,
   ].join(" ");
 }

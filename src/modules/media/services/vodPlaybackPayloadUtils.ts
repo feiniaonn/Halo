@@ -281,6 +281,33 @@ export function looksLikeWrappedMediaUrl(url: string): boolean {
   }
 }
 
+export function isVolatileWrappedMediaUrl(url: string): boolean {
+  const normalized = sanitizeMediaUrlCandidate(url) || url.trim();
+  if (!looksLikeWrappedMediaUrl(normalized)) {
+    return false;
+  }
+  try {
+    const parsed = new URL(normalized);
+    const pathname = parsed.pathname.toLowerCase();
+    if (/(getm3u8|playm3u8)/i.test(pathname)) {
+      return true;
+    }
+    return [
+      'time',
+      'token',
+      'sign',
+      'sig',
+      'auth',
+      'expires',
+      'expiry',
+      'timestamp',
+    ].some((key) => parsed.searchParams.has(key));
+  } catch {
+    return /(getm3u8|playm3u8)|[?&](time|token|sign|sig|auth|expires|expiry|timestamp)=/i
+      .test(normalized);
+  }
+}
+
 export function looksLikeDirectPlayableUrl(url: string): boolean {
   const normalized = (sanitizeMediaUrlCandidate(url) || url.trim()).toLowerCase();
   if (!normalized.startsWith('http')) return false;

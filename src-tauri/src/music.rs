@@ -1746,6 +1746,17 @@ pub async fn run_gsmtc_listener(
                 }
             }
 
+            if current.source_platform.as_deref() == Some("qqmusic")
+                && current.cover_data_url.is_none()
+                && current.cover_path.is_none()
+            {
+                current.cover_data_url = crate::music_qqmusic_cache::find_cover_data_url(
+                    current.artist.as_str(),
+                    current.title.as_str(),
+                    current.duration_secs,
+                );
+            }
+
             if current.source_platform.as_deref() == Some("netease") {
                 apply_netease_virtual_position(&mut state, current);
             } else {

@@ -44,6 +44,7 @@ const DEFAULT_SETTINGS: MusicSettings = {
     previous: null,
     play_pause: null,
     next: null,
+    restore_mini_home: "Control+Shift+H",
   },
   music_lyrics_enabled: true,
   music_lyrics_show_translation: true,
@@ -55,8 +56,9 @@ const DEFAULT_SETTINGS: MusicSettings = {
   music_lyrics_scrape_notice_ack: false,
 };
 
-const HOTKEY_ACTIONS: MusicHotkeyAction[] = ["previous", "play_pause", "next"];
+const HOTKEY_ACTIONS: MusicHotkeyAction[] = ["previous", "play_pause", "next", "restore_mini_home"];
 const HISTORY_PAGE_SIZE = 10;
+const RESTORE_MINI_HOME_ACTION: MusicHotkeyAction = "restore_mini_home";
 
 function normalizeHotkeyBinding(value: string | null | undefined): string | null {
   const trimmed = (value ?? "").trim();
@@ -74,6 +76,7 @@ function normalizeSettingsForCompare(input: MusicSettings): MusicSettings {
       previous: normalizeHotkeyBinding(input.music_hotkeys_bindings.previous),
       play_pause: normalizeHotkeyBinding(input.music_hotkeys_bindings.play_pause),
       next: normalizeHotkeyBinding(input.music_hotkeys_bindings.next),
+      restore_mini_home: normalizeHotkeyBinding(input.music_hotkeys_bindings.restore_mini_home),
     },
   };
 }
@@ -190,6 +193,7 @@ export function MusicPage() {
     previous: null,
     play_pause: null,
     next: null,
+    restore_mini_home: null,
   });
 
   const { data: top10, loading: top10Loading } = useTop10();
@@ -318,6 +322,7 @@ export function MusicPage() {
           previous: settings.music_hotkeys_bindings.previous?.trim() ?? "",
           play_pause: settings.music_hotkeys_bindings.play_pause?.trim() ?? "",
           next: settings.music_hotkeys_bindings.next?.trim() ?? "",
+          restore_mini_home: settings.music_hotkeys_bindings.restore_mini_home?.trim() ?? "",
         },
       };
       await setMusicSettings(payload);
@@ -366,7 +371,7 @@ export function MusicPage() {
   };
 
   const startHotkeyCapture = (action: MusicHotkeyAction) => {
-    if (!settings.music_hotkeys_enabled) {
+    if (action !== RESTORE_MINI_HOME_ACTION && !settings.music_hotkeys_enabled) {
       return;
     }
     setHotkeyCapture({
@@ -532,7 +537,7 @@ export function MusicPage() {
         <div className="flex flex-1 flex-col gap-4 min-w-0 min-h-0">
           {currentPlaying ? (
             <>
-              <Card className="glass-card border-none flex flex-col gap-4 p-5 shrink-0 relative overflow-hidden">
+              <Card className="halo-music-player-card flex flex-col gap-4 rounded-2xl border border-white/5 bg-white/[0.015] p-5 shrink-0 relative overflow-hidden shadow-sm">
                 <div className="relative z-10 flex flex-col gap-4">
                   <div className="flex gap-4 items-center">
                     <CoverImage
@@ -565,7 +570,7 @@ export function MusicPage() {
                         type="button"
                         disabled={!canPlayPause || runningCommand !== null}
                         onClick={() => void handleRunCommand("play_pause")}
-                        className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_4px_15px_rgba(var(--primary),0.4)] transition-all hover:scale-105 hover:shadow-[0_6px_20px_rgba(var(--primary),0.5)] active:scale-90 active:shadow-none disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:scale-100 disabled:shadow-none"
+                        className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-foreground transition-all hover:bg-white/20 active:scale-95 disabled:cursor-not-allowed disabled:opacity-45"
                         aria-label={controlState?.target?.playback_status === "Playing" ? "暂停" : "播放"}
                         title={controlState?.target?.playback_status === "Playing" ? "暂停" : "播放"}
                       >
@@ -601,7 +606,7 @@ export function MusicPage() {
                   <div className="z-10 flex flex-col gap-1.5">
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/20 dark:bg-white/5 cursor-default group relative">
                       <div
-                        className="h-full rounded-full bg-primary/90 hover:bg-primary transition-colors will-change-transform drop-shadow-[0_0_6px_rgba(var(--primary),0.6)]"
+                        className="h-full rounded-full bg-primary/80 will-change-[width]"
                         style={{ width: `${progressPercent}%` }}
                       />
                     </div>
@@ -609,7 +614,7 @@ export function MusicPage() {
                       <span>{resolvedPositionSecs !== null ? formatDuration(resolvedPositionSecs) : "--:--"}</span>
                       <div className="flex items-center gap-2">
                         <span className="flex items-center gap-1.5 px-2.5 py-0.5 bg-black/10 dark:bg-white/5 rounded-full text-[10px] font-semibold tracking-tight text-foreground/80 ring-1 ring-white/5">
-                          <span className="size-1.5 rounded-full bg-green-500/80 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></span>
+                          <span className="size-1.5 rounded-full bg-green-500/80"></span>
                           {controlState?.target
                             ? `${normalizeSourceName(controlState.target.source_name)}（${normalizeSourceKind(controlState.target.source_kind)}）`
                             : "无控制目标"}
@@ -634,7 +639,7 @@ export function MusicPage() {
               </Card>
 
               {settings.music_lyrics_enabled && (
-                <Card className="glass-card border-none flex flex-col flex-1 min-h-0 p-4 relative overflow-hidden">
+                <Card className="halo-music-lyrics-card flex flex-col rounded-2xl border border-border bg-background/20 backdrop-blur-3xl flex-1 min-h-0 p-4 relative overflow-hidden shadow-sm">
                   <MusicLyricsPanel
                     current={currentPlaying}
                     playbackPositionSecs={livePlaybackPositionSecs}
@@ -652,7 +657,7 @@ export function MusicPage() {
               )}
             </>
           ) : (
-            <div className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/5 p-8 text-center text-muted-foreground">
+            <div className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-muted/50 p-8 text-center text-muted-foreground">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="mb-4 h-12 w-12 opacity-20">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
               </svg>
@@ -663,10 +668,10 @@ export function MusicPage() {
         </div>
 
         {/* Right Column: History & Stats */}
-        <Card className="glass-card border-none w-full lg:w-[320px] xl:w-[360px] shrink-0 flex flex-col gap-4 min-h-0 p-4 relative overflow-hidden">
-          <nav className="relative flex rounded-lg bg-black/5 dark:bg-white/5 p-1 w-full shrink-0 isolate" aria-label="音乐标签">
+        <Card className="w-full lg:w-[320px] xl:w-[360px] shrink-0 flex flex-col gap-4 rounded-2xl border border-border bg-background/20 backdrop-blur-3xl min-h-0 p-4 relative overflow-hidden shadow-sm">
+          <nav className="relative flex rounded-lg bg-muted p-1 w-full shrink-0 isolate" aria-label="音乐标签">
             <motion.div
-              className="absolute inset-y-1 rounded-md bg-background shadow-sm ring-1 ring-black/5 dark:ring-white/10 z-0"
+              className="absolute inset-y-1 rounded-md bg-background shadow-sm ring-1 ring-border z-0"
               initial={false}
               animate={{
                 left: tab === "top10" ? 4 : "50%",
@@ -706,7 +711,7 @@ export function MusicPage() {
             </button>
           </nav>
 
-          <section className="rounded-xl bg-black/5 dark:bg-white/5 border border-white/5 p-4 shrink-0 relative overflow-hidden">
+          <section className="rounded-xl bg-muted/50 border border-border p-4 shrink-0 relative overflow-hidden">
             <h2 className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">今日概览</h2>
             {dailyLoading ? (
               <p className="mt-3 text-xs text-muted-foreground">加载中...</p>
@@ -759,7 +764,7 @@ export function MusicPage() {
                   transition={{ duration: 0.25, ease: "easeInOut" }}
                   className="absolute inset-0 flex flex-col"
                 >
-                  <Card className="glass-card border-none flex-1 flex flex-col min-h-0 p-4 relative overflow-hidden">
+                  <Card className="flex-1 flex flex-col rounded-2xl border border-border bg-background/20 backdrop-blur-3xl min-h-0 p-4 relative overflow-hidden shadow-sm">
                     <div className="flex flex-wrap items-center justify-between gap-3 shrink-0 mb-3">
                       <h2 className="text-sm font-semibold text-muted-foreground tracking-wide">播放历史</h2>
                       {!historyLoading && history.length > 0 && (
@@ -798,10 +803,10 @@ export function MusicPage() {
                               key={`${item.artist}-${item.title}-${item.last_played}`}
                               className={cn(
                                 "group flex items-center gap-3 rounded-lg p-2 transition-all duration-200",
-                                "hover:bg-white/5"
+                                "hover:bg-muted"
                               )}
                             >
-                              <CoverImage coverPath={item.cover_path} size="sm" className="w-8 h-8 shadow-sm rounded-md ring-1 ring-white/5 opacity-90 group-hover:opacity-100 transition-opacity" />
+                              <CoverImage coverPath={item.cover_path} size="sm" className="w-8 h-8 shadow-sm rounded-md ring-1 ring-border opacity-90 group-hover:opacity-100 transition-opacity" />
                               <div className="min-w-0 flex-1">
                                 <p className="truncate text-xs font-medium text-foreground/90 group-hover:text-foreground">{item.title}</p>
                                 <p className="truncate text-[10px] text-muted-foreground/70 group-hover:text-muted-foreground">{item.artist}</p>

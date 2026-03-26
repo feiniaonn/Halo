@@ -1,6 +1,6 @@
 [package]
 name = "halo"
-version = "0.3.116"
+version = "0.3.117"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -81,3 +81,4 @@ hickory-resolver = { version = "0.25.2", features = ["https-ring", "webpki-roots
 tauri-plugin-mpv = { git = "https://github.com/nini22P/tauri-plugin-mpv", branch = "main" }
 tauri-plugin-libmpv = "0.3.2"
 indexmap = "2"
+flate2 = "1"

@@ -28,6 +28,7 @@ import {
   isHttpUrl,
   isImageLikeUrl,
   looksLikeDirectPlayableUrl,
+  isVolatileWrappedMediaUrl,
   looksLikeWrappedMediaUrl,
   mergeHeaderRecords,
   sanitizeMediaUrlCandidate,
@@ -100,6 +101,7 @@ export interface VodResolvedStream {
   headers: Record<string, string> | null;
   resolvedBy: 'spider' | 'direct' | 'jiexi' | 'jiexi-webview';
   skipProbe?: boolean;
+  preferProxy?: boolean;
   diagnostics?: VodPlaybackDiagnostics;
 }
 
@@ -141,8 +143,11 @@ function finalizeResolvedStream(
 }
 
 export function normalizeVodKernelMode(mode: unknown): VodKernelMode {
-  if (mode === 'mpv' || mode === 'direct' || mode === 'proxy') {
+  if (mode === 'mpv' || mode === 'direct') {
     return mode;
+  }
+  if (mode === 'proxy') {
+    return 'direct';
   }
   return 'direct';
 }
@@ -170,10 +175,18 @@ function readCachedSpiderPayload(cacheKey: string): PlayerPayload | null {
     spiderPayloadCache.delete(cacheKey);
     return null;
   }
+  if (isVolatileWrappedMediaUrl(String(entry.payload.url ?? ''))) {
+    spiderPayloadCache.delete(cacheKey);
+    return null;
+  }
   return entry.payload;
 }
 
 function writeCachedSpiderPayload(cacheKey: string, payload: PlayerPayload): void {
+  if (isVolatileWrappedMediaUrl(String(payload.url ?? ''))) {
+    spiderPayloadCache.delete(cacheKey);
+    return;
+  }
   spiderPayloadCache.set(cacheKey, {
     payload,
     expiresAt: Date.now() + SPIDER_PLAYER_PAYLOAD_CACHE_TTL_MS,
@@ -320,25 +333,26 @@ async function validateResolvedStreamCandidate(
   options?: { timeoutMs?: number },
 ): Promise<{ stream: VodResolvedStream | null; reason: string | null }> {
   const sanitizedUrl = sanitizeMediaUrlCandidate(stream.url) || stream.url.trim();
+  const wrappedLike = looksLikeWrappedMediaUrl(sanitizedUrl);
   if (sanitizedUrl !== stream.url) {
     stream = {
       ...stream,
       url: sanitizedUrl,
     };
   }
-  if (!looksLikeDirectPlayableUrl(stream.url)) {
-    if (looksLikeWrappedMediaUrl(stream.url)) {
-      return {
-        stream: null,
-        reason: 'parse result is not directly playable',
-      };
-    }
+  const directLike = looksLikeDirectPlayableUrl(stream.url);
+  if (!directLike && !wrappedLike) {
     return { stream, reason: null };
   }
 
-  const inferredHlsLike = /(\.m3u8|[?&]type=m3u8|\/m3u8\/)/i.test(stream.url);
+  const inferredHlsLike = wrappedLike || /(\.m3u8|[?&]type=m3u8|\/m3u8\/)/i.test(stream.url);
   if (!inferredHlsLike) {
-    return { stream, reason: null };
+    return wrappedLike
+      ? {
+        stream: null,
+        reason: 'parse result is not directly playable',
+      }
+      : { stream, reason: null };
   }
 
   try {
@@ -351,14 +365,28 @@ async function validateResolvedStreamCandidate(
         url: probe.finalUrl,
       };
     }
-    if (probe.kind === 'unknown' && shouldRejectProbeResult(probe.reason)) {
+    if (shouldRejectProbeResult(probe.reason)) {
       return {
         stream: null,
         reason: probe.reason ?? 'stream_probe_unknown',
       };
     }
+    if (wrappedLike && probe.kind === 'hls') {
+      return {
+        stream: {
+          ...stream,
+          preferProxy: true,
+        },
+        reason: null,
+      };
+    }
   } catch {
-    // Probe failures should not discard a potentially valid stream.
+    if (wrappedLike) {
+      return {
+        stream: null,
+        reason: 'parse result is not directly playable',
+      };
+    }
   }
 
   return { stream, reason: null };
@@ -372,17 +400,13 @@ async function resolveWrappedPayloadUrl(
   if (!isHttpUrl(targetUrl)) {
     return null;
   }
-  try {
-    const resolved = await invoke<string>('resolve_wrapped_media_url', {
-      targetUrl,
-      extraHeaders: headers ?? null,
-      timeoutMs: timeoutMs ?? null,
-    });
-    const normalizedResolved = sanitizeMediaUrlCandidate(resolved);
-    return normalizedResolved || (typeof resolved === 'string' && resolved.trim() ? resolved.trim() : null);
-  } catch {
-    return null;
-  }
+  const resolved = await invoke<string>('resolve_wrapped_media_url', {
+    targetUrl,
+    extraHeaders: headers ?? null,
+    timeoutMs: timeoutMs ?? null,
+  });
+  const normalizedResolved = sanitizeMediaUrlCandidate(resolved);
+  return normalizedResolved || (typeof resolved === 'string' && resolved.trim() ? resolved.trim() : null);
 }
 
 async function invokeSpiderPlayerWithRetry(
@@ -899,6 +923,7 @@ async function resolveEpisodePlaybackUncached(
   episode: VodEpisode,
   routeName: string,
   diagnostics: VodPlaybackDiagnostics,
+  wrappedRefreshAttempt = 0,
 ): Promise<VodResolvedStream> {
   if (context.sourceKind === 'spider') {
     let spiderPayloadResult: Awaited<ReturnType<typeof invokeSpiderPlayerWithRetry>>;
@@ -951,11 +976,13 @@ async function resolveEpisodePlaybackUncached(
         `target=${payloadUrl} reason=payload_not_parse_required`,
       );
 
-      const wrappedPlayableUrl = await resolveWrappedPayloadUrl(
-        payloadUrl,
-        payloadHeaders,
-        QUICK_PARSE_HTTP_TIMEOUT_MS,
-      );
+      let wrappedPlayableUrl: string | null = null;
+      let wrappedResolveReason = 'not_resolved';
+      try {
+        wrappedPlayableUrl = await resolveWrappedPayloadUrl(payloadUrl, payloadHeaders, QUICK_PARSE_HTTP_TIMEOUT_MS);
+      } catch (error) {
+        wrappedResolveReason = error instanceof Error ? error.message : String(error);
+      }
       if (wrappedPlayableUrl) {
         parseTargetUrl = wrappedPlayableUrl;
         appendPlaybackDiagnostic(
@@ -971,44 +998,38 @@ async function resolveEpisodePlaybackUncached(
           context.requestHeaders,
           context.hostMappings,
         );
-        const sameParseTarget =
-          Number(payload.parse ?? 0) === 1 && wrappedPlayableUrl === payloadUrl;
-        if (sameParseTarget && !looksLikeDirectPlayableUrl(resolvedWrapped.url)) {
+        const validatedWrapped = await validateResolvedStreamCandidate({
+          url: resolvedWrapped.url,
+          headers: resolvedWrapped.headers,
+          resolvedBy: 'spider',
+        }, {
+          timeoutMs: QUICK_PARSE_VALIDATION_TIMEOUT_MS,
+        });
+        if (!validatedWrapped.stream) {
           appendPlaybackDiagnostic(
             diagnostics,
             'wrapped_url',
             'miss',
-            `target=${wrappedPlayableUrl} reason=parse_target_still_not_direct`,
+            `target=${wrappedPlayableUrl} reason=${validatedWrapped.reason ?? 'stream_probe_unknown'}`,
           );
         } else {
-          const validatedWrapped = await validateResolvedStreamCandidate({
-            url: resolvedWrapped.url,
-            headers: resolvedWrapped.headers,
-            resolvedBy: 'spider',
-          }, {
-            timeoutMs: QUICK_PARSE_VALIDATION_TIMEOUT_MS,
-          });
-          if (!validatedWrapped.stream) {
-            appendPlaybackDiagnostic(
-              diagnostics,
-              'wrapped_url',
-              'miss',
-              `target=${wrappedPlayableUrl} reason=${validatedWrapped.reason ?? 'stream_probe_unknown'}`,
-            );
-          } else {
-            return finalizeResolvedStream(
-              validatedWrapped.stream,
-              diagnostics,
-            );
-          }
+          return finalizeResolvedStream(
+            validatedWrapped.stream,
+            diagnostics,
+          );
         }
       } else {
         appendPlaybackDiagnostic(
           diagnostics,
           'wrapped_url',
           'miss',
-          `target=${payloadUrl} reason=not_resolved`,
+          `target=${payloadUrl} reason=${wrappedResolveReason}`,
         );
+        if (wrappedResolveReason === 'wrapped_media_link_expired' && wrappedRefreshAttempt === 0) {
+          spiderPayloadCache.delete(buildSpiderPayloadCacheKey(context, routeName, episode.url));
+          appendPlaybackDiagnostic(diagnostics, 'spider_payload', 'skip', 'reason=wrapped_media_link_expired_retry');
+          return resolveEpisodePlaybackUncached(context, episode, routeName, diagnostics, 1);
+        }
       }
 
       if (Number(payload.parse ?? 0) === 1 || !payloadLooksDirectPlayable) {
@@ -1061,7 +1082,7 @@ async function resolveEpisodePlaybackUncached(
       }, {
         timeoutMs: QUICK_PARSE_VALIDATION_TIMEOUT_MS,
       });
-      if (Number(payload.parse ?? 0) === 1 && !looksLikeDirectPlayableUrl(resolvedPayload.url)) {
+      if (!validatedPayload.stream && Number(payload.parse ?? 0) === 1 && !looksLikeDirectPlayableUrl(resolvedPayload.url)) {
         appendPlaybackDiagnostic(
           diagnostics,
           'direct_fallback',

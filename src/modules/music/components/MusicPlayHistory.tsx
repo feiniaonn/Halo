@@ -22,7 +22,7 @@ export function MusicPlayHistory() {
               <div
                 key={`${item.artist}-${item.title}`}
                 className={cn(
-                  "glass-card flex items-center gap-4 rounded-xl p-3",
+                  "flex items-center gap-4 rounded-xl border border-white/5 bg-white/[0.015] p-3",
                   "transition-all duration-200 hover:shadow-md",
                 )}
               >
@@ -55,7 +55,7 @@ export function MusicPlayHistory() {
               <div
                 key={`${item.artist}-${item.title}-${item.last_played}`}
                 className={cn(
-                  "glass-card flex items-center gap-4 rounded-xl p-3",
+                  "flex items-center gap-4 rounded-xl border border-white/5 bg-white/[0.015] p-3",
                   "transition-all duration-200 hover:shadow-md",
                 )}
               >

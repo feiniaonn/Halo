@@ -8,11 +8,10 @@ import {
   setCloseBehavior,
   setLaunchAtLogin,
   setMiniModeSize,
-  setMiniRestoreMode,
 } from "@/modules/settings/services/settingsService";
 import { SETTINGS_MESSAGES } from "@/modules/settings/constants";
 import { reportRuntimeError } from "@/modules/shared/services/runtimeError";
-import type { AppSettingsResponse, CloseBehavior, MiniRestoreMode } from "@/modules/settings/types/settings.types";
+import type { AppSettingsResponse, CloseBehavior } from "@/modules/settings/types/settings.types";
 
 export function useWindowSettings({
   isTauri,
@@ -20,7 +19,6 @@ export function useWindowSettings({
   setSettings,
   formatErrorMessage,
   setStorageMessage,
-  onMiniRestoreModeChange,
   onMiniModeSizeChange,
 }: {
   isTauri: boolean;
@@ -28,7 +26,6 @@ export function useWindowSettings({
   setSettings: React.Dispatch<React.SetStateAction<AppSettingsResponse | null>>;
   formatErrorMessage: (error: unknown) => string;
   setStorageMessage: React.Dispatch<React.SetStateAction<string | null>>;
-  onMiniRestoreModeChange?: (mode: MiniRestoreMode) => void;
   onMiniModeSizeChange?: (width: number, height: number) => void;
 }) {
   const hasSyncedAutostart = useRef(false);
@@ -91,26 +88,7 @@ export function useWindowSettings({
       setStorageMessage(`${SETTINGS_MESSAGES.closeBehaviorFailed}锛?{formatErrorMessage(error)}`);
     }
   }, [formatErrorMessage, setSettings, setStorageMessage, settings]);
-
-  const handleMiniRestoreMode = useCallback(async (mode: MiniRestoreMode) => {
-    if (!settings || settings.mini_restore_mode === mode) return;
-    try {
-      await setMiniRestoreMode(mode);
-      setSettings((prev) => (prev ? { ...prev, mini_restore_mode: mode } : prev));
-      onMiniRestoreModeChange?.(mode);
-    } catch (error) {
-      reportRuntimeError({
-        title: "Failed to update mini restore mode",
-        summary: "Mini-window restore mode could not be updated.",
-        error,
-        source: "settings.window.mini-restore-mode",
-      });
-      console.error(error);
-      setStorageMessage(`${SETTINGS_MESSAGES.miniRestoreModeFailed}锛?{formatErrorMessage(error)}`);
-    }
-  }, [formatErrorMessage, onMiniRestoreModeChange, setSettings, setStorageMessage, settings]);
-
-  const handleMiniModeSize = useCallback(async (width: number, height: number) => {
+const handleMiniModeSize = useCallback(async (width: number, height: number) => {
     if (!settings) return;
     try {
       await setMiniModeSize(width, height);
@@ -131,8 +109,10 @@ export function useWindowSettings({
   return {
     handleLaunchAtLogin,
     handleCloseBehavior,
-    handleMiniRestoreMode,
     handleMiniModeSize,
   };
 }
+
+
+
 

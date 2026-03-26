@@ -100,7 +100,7 @@ setFloatSettings(DEFAULT_FLOAT_SETTINGS);
       }}
       title="双击播放/暂停"
     >
-      <div className="relative overflow-hidden glass-card rounded-full shadow-lg ring-1 ring-white/10 backdrop-blur-xl bg-background/80 transition-transform duration-300 hover:scale-105 active:scale-95">
+      <div className="relative overflow-hidden rounded-full shadow-lg ring-1 ring-white/10 backdrop-blur-xl bg-background/80 transition-transform duration-300 hover:scale-105 active:scale-95">
         {current.cover_data_url && (
           <div
             className="pointer-events-none absolute inset-0 z-0 scale-[1.2] blur-xl opacity-[0.25] dark:opacity-[0.15] mix-blend-overlay transition-opacity duration-300 group-hover:opacity-[0.3]"

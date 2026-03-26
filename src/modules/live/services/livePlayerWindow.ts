@@ -106,7 +106,7 @@ export async function openLivePlayerWindow(payload: LivePlayerLaunchPayload): Pr
       height: 760,
       minWidth: 900,
       minHeight: 560,
-      transparent: false,
+      transparent: true,
       decorations: true,
       shadow: true,
       center: true,

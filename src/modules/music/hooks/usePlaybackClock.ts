@@ -1,6 +1,29 @@
  
  
- import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+
+const PLAYBACK_REPORT_LATENCY_SECS = 0.14;
+const TRACK_END_RESET_WINDOW_SECS = 0.35;
+const PLAYBACK_REWIND_SNAP_SECS = 0.75;
+const PLAYBACK_REWIND_IGNORE_WINDOW_SECS = 1.5;
+const SEEK_REWIND_SNAP_SECS = 2.25;
+
+function normalizeAnchoredPosition(
+  positionSecs: number,
+  playbackStatus: string | null | undefined,
+  durationSecs: number | null | undefined,
+) {
+  const compensated =
+    playbackStatus === "Playing"
+      ? positionSecs + PLAYBACK_REPORT_LATENCY_SECS
+      : positionSecs;
+
+  if (durationSecs == null || Number.isNaN(durationSecs)) {
+    return Math.max(0, compensated);
+  }
+
+  return Math.min(Math.max(0, compensated), Math.max(0, durationSecs));
+}
 
 export function usePlaybackClock(
   positionSecs: number | null | undefined,
@@ -34,7 +57,11 @@ setLivePosition(null);
       return;
     }
 
-    const newPos = Math.max(0, positionSecs);
+    const newPos = normalizeAnchoredPosition(
+      positionSecs,
+      playbackStatus,
+      durationSecs,
+    );
     anchorRef.current = {
       position: newPos,
       atMs: Date.now(),
@@ -62,7 +89,43 @@ setLivePosition(null);
       return;
     }
 
-    const newPos = Math.max(0, positionSecs);
+    const newPos = normalizeAnchoredPosition(
+      positionSecs,
+      status,
+      durationSecs,
+    );
+    const previousAnchor = anchorRef.current;
+    const previousPosition = previousAnchor?.position ?? null;
+    const previousDuration = previousAnchor?.duration ?? durationSecs ?? null;
+    const rewindDelta =
+      previousPosition == null ? 0 : Math.max(0, previousPosition - newPos);
+    const wasNearTrackEnd = Boolean(
+      previousPosition != null
+        && previousDuration != null
+        && previousDuration > 0
+        && previousPosition >= Math.max(previousDuration * 0.82, previousDuration - 1.2),
+    );
+    const hardResetToStart = Boolean(
+      previousPosition != null
+        && newPos <= TRACK_END_RESET_WINDOW_SECS
+        && wasNearTrackEnd,
+    );
+    const snappedRewind = Boolean(
+      previousPosition != null && rewindDelta >= SEEK_REWIND_SNAP_SECS,
+    );
+
+    if (hardResetToStart || snappedRewind) {
+      anchorRef.current = {
+        position: newPos,
+        atMs: now,
+        status,
+        duration: durationSecs ?? null,
+        hasFreshPosition: true,
+      };
+      setLivePosition(newPos);
+      return;
+    }
+
     if (
       anchorRef.current
       && anchorRef.current.hasFreshPosition
@@ -71,7 +134,12 @@ setLivePosition(null);
     ) {
       const elapsed = (now - anchorRef.current.atMs) / 1000;
       const extrapolated = anchorRef.current.position + elapsed;
-      if (newPos < extrapolated && extrapolated - newPos < 1.5) {
+      const rewindVsAnchor = Math.max(0, anchorRef.current.position - newPos);
+      if (
+        newPos < extrapolated
+        && extrapolated - newPos < PLAYBACK_REWIND_IGNORE_WINDOW_SECS
+        && rewindVsAnchor < PLAYBACK_REWIND_SNAP_SECS
+      ) {
         anchorRef.current.status = status;
         anchorRef.current.duration = durationSecs ?? anchorRef.current.duration;
         return;
@@ -99,7 +167,9 @@ setLivePosition(null);
       return;
     }
 
-    const timer = window.setInterval(() => {
+    let rafId = 0;
+
+    const tick = () => {
       const latest = anchorRef.current;
       if (!latest || !latest.hasFreshPosition) return;
 
@@ -109,9 +179,12 @@ setLivePosition(null);
         next = Math.min(next, latest.duration);
       }
       setLivePosition(next);
-    }, 120);
+      rafId = window.requestAnimationFrame(tick);
+    };
 
-    return () => window.clearInterval(timer);
+    rafId = window.requestAnimationFrame(tick);
+
+    return () => window.cancelAnimationFrame(rafId);
   }, [playbackStatus]);
 
   return livePosition;

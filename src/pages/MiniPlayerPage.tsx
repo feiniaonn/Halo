@@ -1,139 +1,160 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-
+import { motion } from "framer-motion";
+import { useIslandSizes } from "@/hooks/useIslandSizes";
+import { clearCurrentWindowRegion, setCurrentWindowRoundedRegion } from "@/lib/windowGeometry";
 import { cn } from "@/lib/utils";
-import { clampPercent } from "@/lib/formatters";
-import { MarqueeText } from "@/components/ui/MarqueeText";
-import { CoverImage } from "@/modules/music/components/CoverImage";
-import { MiniMetricsCanvas, getMiniMetricsCanvasWidth } from "@/modules/music/components/MiniMetricsCanvas";
+import { MINI_ISLAND_TOP_OFFSET, resolveMiniIslandLayout } from "@/modules/island/layout";
+import { resolveIslandModule } from "@/modules/island/registry";
+import type { IslandDensity, IslandFrameState, IslandModuleRenderContext } from "@/modules/island/types";
 import { useCurrentPlaying } from "@/modules/music/hooks/useCurrentPlaying";
-import { useMusicControl } from "@/modules/music/hooks/useMusicControl";
 import { useMusicLyrics } from "@/modules/music/hooks/useMusicLyrics";
 import { usePlaybackClock } from "@/modules/music/hooks/usePlaybackClock";
+import { ACTIVE_LINE_LEAD_MS } from "@/modules/music/components/KaraokeLineText";
 import { getMusicSettings } from "@/modules/music/services/musicService";
-import { resolveCurrentLyricText, resolvePlaybackMs } from "@/modules/music/utils/lyrics";
-import { useSystemOverview } from "@/modules/dashboard";
-import type { MusicMiniVisibleKey, MusicSettings } from "@/modules/music/types/music.types";
-import type { MiniRestoreMode } from "@/modules/settings/types/settings.types";
+import type { MusicSettings } from "@/modules/music/types/music.types";
+import { findCurrentLyricLineIndex, resolvePlaybackMs } from "@/modules/music/utils/lyrics";
 
-type MiniDensity = "tight" | "compact" | "comfortable";
-type MiniMetricSnapshot = {
-  cpu: number | null;
-  memory: number | null;
-  gpu: number | null;
+type ToggleAnchorRect = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
 };
 
-function clampValue(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, value));
-}
+type MiniSettingsState = {
+  lyricsEnabled: boolean;
+  lyricsOffsetMs: number;
+  restoreHomeHotkey: string | null;
+};
 
-function SeparatorLine({ className }: { className?: string }) {
-  return (
-    <div 
-      className={cn(
-        "h-[58%] w-px shrink-0 bg-linear-to-b from-transparent via-black/10 to-transparent dark:via-white/12", 
-        className
-      )} 
-      aria-hidden 
-    />
-  );
-}
+const MINI_LAYOUT_TRANSITION = {
+  type: "spring",
+  stiffness: 300,
+  damping: 26,
+  mass: 0.72,
+} as const;
 
-const DEFAULT_MINI_SETTINGS = {
-  controlsEnabled: false,
-  visibleKeys: ["play_pause", "next"] as MusicMiniVisibleKey[],
+const DEFAULT_MINI_SETTINGS: MiniSettingsState = {
   lyricsEnabled: true,
   lyricsOffsetMs: 0,
+  restoreHomeHotkey: "Control+Shift+H",
 };
 
-function mapMiniSettings(settings: MusicSettings | null) {
+function normalizeShortcut(input: string | null | undefined): string | null {
+  if (!input) return null;
+  const parts = input
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return null;
+
+  const modifiers = new Set<string>();
+  let key: string | null = null;
+
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (lower === "ctrl" || lower === "control") {
+      modifiers.add("Control");
+      continue;
+    }
+    if (lower === "shift") {
+      modifiers.add("Shift");
+      continue;
+    }
+    if (lower === "alt" || lower === "option") {
+      modifiers.add("Alt");
+      continue;
+    }
+    if (lower === "meta" || lower === "command" || lower === "cmd" || lower === "super" || lower === "win") {
+      modifiers.add("Meta");
+      continue;
+    }
+    if (lower === "esc") {
+      key = "Escape";
+      continue;
+    }
+    key = part.length === 1 ? part.toUpperCase() : part;
+  }
+
+  if (!key) return null;
+
+  const ordered: string[] = [];
+  if (modifiers.has("Control")) ordered.push("Control");
+  if (modifiers.has("Shift")) ordered.push("Shift");
+  if (modifiers.has("Alt")) ordered.push("Alt");
+  if (modifiers.has("Meta")) ordered.push("Meta");
+  ordered.push(key);
+  return ordered.join("+");
+}
+
+function eventToShortcut(event: KeyboardEvent): string | null {
+  if (event.repeat) return null;
+  const lower = event.key.toLowerCase();
+  if (lower === "control" || lower === "shift" || lower === "alt" || lower === "meta") {
+    return null;
+  }
+
+  const parts: string[] = [];
+  if (event.ctrlKey) parts.push("Control");
+  if (event.shiftKey) parts.push("Shift");
+  if (event.altKey) parts.push("Alt");
+  if (event.metaKey) parts.push("Meta");
+  parts.push(event.key.length === 1 ? event.key.toUpperCase() : event.key);
+  return normalizeShortcut(parts.join("+"));
+}
+
+function mapMiniSettings(settings: MusicSettings | null): MiniSettingsState {
   if (!settings) return DEFAULT_MINI_SETTINGS;
+  const restoreHomeHotkey = normalizeShortcut(settings.music_hotkeys_bindings.restore_mini_home);
   return {
-    controlsEnabled: settings.music_mini_controls_enabled,
-    visibleKeys:
-      settings.music_mini_visible_keys.length > 0
-        ? settings.music_mini_visible_keys
-        : DEFAULT_MINI_SETTINGS.visibleKeys,
     lyricsEnabled: settings.music_lyrics_enabled,
     lyricsOffsetMs: settings.music_lyrics_offset_ms,
+    restoreHomeHotkey:
+      settings.music_hotkeys_bindings.restore_mini_home === undefined
+        ? DEFAULT_MINI_SETTINGS.restoreHomeHotkey
+        : restoreHomeHotkey,
   };
 }
 
-function MiniPreviousIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
-      <path d="M19 6 9 12l10 6V6Z" />
-      <path d="M5 6v12" />
-    </svg>
-  );
-}
-
-function MiniNextIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
-      <path d="m5 6 10 6-10 6V6Z" />
-      <path d="M19 6v12" />
-    </svg>
-  );
-}
-
-function MiniPlayIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
-      <path d="M8 5v14l11-7L8 5Z" />
-    </svg>
-  );
-}
-
-function MiniPauseIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
-      <path d="M7 5h4v14H7zM13 5h4v14h-4z" />
-    </svg>
-  );
-}
-
-function pickDensity(width: number, height: number): MiniDensity {
+function pickDensity(width: number, height: number): IslandDensity {
   if (width < 560 || height <= 30) return "tight";
   if (width < 820 || height <= 42) return "compact";
   return "comfortable";
+}
+
+function toPlaybackStateLabel(playbackStatus: string | null, isVisible: boolean) {
+  if (!isVisible) return "Idle";
+  if (playbackStatus === "Playing") return "Playing";
+  if (playbackStatus === "Paused") return "Paused";
+  return "Idle";
 }
 
 export function MiniPlayerPage({
   className,
   onToggleMini,
   isTransitioning = false,
-  miniRestoreMode = "both",
   bgType = "none",
   bgPath = null,
   bgBlur = 12,
 }: {
   className?: string;
-  onToggleMini?: (anchorRect?: { left: number; top: number; width: number; height: number }) => void;
+  onToggleMini?: (anchorRect?: ToggleAnchorRect) => void;
   isTransitioning?: boolean;
-  miniRestoreMode?: MiniRestoreMode;
   bgType?: "none" | "image" | "video";
   bgPath?: string | null;
   bgBlur?: number;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [wantsExpanded, setWantsExpanded] = useState(false);
   const [miniSettings, setMiniSettings] = useState(DEFAULT_MINI_SETTINGS);
-  const [layoutWidth, setLayoutWidth] = useState(0);
-  const [layoutHeight, setLayoutHeight] = useState(0);
-  const [metricSnapshot, setMetricSnapshot] = useState<MiniMetricSnapshot>({
-    cpu: null,
-    memory: null,
-    gpu: null,
-  });
-  const latestMetricSnapshotRef = useRef<MiniMetricSnapshot>({
-    cpu: null,
-    memory: null,
-    gpu: null,
-  });
-
+  const [clockNow, setClockNow] = useState(() => Date.now());
+  const bgVideoRef = useRef<HTMLVideoElement | null>(null);
+  const islandRef = useRef<HTMLDivElement | null>(null);
+  const scheduleHitRegionSyncRef = useRef<(() => void) | null>(null);
+  const { sizes } = useIslandSizes();
   const { data: current } = useCurrentPlaying();
-  const { state: controlState, runCommand, runningCommand } = useMusicControl();
+
   const playbackTrackKey = `${current?.source_app_id ?? ""}::${current?.artist ?? ""}::${current?.title ?? ""}`;
   const livePlaybackPositionSecs = usePlaybackClock(
     current?.position_secs,
@@ -141,49 +162,188 @@ export function MiniPlayerPage({
     current?.duration_secs,
     playbackTrackKey,
   );
-  const lyrics = useMusicLyrics({
-    current,
-    enabled: miniSettings.lyricsEnabled,
-    playbackPositionSecs: livePlaybackPositionSecs,
-    offsetMs: miniSettings.lyricsOffsetMs,
-    autoReview: false,
-  });
-  const { systemOverview } = useSystemOverview();
-
-  const allowButtonRestore = miniRestoreMode === "button" || miniRestoreMode === "both";
-  const allowDoubleClickRestore = miniRestoreMode === "double_click" || miniRestoreMode === "both";
-
-  const effectiveLayoutWidth = layoutWidth > 0 ? layoutWidth : 700;
-  const effectiveLayoutHeight = layoutHeight > 0 ? layoutHeight : 50;
-  const density = useMemo(
-    () => pickDensity(effectiveLayoutWidth, effectiveLayoutHeight),
-    [effectiveLayoutHeight, effectiveLayoutWidth],
-  );
 
   const isMusicVisible = useMemo(
     () => Boolean(current?.title && current.playback_status !== "Stopped" && current.playback_status !== "Closed"),
     [current?.title, current?.playback_status],
   );
+  const isPlaying = current?.playback_status === "Playing";
 
-  const miniLyricText = useMemo(() => {
-    if (!miniSettings.lyricsEnabled || !current || !lyrics.response?.ok) {
+  const lyrics = useMusicLyrics({
+    current,
+    enabled: isMusicVisible && miniSettings.lyricsEnabled,
+    playbackPositionSecs: livePlaybackPositionSecs,
+    offsetMs: miniSettings.lyricsOffsetMs,
+    autoReview: false,
+  });
+
+  const lyricPlaybackMs = useMemo(
+    () => resolvePlaybackMs(livePlaybackPositionSecs, miniSettings.lyricsOffsetMs),
+    [livePlaybackPositionSecs, miniSettings.lyricsOffsetMs],
+  );
+  const activeLyricLine = useMemo(() => {
+    if (!isMusicVisible || !miniSettings.lyricsEnabled || !lyrics.response?.ok) {
       return null;
     }
-    const playbackMs = resolvePlaybackMs(livePlaybackPositionSecs, miniSettings.lyricsOffsetMs);
-    return resolveCurrentLyricText(lyrics.response.lines, playbackMs);
+
+    const lines = lyrics.response.lines;
+    if (lines.length === 0) {
+      return null;
+    }
+
+    const activeLinePlaybackMs =
+      lyricPlaybackMs == null ? null : lyricPlaybackMs + ACTIVE_LINE_LEAD_MS;
+    const activeIndex = findCurrentLyricLineIndex(lines, activeLinePlaybackMs);
+    if (activeIndex >= 0) {
+      return lines[activeIndex] ?? null;
+    }
+
+    return lines.find((line) => line.text.trim().length > 0) ?? null;
   }, [
-    current,
+    isMusicVisible,
+    lyricPlaybackMs,
     lyrics.response,
-    livePlaybackPositionSecs,
     miniSettings.lyricsEnabled,
-    miniSettings.lyricsOffsetMs,
   ]);
 
-  useEffect(() => {
-    if (!isTauriRuntime()) {
-      setMiniSettings(DEFAULT_MINI_SETTINGS);
-      return;
+  const lyricLine = useMemo(() => {
+    if (!isMusicVisible || !miniSettings.lyricsEnabled || !lyrics.response?.ok) {
+      return null;
     }
+
+    const currentLine = activeLyricLine?.text.trim();
+    if (currentLine) return currentLine;
+
+    const firstTimedLine = lyrics.response.lines.find((line) => line.text.trim().length > 0)?.text.trim();
+    if (firstTimedLine) return firstTimedLine;
+
+    const firstPlainLine = lyrics.response.plain_text
+      ?.split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+
+    return firstPlainLine ?? null;
+  }, [
+    activeLyricLine,
+    isMusicVisible,
+    lyrics.response,
+    miniSettings.lyricsEnabled,
+  ]);
+
+  const playbackProgress = useMemo(() => {
+    const duration = current?.duration_secs ?? 0;
+    const position = livePlaybackPositionSecs ?? current?.position_secs ?? 0;
+    if (duration <= 0) return 0;
+    return Math.min(1, Math.max(0, position / duration));
+  }, [current, livePlaybackPositionSecs]);
+
+  const timeFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        hourCycle: "h23",
+      }),
+    [],
+  );
+
+  const timeLabel = useMemo(() => timeFormatter.format(clockNow), [clockNow, timeFormatter]);
+  const playbackStateLabel = useMemo(
+    () => toPlaybackStateLabel(current?.playback_status ?? null, isMusicVisible),
+    [current?.playback_status, isMusicVisible],
+  );
+  const titleLabel = useMemo(() => current?.title?.trim() || "Now Playing", [current?.title]);
+
+  const layoutSizes = useMemo(
+    () => resolveMiniIslandLayout(sizes.capsuleWidth, sizes.capsuleHeight),
+    [sizes.capsuleHeight, sizes.capsuleWidth],
+  );
+
+  const capsuleContext = useMemo<IslandModuleRenderContext>(
+    () => ({
+      frame: {
+        state: "capsule",
+        width: layoutSizes.capsuleWidth,
+        height: layoutSizes.capsuleHeight,
+        density: pickDensity(layoutSizes.capsuleWidth, layoutSizes.capsuleHeight),
+      },
+      music: {
+        current,
+        isVisible: isMusicVisible,
+        isPlaying,
+        lyricLine,
+        activeLyricLine,
+        lyricPlaybackMs,
+        playbackProgress,
+        titleLabel,
+        playbackStateLabel,
+      },
+      clock: {
+        timeLabel,
+      },
+    }),
+    [
+      current,
+      isMusicVisible,
+      isPlaying,
+      layoutSizes.capsuleHeight,
+      layoutSizes.capsuleWidth,
+      lyricLine,
+      activeLyricLine,
+      lyricPlaybackMs,
+      playbackProgress,
+      playbackStateLabel,
+      timeLabel,
+      titleLabel,
+    ],
+  );
+
+  const activeModule = useMemo(() => resolveIslandModule(capsuleContext), [capsuleContext]);
+  const canExpand = activeModule.canExpand?.(capsuleContext) ?? Boolean(activeModule.renderExpanded);
+  const displayState: IslandFrameState = canExpand && wantsExpanded ? "expanded" : "capsule";
+  const islandWidth = displayState === "expanded" ? layoutSizes.expandedWidth : layoutSizes.capsuleWidth;
+  const islandHeight = displayState === "expanded" ? layoutSizes.expandedHeight : layoutSizes.capsuleHeight;
+  const frameDensity = useMemo(() => pickDensity(islandWidth, islandHeight), [islandHeight, islandWidth]);
+  const borderRadius =
+    displayState === "expanded"
+      ? Math.min(Math.round(islandHeight * 0.5), 28)
+      : Math.min(Math.round(islandHeight / 2), 999);
+
+  const hasCustomBg = bgType !== "none" && !!bgPath;
+  const backgroundScale = 1.05;
+  const normalizedBgBlur = (bgBlur / 100) * 32;
+  const restoreShortcutLabel = miniSettings.restoreHomeHotkey;
+  const ariaKeyShortcuts = useMemo(
+    () => ["Escape", restoreShortcutLabel].filter(Boolean).join(", "),
+    [restoreShortcutLabel],
+  );
+
+  const moduleContext = useMemo<IslandModuleRenderContext>(
+    () => ({
+      frame: {
+        state: displayState,
+        width: islandWidth,
+        height: islandHeight,
+        density: frameDensity,
+      },
+      music: capsuleContext.music,
+      clock: capsuleContext.clock,
+    }),
+    [capsuleContext.clock, capsuleContext.music, displayState, frameDensity, islandHeight, islandWidth],
+  );
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setClockNow(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
 
     const loadMiniSettings = async () => {
       try {
@@ -206,351 +366,182 @@ export function MiniPlayerPage({
   }, []);
 
   useEffect(() => {
-    const node = containerRef.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
-
-    const observer = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect;
-      if (!rect) return;
-      setLayoutWidth(rect.width);
-      setLayoutHeight(rect.height);
-    });
-
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  const cpuUsageRaw = systemOverview ? clampPercent(systemOverview.cpuUsage) : null;
-  const memoryUsageRaw =
-    systemOverview && systemOverview.memoryTotalBytes > 0
-      ? clampPercent((systemOverview.memoryUsedBytes / systemOverview.memoryTotalBytes) * 100)
-      : null;
-  const gpuUsageRaw = systemOverview?.gpuUsage == null ? null : clampPercent(systemOverview.gpuUsage);
-  const cpuUsage = cpuUsageRaw == null ? null : Math.round(cpuUsageRaw);
-  const memoryUsage = memoryUsageRaw == null ? null : Math.round(memoryUsageRaw);
-  const gpuUsage = gpuUsageRaw == null ? null : Math.round(gpuUsageRaw);
-
-  useEffect(() => {
-    latestMetricSnapshotRef.current = {
-      cpu: cpuUsage,
-      memory: memoryUsage,
-      gpu: gpuUsage,
-    };
-  }, [cpuUsage, gpuUsage, memoryUsage]);
-
-  useEffect(() => {
-    setMetricSnapshot(latestMetricSnapshotRef.current);
-
-    const timer = window.setInterval(() => {
-      setMetricSnapshot((prev) => {
-        const next = latestMetricSnapshotRef.current;
-        if (
-          prev.cpu === next.cpu
-          && prev.memory === next.memory
-          && prev.gpu === next.gpu
-        ) {
-          return prev;
-        }
-        return next;
-      });
-    }, 420);
-
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const hasMetricsBlock = Boolean(systemOverview) && effectiveLayoutWidth >= 220 && effectiveLayoutHeight >= 20;
-  const showRestoreButton = allowButtonRestore && effectiveLayoutWidth >= 360;
-  const hasControlsBlock = miniSettings.controlsEnabled && miniSettings.visibleKeys.length > 0;
-  const visibleMetricCount = effectiveLayoutWidth < 520 ? 2 : 3;
-  const visibleMetricItems = [
-    { label: "CPU", value: metricSnapshot.cpu },
-    { label: "MEM", value: metricSnapshot.memory },
-    { label: "GPU", value: metricSnapshot.gpu },
-  ].slice(0, visibleMetricCount);
-  const metricBlockWidth = getMiniMetricsCanvasWidth(effectiveLayoutHeight, visibleMetricItems.length);
-
-  const titleMaxWidth = useMemo(() => {
-    let base = effectiveLayoutWidth;
-    if (hasMetricsBlock) base -= metricBlockWidth + 40;
-    if (hasControlsBlock) base -= 100;
-    if (showRestoreButton) base -= 40;
-    return Math.max(120, Math.min(base * 0.5, 360));
-  }, [effectiveLayoutWidth, hasMetricsBlock, metricBlockWidth, hasControlsBlock, showRestoreButton]);
-
-  const lyricLine = useMemo(() => {
-    if (!miniSettings.lyricsEnabled || !lyrics.response?.ok) return null;
-
-    const activeLine = miniLyricText?.trim();
-    if (activeLine) return activeLine;
-
-    const firstTimedLine = lyrics.response.lines.find((line) => line.text.trim().length > 0)?.text.trim();
-    if (firstTimedLine) return firstTimedLine;
-
-    const firstPlainLine = lyrics.response.plain_text
-      ?.split(/\r?\n/)
-      .map((line) => line.trim())
-      .find((line) => line.length > 0);
-
-    return firstPlainLine ?? null;
-  }, [lyrics.response, miniLyricText, miniSettings.lyricsEnabled]);
-
-  const playbackProgress = useMemo(() => {
-    const duration = current?.duration_secs ?? 0;
-    const pos = livePlaybackPositionSecs ?? current?.position_secs ?? 0;
-    if (duration <= 0) return 0;
-    return Math.min(1, Math.max(0, pos / duration));
-  }, [current, livePlaybackPositionSecs]);
-
-  // --- Standalone Background Logic ---
-  const hasCustomBg = bgType !== "none" && !!bgPath;
-  const backgroundScale = 1.05;
-  const normalizedBgBlur = (bgBlur / 100) * 32;
-
-  const bgVideoRef = useRef<HTMLVideoElement | null>(null);
-
-  useEffect(() => {
     if (bgType !== "video" || !bgPath) return;
-    const el = bgVideoRef.current;
-    if (!el) return;
+    const element = bgVideoRef.current;
+    if (!element) return;
     try {
-      el.load();
-      void el.play().catch(() => {});
-    } catch {}
+      element.load();
+      void element.play().catch(() => void 0);
+    } catch {
+      void 0;
+    }
   }, [bgType, bgPath]);
 
-  const isPlaying = current?.playback_status === "Playing";
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
 
-  const coverSize = clampValue(
-    effectiveLayoutHeight - (density === "tight" ? 8 : density === "compact" ? 12 : 14),
-    18,
-    42,
-  );
-  const controlSize = clampValue(
-    effectiveLayoutHeight - (density === "tight" ? 10 : 14),
-    18,
-    32,
-  );
-  const titleTextClass =
-    density === "tight"
-      ? "text-[11px]"
-      : density === "compact"
-        ? "text-[12.5px]"
-        : "text-[13.5px]";
-  const sublineTextClass =
-    density === "tight"
-      ? "text-[9px]"
-      : density === "compact"
-        ? "text-[10.5px]"
-        : "text-[11.5px]";
+    let rafId = 0;
+    let disposed = false;
+    let resizeObserver: ResizeObserver | null = null;
+
+    const syncRegion = () => {
+      if (disposed) return;
+      const element = islandRef.current;
+      if (!element) return;
+
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const scale = window.devicePixelRatio || 1;
+      const viewportWidth = Math.max(1, Math.round(window.innerWidth * scale));
+      const viewportHeight = Math.max(1, Math.round(window.innerHeight * scale));
+      const computedStyle = window.getComputedStyle(element);
+      const radiusPx =
+        Number.parseFloat(computedStyle.borderTopLeftRadius) || Math.min(rect.height / 2, 999);
+
+      const x = Math.max(0, Math.floor(rect.left * scale));
+      const y = Math.max(0, Math.floor(rect.top * scale));
+      const width = Math.max(1, Math.min(viewportWidth - x, Math.ceil(rect.width * scale)));
+      const height = Math.max(1, Math.min(viewportHeight - y, Math.ceil(rect.height * scale)));
+      const radius = Math.max(0, Math.round(radiusPx * scale));
+
+      void setCurrentWindowRoundedRegion({ x, y, width, height, radius }).catch(() => void 0);
+    };
+
+    const scheduleRegionSync = () => {
+      if (disposed || rafId) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0;
+        syncRegion();
+      });
+    };
+
+    scheduleHitRegionSyncRef.current = scheduleRegionSync;
+    scheduleRegionSync();
+
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => {
+        scheduleRegionSync();
+      });
+      if (islandRef.current) {
+        resizeObserver.observe(islandRef.current);
+      }
+    }
+
+    window.addEventListener("resize", scheduleRegionSync);
+
+    return () => {
+      disposed = true;
+      scheduleHitRegionSyncRef.current = null;
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", scheduleRegionSync);
+      void clearCurrentWindowRegion().catch(() => void 0);
+    };
+  }, []);
+
+  useEffect(() => {
+    scheduleHitRegionSyncRef.current?.();
+  }, [borderRadius, displayState, islandHeight, islandWidth]);
+
+  const handleIslandClick = useCallback(() => {
+    if (!canExpand) return;
+    setWantsExpanded((prev) => !prev);
+  }, [canExpand]);
+
+  const requestReturnHome = useCallback(() => {
+    if (isTransitioning) return;
+    onToggleMini?.();
+  }, [isTransitioning, onToggleMini]);
+
+  const moduleContent =
+    displayState === "expanded" && canExpand && activeModule.renderExpanded
+      ? activeModule.renderExpanded(moduleContext)
+      : activeModule.renderCapsule(moduleContext);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const isEscape = event.key === "Escape" && !event.repeat;
+      const isShortcut =
+        miniSettings.restoreHomeHotkey != null
+          && eventToShortcut(event) === miniSettings.restoreHomeHotkey;
+      if (!isEscape && !isShortcut) return;
+      if (isTransitioning) return;
+      event.preventDefault();
+      requestReturnHome();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isTransitioning, miniSettings.restoreHomeHotkey, requestReturnHome]);
 
   return (
-    <div 
-      className={cn(
-        "halo-mini-standalone relative flex h-full w-full items-stretch overflow-hidden",
-        "bg-white/10 text-foreground backdrop-blur-[24px] dark:bg-black/22",
-        className
-      )}
+    <div
+      className="pointer-events-none relative flex h-[100vh] w-full select-none items-start justify-center"
+      style={{ paddingTop: MINI_ISLAND_TOP_OFFSET }}
     >
-      {/* Self-Encapsulated Background */}
-      {hasCustomBg && (
-        <div className="absolute inset-0 z-[-2] overflow-hidden pointer-events-none">
-          {bgType === "image" ? (
-            <img
-              key={bgPath ?? "none"}
-              src={bgPath ?? ""}
-              alt="Background"
-              className="absolute inset-0 h-full w-full object-cover opacity-72"
-              style={{
-                filter: `blur(${Math.max(0, normalizedBgBlur * 0.45)}px)`,
-                transform: `scale(${Math.max(1.02, backgroundScale - 0.03)})`,
-              }}
-            />
-          ) : (
-            <video
-              key={bgPath ?? "none"}
-              ref={bgVideoRef}
-              src={bgPath ?? ""}
-              autoPlay
-              loop
-              muted
-              playsInline
-              className="absolute inset-0 h-full w-full object-cover opacity-68"
-              style={{
-                filter: `blur(${Math.max(0, normalizedBgBlur * 0.35)}px)`,
-                transform: `scale(${Math.max(1.02, backgroundScale - 0.02)})`,
-              }}
-            />
-          )}
-          <div className="absolute inset-0 bg-black/10 dark:bg-black/25" />
-        </div>
-      )}
-
-      <div
-        ref={containerRef}
-        onContextMenu={(event) => event.preventDefault()}
-        onDoubleClick={(event) => {
-          if (!isTransitioning && allowDoubleClickRestore) {
-            onToggleMini?.(event.currentTarget.getBoundingClientRect());
-          }
-        }}
+      <motion.div
+        ref={islandRef}
+        initial={false}
+        data-tauri-drag-region
+        animate={{ width: islandWidth, height: islandHeight, borderRadius }}
+        onClick={handleIslandClick}
         className={cn(
-          "relative flex h-full w-full select-none items-center justify-center gap-6 px-6",
-          className
+          "halo-mini-standalone pointer-events-auto relative isolate overflow-hidden border border-white/8 bg-black/[0.96] text-white transform-gpu",
+          "shadow-[0_22px_56px_-30px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(255,255,255,0.08)]",
+          hasCustomBg && "bg-black/88 backdrop-blur-[22px]",
+          canExpand ? "cursor-pointer" : "cursor-default",
+          className,
         )}
+        aria-keyshortcuts={ariaKeyShortcuts}
+        style={{ originX: 0.5, originY: 0.5, willChange: "width, height, border-radius" }}
+        transition={MINI_LAYOUT_TRANSITION}
       >
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.08),transparent_42%,rgba(255,255,255,0.03))] dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.04),transparent_42%,rgba(255,255,255,0.01))]" />
-
-        {isMusicVisible && (
-          <div className="flex shrink-0 items-center gap-3 overflow-hidden">
-            <div className="relative flex shrink-0 items-center justify-center rounded-full overflow-hidden" style={{ width: coverSize + 8, height: coverSize + 8 }}>
-              <div 
-                className={cn(
-                  "overflow-hidden rounded-full border border-white/10 transition-transform duration-700 ease-in-out shadow-lg z-1",
-                  isPlaying ? "animate-[spin_8s_linear_infinite] scale-100" : "scale-95"
-                )}
-                style={{ willChange: "transform", width: coverSize, height: coverSize }}
-              >
-                <CoverImage
-                  coverPath={current?.cover_path ?? null}
-                  dataUrl={current?.cover_data_url ?? null}
-                  size="md"
-                  className="h-full w-full rounded-full object-cover"
-                />
-              </div>
-              
-              <svg 
-                className="absolute inset-0 h-full w-full -rotate-90 pointer-events-none z-0"
-                viewBox="0 0 100 100"
-              >
-                <circle
-                  cx="50"
-                  cy="50"
-                  r="42"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="6"
-                  className="text-white/5 dark:text-white/10"
-                />
-                <circle
-                  cx="50"
-                  cy="50"
-                  r="42"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="6"
-                  strokeDasharray="263.89"
-                  strokeDashoffset={263.89 * (1 - playbackProgress)}
-                  className="text-primary/60 dark:text-primary/70 transition-[stroke-dashoffset] duration-300"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </div>
-
-            <div className="flex min-w-0 flex-col justify-center gap-0.5">
-              <div className="overflow-hidden" style={{ maxWidth: `${titleMaxWidth}px` }}>
-                <MarqueeText containerClassName="leading-none">
-                  <span className={cn("font-bold leading-[1.05] whitespace-nowrap text-foreground tracking-tight drop-shadow-sm", titleTextClass)}>
-                    {current?.title ?? ""}
-                  </span>
-                </MarqueeText>
-              </div>
-
-              {lyricLine && (
-                <div className="overflow-hidden" style={{ maxWidth: `${Math.max(120, titleMaxWidth + 40)}px` }}>
-                  <MarqueeText containerClassName="leading-none">
-                    <span className={cn(
-                      "font-semibold tracking-wide whitespace-nowrap",
-                      isPlaying ? "text-primary/90 dark:text-primary/90" : "text-foreground/60 dark:text-foreground/70",
-                      sublineTextClass
-                    )}>
-                      {lyricLine}
-                    </span>
-                  </MarqueeText>
-                </div>
-              )}
-            </div>
-          </div>
+        {hasCustomBg && (
+          <motion.div
+            layout
+            className="pointer-events-none absolute inset-0 overflow-hidden [mask-image:radial-gradient(circle_at_center,black_18%,black_48%,transparent_100%)]"
+          >
+            {bgType === "image" ? (
+              <img
+                key={bgPath ?? "none"}
+                src={bgPath ?? ""}
+                alt=""
+                className="absolute inset-0 h-full w-full object-cover opacity-26"
+                style={{
+                  filter: `blur(${Math.max(0, normalizedBgBlur * 0.36)}px) saturate(0.92)`,
+                  transform: `scale(${Math.max(1.02, backgroundScale - 0.02)})`,
+                }}
+              />
+            ) : (
+              <video
+                key={bgPath ?? "none"}
+                ref={bgVideoRef}
+                src={bgPath ?? ""}
+                autoPlay
+                loop
+                muted
+                playsInline
+                className="absolute inset-0 h-full w-full object-cover opacity-22"
+                style={{
+                  filter: `blur(${Math.max(0, normalizedBgBlur * 0.28)}px) saturate(0.9)`,
+                  transform: `scale(${Math.max(1.02, backgroundScale - 0.02)})`,
+                }}
+              />
+            )}
+          </motion.div>
         )}
 
-        <div className="flex shrink-0 items-center gap-3 h-full">
-          {hasMetricsBlock && (
-            <div className="flex items-center gap-2">
-              <SeparatorLine className="h-6" />
-              <div style={{ width: `${metricBlockWidth}px` }} className="flex justify-end">
-                <MiniMetricsCanvas items={visibleMetricItems} height={effectiveLayoutHeight} />
-              </div>
-            </div>
-          )}
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_-15%,rgba(255,255,255,0.18),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.05),transparent_40%,rgba(0,0,0,0.18))]" />
 
-          {(hasControlsBlock || showRestoreButton) && (
-            <div className="flex items-center gap-2 mr-2">
-              {(isMusicVisible || hasMetricsBlock) && <SeparatorLine className="h-6" />}
-              
-              {hasControlsBlock && (
-                <div className="flex items-center gap-1.5">
-                  {miniSettings.visibleKeys.includes("previous") && (
-                    <button
-                      type="button"
-                      disabled={!controlState?.target?.supports_previous || runningCommand !== null}
-                      onClick={(e) => { e.stopPropagation(); void runCommand("previous"); }}
-                      className="inline-flex items-center justify-center rounded-full bg-white/8 text-foreground/82 transition-all hover:bg-white/16 hover:text-foreground disabled:opacity-30 dark:bg-white/6"
-                      style={{ width: controlSize, height: controlSize }}
-                    >
-                      <MiniPreviousIcon className="h-4 w-4" />
-                    </button>
-                  )}
-
-                  {miniSettings.visibleKeys.includes("play_pause") && (
-                    <button
-                      type="button"
-                      disabled={!controlState?.target?.supports_play_pause || runningCommand !== null}
-                      onClick={(e) => { e.stopPropagation(); void runCommand("play_pause"); }}
-                      className="inline-flex items-center justify-center rounded-full bg-white/12 text-foreground/92 transition-all hover:bg-white/20 hover:text-foreground hover:scale-105 active:scale-95 disabled:opacity-30 dark:bg-white/10"
-                      style={{ width: controlSize + 2, height: controlSize + 2 }}
-                    >
-                      {isPlaying ? <MiniPauseIcon className="h-5 w-5" /> : <MiniPlayIcon className="h-5 w-5 ml-0.5" />}
-                    </button>
-                  )}
-
-                  {miniSettings.visibleKeys.includes("next") && (
-                    <button
-                      type="button"
-                      disabled={!controlState?.target?.supports_next || runningCommand !== null}
-                      onClick={(e) => { e.stopPropagation(); void runCommand("next"); }}
-                      className="inline-flex items-center justify-center rounded-full bg-white/8 text-foreground/82 transition-all hover:bg-white/16 hover:text-foreground disabled:opacity-30 dark:bg-white/6"
-                      style={{ width: controlSize, height: controlSize }}
-                    >
-                      <MiniNextIcon className="h-4 w-4" />
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {showRestoreButton && (
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (!isTransitioning) {
-                      onToggleMini?.(event.currentTarget.getBoundingClientRect());
-                    }
-                  }}
-                  disabled={isTransitioning}
-                  className="inline-flex items-center justify-center rounded-full bg-primary/10 text-primary transition-all hover:bg-primary/20 disabled:opacity-30"
-                  style={{ width: controlSize - 2, height: controlSize - 2 }}
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M15 3h6v6" />
-                    <path d="M9 21H3v-6" />
-                    <path d="M21 3l-7 7" />
-                    <path d="M3 21l7-7" />
-                  </svg>
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+        <motion.div layout className="relative z-10 h-full w-full" transition={MINI_LAYOUT_TRANSITION}>
+          {moduleContent}
+        </motion.div>
+      </motion.div>
     </div>
   );
 }
