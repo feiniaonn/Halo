@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Check, Play, Radio, Settings2, Tv2 } from "lucide-react";
+import { Check, Play, Radio, RotateCcw, Settings2, Tv2 } from "lucide-react";
 
 import { MediaDetailModal } from "@/components/MediaDetailModal";
 import { VodProxyImage } from "@/components/VodProxyImage";
@@ -112,7 +112,7 @@ export function MediaPage() {
               mode="vod"
               repoUrls={vod.repoUrls}
               activeRepoUrl={vod.activeRepoUrl}
-              sites={vod.config?.sites ?? []}
+              sites={vod.sitePickerSites}
               activeSiteKey={vod.activeSiteKey}
               siteRuntimeStates={vod.siteRuntimeStates}
               loadingConfig={vod.loadingConfig}
@@ -164,6 +164,39 @@ export function MediaPage() {
                 <Settings2 className="size-4" />
                 立即配置
               </button>
+            </div>
+          </div>
+        ) : mode === "vod" && !vod.loadingConfig && !vod.config ? (
+          <div className="flex flex-1 items-center justify-center">
+            <div className="flex w-full max-w-[560px] flex-col items-center rounded-2xl border border-border bg-card/40 backdrop-blur-xl px-8 py-10 text-center shadow-sm">
+              <div className="flex size-14 items-center justify-center rounded-xl bg-red-500/10 text-red-500">
+                <Play className="size-6" />
+              </div>
+              <div className="mt-6 text-[10px] font-bold tracking-[0.2em] uppercase text-red-500/80">Source Failed</div>
+              <h2 className="mt-2 text-[20px] font-bold tracking-tight text-foreground">点播源解析失败</h2>
+              <p className="mt-3 max-w-md text-[13px] leading-relaxed text-muted-foreground">
+                {vod.sourceLoadError
+                  ? `当前源加载失败：${vod.sourceLoadError}`
+                  : "当前点播源未能成功解析，可尝试重新解析，或进入媒体设置调整源地址。"}
+              </p>
+              <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void vod.retrySourceLoad()}
+                  className="inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-[13px] font-semibold text-primary-foreground transition-all hover:opacity-90 shadow-sm"
+                >
+                  <RotateCcw className="size-4" />
+                  重新解析
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(true)}
+                  className="inline-flex items-center gap-2 rounded-xl border border-border bg-background/70 px-5 py-2.5 text-[13px] font-semibold text-foreground transition-all hover:bg-muted/70 shadow-sm"
+                >
+                  <Settings2 className="size-4" />
+                  调整源设置
+                </button>
+              </div>
             </div>
           </div>
         ) : (

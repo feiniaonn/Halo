@@ -323,6 +323,7 @@ export interface CompatHelperTrace {
 export interface TvBoxSiteCapability {
   sourceKind: TvBoxSiteSourceKind;
   dispatchRole: TvBoxSiteRole;
+  desktopUnsupportedReason?: string | null;
   canHome: boolean;
   canCategory: boolean;
   canSearch: boolean;

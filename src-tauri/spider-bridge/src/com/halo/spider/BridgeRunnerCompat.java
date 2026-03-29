@@ -9,6 +9,12 @@ package com.halo.spider;
  */
 public final class BridgeRunnerCompat {
     public static void main(String[] args) {
-        BridgeRunner.main(args);
+        try {
+            BridgeRunner.main(args);
+            System.exit(0);
+        } catch (Throwable error) {
+            error.printStackTrace(System.err);
+            System.exit(1);
+        }
     }
 }

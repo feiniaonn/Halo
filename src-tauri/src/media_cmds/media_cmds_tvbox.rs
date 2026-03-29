@@ -145,11 +145,18 @@ fn looks_like_html_document(text: &str) -> bool {
         || lower.contains("<html")
         || lower.contains("<head")
         || lower.contains("<body")
+        || lower.contains("</html>")
+        || lower.contains("</body>")
+        || lower.contains("data-clipboard-text=")
+        || lower.contains("copy-btn")
+        || lower.contains("<script")
 }
 
 fn html_attr_url_regex() -> &'static Regex {
     static RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?i)\b(?:href|src)\s*=\s*["']([^"']+)["']"#)
+        Regex::new(
+            r#"(?i)\b(?:href|src|data-clipboard-text|data-url|data-src)\s*=\s*["']([^"']+)["']"#,
+        )
             .expect("valid html attr url regex")
     });
     &RE
@@ -441,6 +448,10 @@ fn extract_html_candidate_urls(html: &str, page_url: &str) -> Vec<String> {
         out.truncate(TVBOX_RESOLVE_MAX_CANDIDATES_PER_PAGE);
     }
     out
+}
+
+fn has_wrapper_candidate_urls(text: &str, page_url: &str) -> bool {
+    !extract_html_candidate_urls(text, page_url).is_empty()
 }
 
 fn try_decode_tvbox_base64_payload(text: &str) -> Option<String> {
@@ -850,8 +861,18 @@ pub async fn fetch_tvbox_config(url: String) -> Result<String, String> {
         return Ok(decoded);
     }
 
-    if looks_like_html_document(&text) {
-        println!("[tvbox][resolver] html wrapper detected: {}", source);
+    let looks_like_wrapper = looks_like_html_document(&text);
+    let has_wrapper_candidates = has_wrapper_candidate_urls(&text, &source);
+
+    if looks_like_wrapper || has_wrapper_candidates {
+        if looks_like_wrapper {
+            println!("[tvbox][resolver] html wrapper detected: {}", source);
+        } else {
+            println!(
+                "[tvbox][resolver] wrapper candidates detected without standard html markers: {}",
+                source
+            );
+        }
         if let Some(resolved) =
             resolve_tvbox_config_from_known_candidates(&client, &source, known_remote_candidates)
                 .await
@@ -1235,6 +1256,36 @@ mod tests {
         assert!(candidates.iter().any(|u| u.contains("/tv")));
         assert!(candidates.iter().any(|u| u.contains("config.json")));
         assert!(!candidates.iter().any(|u| u.ends_with(".js")));
+    }
+
+    #[test]
+    fn html_candidate_extracts_clipboard_urls() {
+        let html = r#"
+        <html>
+          <body>
+            <div class="copy-btn" data-clipboard-text="http://www.饭太硬.com/tv"></div>
+            <div class="copy-btn" data-clipboard-text="http://www.饭太硬.net/tv"></div>
+            <div data-url="https://gitee.com/xxoooo/fan/raw/master/in.bmp"></div>
+          </body>
+        </html>
+        "#;
+        let candidates = extract_html_candidate_urls(html, "http://www.xn--sss604efuw.net/tv");
+        assert!(candidates.iter().any(|u| u.contains("xn--sss604efuw.com/tv")));
+        assert!(candidates.iter().any(|u| u.contains("xn--sss604efuw.net/tv")));
+        assert!(!candidates.iter().any(|u| u.ends_with(".bmp")));
+    }
+
+    #[test]
+    fn wrapper_candidate_detection_does_not_require_html_scaffold() {
+        let text = r#"
+            copy-btn
+            data-clipboard-text="http://www.xn--sss604efuw.com/tv"
+            data-src="http://cdn.qiaoji8.com/tvbox.json"
+        "#;
+        assert!(has_wrapper_candidate_urls(
+            text,
+            "http://www.xn--sss604efuw.net/tv"
+        ));
     }
 
     #[test]

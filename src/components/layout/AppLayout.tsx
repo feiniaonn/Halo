@@ -1,5 +1,6 @@
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { reportStartupStep } from "@/lib/startupLog";
 import { FloatingPlayer } from "./FloatingPlayer";
 import { TitleBar } from "./TitleBar";
 import { AppSidebar } from "./AppSidebar";
@@ -36,6 +37,7 @@ export function AppLayout({
   miniTransitioning,
   connectedAnimation,
   onToggleMini,
+  startupReady = true,
 }: {
   children: ReactNode;
   currentPage?: Page;
@@ -50,11 +52,15 @@ export function AppLayout({
   miniTransitioning?: boolean;
   connectedAnimation?: ConnectedAnimationPayload | null;
   onToggleMini?: (anchorRect?: ToggleAnchorRect) => void;
+  startupReady?: boolean;
 }) {
   const hasCustomBg = bgType !== "none" && !!bgPath;
   const [customBgFailed, setCustomBgFailed] = useState(false);
   const bgVideoRef = useRef<HTMLVideoElement | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    reportStartupStep(`AppLayout mounted page=${currentPage}`);
+  }, [currentPage]);
 
   useEffect(() => {
     const resetTimer = window.requestAnimationFrame(() => {
@@ -64,6 +70,7 @@ export function AppLayout({
   }, [bgType, bgPath]);
 
   useEffect(() => {
+    if (!startupReady) return;
     if (bgType !== "video" || !bgPath) return;
     const el = bgVideoRef.current;
     if (!el) return;
@@ -76,9 +83,10 @@ export function AppLayout({
     } catch {
       void 0;
     }
-  }, [bgType, bgPath]);
+  }, [bgType, bgPath, startupReady]);
 
   useEffect(() => {
+    if (!startupReady) return;
     if (bgType !== "video" || !bgPath || customBgFailed) return;
     const el = bgVideoRef.current;
     if (!el) return;
@@ -95,7 +103,7 @@ export function AppLayout({
     }, 2500);
 
     return () => window.clearTimeout(timer);
-  }, [bgType, bgPath, bgFsPath, customBgFailed]);
+  }, [bgType, bgPath, bgFsPath, customBgFailed, startupReady]);
 
   useEffect(() => {
     if (!connectedAnimation) return;
@@ -169,7 +177,7 @@ export function AppLayout({
     };
   }, [connectedAnimation]);
 
-  const showCustomBg = hasCustomBg && !customBgFailed;
+  const showCustomBg = startupReady && hasCustomBg && !customBgFailed;
   const shellRadius = isMiniMode ? 32 : 22;
   const normalizedBgBlur = Math.min(36, Math.max(0, Math.round(bgBlur * 10) / 10));
   const backgroundScale = 1.03 + Math.min(0.18, normalizedBgBlur / 220);
@@ -296,7 +304,7 @@ export function AppLayout({
         </SidebarInset>
       </SidebarProvider>
 
-      <FloatingPlayer />
+      {startupReady ? <FloatingPlayer /> : null}
     </div>
   );
 }

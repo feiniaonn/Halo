@@ -1,7 +1,9 @@
+import React from "react";
 import { motion, type Variants } from "framer-motion";
 import { Gauge, Settings2, Sparkles } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { formatUptime } from "@/lib/formatters";
+import { reportStartupStep } from "@/lib/startupLog";
 import { useSystemOverview } from "@/modules/dashboard"; // Used just for uptime/OS String
 
 const containerVariants: Variants = {
@@ -23,6 +25,9 @@ const itemVariants: Variants = {
 
 export function HomePage() {
   const { systemOverview } = useSystemOverview();
+  React.useEffect(() => {
+    reportStartupStep("HomePage mounted");
+  }, []);
 
   const osLabel =
     [systemOverview?.osName, systemOverview?.osVersion].filter(Boolean).join(" ") || "未知系统";

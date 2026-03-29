@@ -34,11 +34,41 @@ fn profile_class_name(site_profile: &Option<SpiderSiteProfile>) -> Option<String
         .map(ToOwned::to_owned)
 }
 
+fn normalized_hint_tokens(class_hint: &str) -> Vec<String> {
+    class_hint
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter_map(|token| {
+            let trimmed = token.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_ascii_lowercase())
+            }
+        })
+        .collect()
+}
+
+fn token_prefers_compat_runtime(token: &str) -> bool {
+    matches!(
+        token,
+        "douban"
+            | "hxq"
+            | "guazi"
+            | "ttian"
+            | "jpys"
+            | "qiao2"
+            | "qiji"
+            | "xdai"
+            | "configcenter"
+            | "goconfigamnsr"
+            | "goconfigamns"
+    ) || token.ends_with("amns")
+}
+
 fn site_requires_anotherds_fallback(class_hint: &str) -> bool {
-    let normalized = class_hint.to_ascii_lowercase();
+    let tokens = normalized_hint_tokens(class_hint);
     [
         "douban",
-        "config",
         "localfile",
         "ygp",
         "apprj",
@@ -51,7 +81,6 @@ fn site_requires_anotherds_fallback(class_hint: &str) -> bool {
         "bili",
         "biliys",
         "xbpq",
-        "jpys",
         "wwys",
         "jianpian",
         "saohuo",
@@ -62,12 +91,28 @@ fn site_requires_anotherds_fallback(class_hint: &str) -> bool {
         "kugou",
     ]
     .iter()
-    .any(|token| normalized.contains(token))
+    .any(|token| tokens.iter().any(|candidate| candidate == token))
 }
 
 fn site_prefers_compat_runtime(class_hint: &str) -> bool {
-    let normalized = class_hint.to_ascii_lowercase();
-    normalized.contains("hxq") || normalized.contains("douban")
+    normalized_hint_tokens(class_hint)
+        .iter()
+        .any(|candidate| token_prefers_compat_runtime(candidate))
+}
+
+fn site_uses_short_bridge_budget(class_hint: &str) -> bool {
+    let tokens = normalized_hint_tokens(class_hint);
+    [
+        "douban",
+        "tgyundoubanpan",
+        "configcenter",
+        "goconfigamnsr",
+        "goconfigamns",
+        "localfile",
+        "ygp",
+    ]
+    .iter()
+    .any(|token| tokens.iter().any(|candidate| candidate == token))
 }
 
 fn is_remote_ext_url(ext: &str) -> bool {
@@ -1044,13 +1089,14 @@ async fn execute_bridge(
     let bridge_jar_cleaned = clean_path(&bridge_jar);
     let spider_jar_cleaned = clean_path(spider_jar_path);
     let cp_separator = if cfg!(windows) { ";" } else { ":" };
-    let prefer_compat_runtime = site_prefers_compat_runtime(class_hint);
     let mut classpath_parts = Vec::new();
     let compat_classpath_parts = compat_jars
         .iter()
         .filter(|compat_jar| compat_jar.is_file())
         .map(|compat_jar| clean_path(compat_jar))
         .collect::<Vec<_>>();
+    let prefer_compat_runtime =
+        site_prefers_compat_runtime(class_hint) || !compat_classpath_parts.is_empty();
 
     let fallback_jar = if site_requires_anotherds_fallback(class_hint) {
         let mut fallback_candidates: Vec<PathBuf> = Vec::new();
@@ -1173,7 +1219,7 @@ async fn execute_bridge(
         .map(|path| clean_path(&path))
         .unwrap_or_default();
     let lib_dir_cleaned = clean_path(&lib_dir);
-    let timeout_secs = bridge_timeout_secs(method);
+    let timeout_secs = bridge_timeout_secs(method, class_hint, &resolved_ext, compat_jars);
 
     let daemon_request = crate::spider_daemon::DaemonCallRequest {
         jar_path: spider_jar_cleaned.clone(),
@@ -1221,6 +1267,7 @@ async fn execute_bridge(
     cmd.arg("-Dfile.encoding=UTF-8")
         .arg("-Dsun.stdout.encoding=UTF-8")
         .arg("-Dsun.stderr.encoding=UTF-8")
+        .arg("-noverify")
         .arg(format!("-Dspider.lib.dir={lib_dir_cleaned}"))
         .arg("-Xmx256m")
         .arg("-cp")
@@ -1285,8 +1332,8 @@ async fn execute_bridge(
     }
 
     println!(
-        "[SpiderBridge] Invoking {} -> {} (Site: {}, Hint: {})",
-        method, class_hint, site_key, spider_jar_cleaned
+        "[SpiderBridge] Invoking {} -> {} (Site: {}, Hint: {}, Jar: {})",
+        method, class_hint, site_key, class_hint, spider_jar_cleaned
     );
     crate::spider_cmds::append_spider_debug_log(&format!(
         "[SpiderBridge Rust] local proxy base url={proxy_base_url}"
@@ -1494,11 +1541,34 @@ async fn execute_bridge(
     }
 }
 
-fn bridge_timeout_secs(method: &str) -> u64 {
+fn bridge_timeout_secs(
+    method: &str,
+    class_hint: &str,
+    ext: &str,
+    compat_jars: &[PathBuf],
+) -> u64 {
+    let compat_content_site = !compat_jars.is_empty() && !site_uses_short_bridge_budget(class_hint);
+    let remote_or_bootstrap_ext = is_remote_ext_url(ext) || ext.trim().is_empty();
+
     match method {
-        "homeContent" => 5,
-        "categoryContent" => 5,
-        "searchContent" => 5,
+        "homeContent" | "categoryContent" => {
+            if compat_content_site && remote_or_bootstrap_ext {
+                12
+            } else if compat_content_site {
+                10
+            } else {
+                5
+            }
+        }
+        "searchContent" => {
+            if compat_content_site && remote_or_bootstrap_ext {
+                10
+            } else if compat_content_site {
+                8
+            } else {
+                5
+            }
+        }
         "detailContent" => 75,
         "playerContent" => 20,
         _ => 30,
@@ -1566,10 +1636,10 @@ mod log_summary_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        ext_bootstraps_home_before_category, ext_prefers_remote_url,
+        bridge_timeout_secs, ext_bootstraps_home_before_category, ext_prefers_remote_url,
         looks_like_rule_config_payload, rewrite_local_spider_service_urls,
-        site_prefers_compat_runtime, site_prefers_inline_rule_config,
-        site_requires_anotherds_fallback, validate_semantic_payload,
+        site_prefers_compat_runtime, site_prefers_inline_rule_config, site_requires_anotherds_fallback,
+        validate_semantic_payload,
     };
 
     #[test]
@@ -1615,6 +1685,9 @@ mod tests {
         assert!(site_requires_anotherds_fallback("csp_LiteApple"));
         assert!(site_requires_anotherds_fallback("csp_YGP"));
         assert!(site_requires_anotherds_fallback("csp_XBPQ"));
+        assert!(!site_requires_anotherds_fallback("csp_ConfigCenter"));
+        assert!(!site_requires_anotherds_fallback("csp_GoConfigAmnsr"));
+        assert!(!site_requires_anotherds_fallback("csp_Jpys"));
         assert!(!site_requires_anotherds_fallback("csp_Other"));
     }
 
@@ -1622,7 +1695,21 @@ mod tests {
     fn prefers_compat_runtime_for_douban_and_hxq() {
         assert!(site_prefers_compat_runtime("csp_Douban"));
         assert!(site_prefers_compat_runtime("csp_Hxq"));
+        assert!(site_prefers_compat_runtime("csp_GuaZi"));
+        assert!(site_prefers_compat_runtime("csp_qiao2"));
+        assert!(site_prefers_compat_runtime("csp_ConfigCenter"));
+        assert!(site_prefers_compat_runtime("csp_CzzyAmns"));
+        assert!(site_prefers_compat_runtime("csp_HHkkAmns"));
         assert!(!site_prefers_compat_runtime("csp_AppRJ"));
+    }
+
+    #[test]
+    fn extends_timeout_for_compat_content_sites_only() {
+        let compat = vec![std::path::PathBuf::from("compat.jar")];
+        assert_eq!(bridge_timeout_secs("homeContent", "csp_Lkdy", "https://lkvod.com", &compat), 12);
+        assert_eq!(bridge_timeout_secs("searchContent", "csp_Lkdy", "https://lkvod.com", &compat), 10);
+        assert_eq!(bridge_timeout_secs("homeContent", "csp_ConfigCenter", "", &compat), 5);
+        assert_eq!(bridge_timeout_secs("searchContent", "csp_Douban", "", &compat), 5);
     }
 
     #[test]

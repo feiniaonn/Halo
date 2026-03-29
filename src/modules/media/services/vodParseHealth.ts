@@ -146,6 +146,12 @@ export function classifyVodParseFailure(
     return "runtime";
   }
 
+  if (
+    normalizedMessage.includes("stream_probe_hls_geo_blocked")
+    || normalizedMessage.includes("stream_probe_hls_html_blocked")
+  ) {
+    return "upstream";
+  }
   if (/stream_probe_|not directly playable|解析页|真正的视频地址|fake hls|audio_only/.test(normalizedMessage)) {
     return "validation";
   }

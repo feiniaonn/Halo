@@ -9,7 +9,8 @@ $BuildRoot = Join-Path (Split-Path $ProjectRoot) "target\bridge-build"
 $ClassesDir = Join-Path $BuildRoot "classes"
 $OutputJar = Join-Path $BuildRoot "bridge.jar"
 $SourcesFile = Join-Path $BuildRoot "sources.txt"
-$JavacLog = Join-Path $BuildRoot "javac_log.txt"
+$FoundationSourcesFile = Join-Path $BuildRoot "foundation-sources.txt"
+$JavacLog = Join-Path $BuildRoot ("javac_log_{0}_{1}.txt" -f $PID, ([Guid]::NewGuid().ToString("N")))
 
 function Ensure-Directory {
     param (
@@ -42,6 +43,31 @@ function Sync-FileIfChanged {
 
     Copy-Item -Path $Source -Destination $Destination -Force
     return $true
+}
+
+function Invoke-JavacBatch {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$JavacExe,
+        [Parameter(Mandatory = $true)]
+        [string]$ClassPath,
+        [Parameter(Mandatory = $true)]
+        [string]$ClassesDir,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Sources,
+        [Parameter(Mandatory = $true)]
+        [string]$ArgFile
+    )
+
+    if (-not $Sources -or $Sources.Count -eq 0) {
+        return
+    }
+
+    $Sources -join [Environment]::NewLine | Out-File -FilePath $ArgFile -Encoding ASCII
+    & $JavacExe -cp $ClassPath -d $ClassesDir -encoding UTF-8 "@$ArgFile" > $JavacLog 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "javac failed for $ArgFile (exit $LASTEXITCODE)"
+    }
 }
 
 function Resolve-BundledJavaTool {
@@ -112,8 +138,6 @@ if ($JavaFiles.Count -eq 0) {
     exit 1
 }
 
-$JavaFiles -join [Environment]::NewLine | Out-File -FilePath $SourcesFile -Encoding ASCII
-
 # 3. Gather libraries for classpath
 Write-Host "-> Building classpath..."
 $Jars = New-Object System.Collections.Generic.List[string]
@@ -141,9 +165,10 @@ $PSNativeCommandUseErrorActionPreference = $false
 $JavacExe = Resolve-BundledJavaTool -ToolName "javac.exe"
 
 if ($VerboseOutput) {
+    $JavaFiles -join [Environment]::NewLine | Out-File -FilePath $SourcesFile -Encoding ASCII
     & $JavacExe -cp $ClassPath -d $ClassesDir -encoding UTF-8 "@$SourcesFile" -verbose > $JavacLog 2>&1
 } else {
-    & $JavacExe -cp $ClassPath -d $ClassesDir -encoding UTF-8 "@$SourcesFile" > $JavacLog 2>&1
+    Invoke-JavacBatch -JavacExe $JavacExe -ClassPath $ClassPath -ClassesDir $ClassesDir -Sources $JavaFiles -ArgFile $SourcesFile
 }
 
 $ErrorActionPreference = $PreviousErrorAction
@@ -153,8 +178,56 @@ if ($HadNativeErrorPreference) {
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Compilation failed! (Exit Code: $LASTEXITCODE)" -ForegroundColor Red
-    Remove-Item $SourcesFile
+    Remove-Item $SourcesFile -ErrorAction SilentlyContinue
     exit $LASTEXITCODE
+}
+
+$RequiredFoundationClasses = @(
+    (Join-Path $ClassesDir "android\content\Context.class"),
+    (Join-Path $ClassesDir "android\content\DialogInterface.class"),
+    (Join-Path $ClassesDir "android\app\Application.class"),
+    (Join-Path $ClassesDir "android\app\Activity.class"),
+    (Join-Path $ClassesDir "android\app\ActivityThread.class"),
+    (Join-Path $ClassesDir "android\webkit\WebViewClient.class"),
+    (Join-Path $ClassesDir "android\os\Environment.class"),
+    (Join-Path $ClassesDir "android\view\View.class"),
+    (Join-Path $ClassesDir "android\view\ViewGroup.class"),
+    (Join-Path $ClassesDir "android\widget\TextView.class"),
+    (Join-Path $ClassesDir "android\widget\EditText.class"),
+    (Join-Path $ClassesDir "android\widget\FrameLayout.class"),
+    (Join-Path $ClassesDir "android\widget\LinearLayout.class"),
+    (Join-Path $ClassesDir "android\widget\Toast.class"),
+    (Join-Path $ClassesDir "com\github\catvod\crawler\Spider.class"),
+    (Join-Path $ClassesDir "com\github\catvod\crawler\SpiderApi.class"),
+    (Join-Path $ClassesDir "com\github\catvod\spider\Init.class"),
+    (Join-Path $ClassesDir "com\github\catvod\spider\BaseSpiderAmns.class"),
+    (Join-Path $ClassesDir "com\halo\spider\SpiderProfileRunner.class")
+)
+
+$MissingFoundationClasses = $RequiredFoundationClasses | Where-Object { -not (Test-Path $_) }
+if ($MissingFoundationClasses.Count -gt 0) {
+    Write-Host "-> Repairing foundational bridge classes..." -ForegroundColor Yellow
+    $FoundationSources = @()
+    $FoundationSources += Get-ChildItem -Path (Join-Path $SrcDir "android") -Filter "*.java" -Recurse | Select-Object -ExpandProperty FullName
+    $FoundationSources += Get-ChildItem -Path (Join-Path $SrcDir "com\github\catvod\crawler") -Filter "*.java" -Recurse | Select-Object -ExpandProperty FullName
+    $FoundationSources += Get-ChildItem -Path (Join-Path $SrcDir "com\github\catvod\bean") -Filter "*.java" -Recurse | Select-Object -ExpandProperty FullName
+    $FoundationSources += Get-ChildItem -Path (Join-Path $SrcDir "com\github\catvod\net") -Filter "*.java" -Recurse | Select-Object -ExpandProperty FullName
+
+    $OptionalFoundationFiles = @(
+        (Join-Path $SrcDir "com\github\catvod\Proxy.java"),
+        (Join-Path $SrcDir "com\github\catvod\spider\Init.java"),
+        (Join-Path $SrcDir "com\github\catvod\spider\Spider.java"),
+        (Join-Path $SrcDir "com\github\catvod\spider\BaseSpiderAmns.java")
+    )
+    foreach ($OptionalFile in $OptionalFoundationFiles) {
+        if (Test-Path $OptionalFile) {
+            $FoundationSources += $OptionalFile
+        }
+    }
+
+    $FoundationSources = $FoundationSources | Sort-Object -Unique
+    $RepairClassPath = @($ClassesDir, $ClassPath) -join ";"
+    Invoke-JavacBatch -JavacExe $JavacExe -ClassPath $RepairClassPath -ClassesDir $ClassesDir -Sources $FoundationSources -ArgFile $FoundationSourcesFile
 }
 
 # 5. Package JAR
@@ -165,7 +238,8 @@ Set-Location $ClassesDir
 Set-Location $ProjectRoot
 
 # Cleanup
-Remove-Item $SourcesFile
+Remove-Item $SourcesFile -ErrorAction SilentlyContinue
+Remove-Item $FoundationSourcesFile -ErrorAction SilentlyContinue
 
 # 6. Deploy to resources
 Write-Host "-> Deploying to resources..."

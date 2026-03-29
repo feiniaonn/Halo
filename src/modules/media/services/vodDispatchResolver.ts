@@ -34,6 +34,12 @@ import type {
   VodDispatchResolution,
 } from "@/modules/media/types/vodDispatch.types";
 
+const DEFAULT_DISPATCH_SITE_LIMIT = 12;
+const METADATA_DISPATCH_SITE_LIMIT = 6;
+const METADATA_PRIORITY_SITE_LIMIT = 4;
+const METADATA_DISPATCH_BATCH_SIZE = 3;
+const METADATA_DISPATCH_MAX_MATCHES = 2;
+
 interface ResolveVodDispatchMatchesArgs {
   keyword: string;
   fallbackTitle?: string;
@@ -79,6 +85,98 @@ function buildCacheHitStatuses(
   }));
 }
 
+function isMetadataDispatchAuxiliarySite(site: NormalizedTvBoxSite): boolean {
+  return /(?:^|_)(market|push)$/i.test(site.api)
+    || /(?:\u5e94\u7528|\u5546\u5e97|\u624b\u673a|\u63a8\u9001)/.test(site.name);
+}
+
+function isMetadataDispatchPreviewSite(site: NormalizedTvBoxSite): boolean {
+  return /(?:^|_)ygp$/i.test(site.api) || /\u9884\u544a/.test(site.name);
+}
+
+function isPreferredMetadataSearchSite(site: NormalizedTvBoxSite): boolean {
+  const normalizedApi = site.api.trim();
+  const hasNamedSearchApi = !/^https?:\/\//i.test(normalizedApi)
+    && /(?:^|[_./-])(m?search)(?:$|[_./-])/i.test(normalizedApi);
+
+  return (
+    !isMetadataDispatchPreviewSite(site)
+    && !isMetadataDispatchAuxiliarySite(site)
+    && (
+      site.capability.searchOnly
+      || site.capability.dispatchRole === "search-only-backend"
+      || /(search|\u641c\u7d22|\u641c\u7247|\u641c\u5267|\u68c0\u7d22|\u805a\u641c)/i.test(site.name)
+      || hasNamedSearchApi
+    )
+  );
+}
+
+function isFastMetadataDispatchSite(site: NormalizedTvBoxSite): boolean {
+  if (isPreferredMetadataSearchSite(site)) {
+    return false;
+  }
+
+  if (isMetadataDispatchPreviewSite(site) || isMetadataDispatchAuxiliarySite(site)) {
+    return false;
+  }
+
+  if (site.capability.dispatchRole !== "resource-backend" || !site.capability.supportsPlay) {
+    return false;
+  }
+
+  if (/\.py$/i.test(site.api)) {
+    return false;
+  }
+
+  if (site.capability.hasRemoteExt || site.extKind === "url") {
+    return false;
+  }
+
+  return true;
+}
+
+function buildMetadataDispatchSites(sortedSites: NormalizedTvBoxSite[]): NormalizedTvBoxSite[] {
+  const preferredSites: NormalizedTvBoxSite[] = [];
+  const fastSites: NormalizedTvBoxSite[] = [];
+  const fallbackSites: NormalizedTvBoxSite[] = [];
+  const previewSites: NormalizedTvBoxSite[] = [];
+  const auxiliarySites: NormalizedTvBoxSite[] = [];
+
+  for (const site of sortedSites) {
+    if (isPreferredMetadataSearchSite(site)) {
+      preferredSites.push(site);
+      continue;
+    }
+    if (isMetadataDispatchPreviewSite(site)) {
+      previewSites.push(site);
+      continue;
+    }
+    if (isMetadataDispatchAuxiliarySite(site)) {
+      auxiliarySites.push(site);
+      continue;
+    }
+    if (isFastMetadataDispatchSite(site)) {
+      fastSites.push(site);
+      continue;
+    }
+    fallbackSites.push(site);
+  }
+
+  const limitedPreferredSites = preferredSites.slice(0, METADATA_PRIORITY_SITE_LIMIT);
+  const preferredKeys = new Set(limitedPreferredSites.map((site) => site.key));
+  const remainingSites = [
+    ...fastSites,
+    ...fallbackSites,
+    ...previewSites,
+    ...auxiliarySites,
+  ]
+    .filter((site) => !preferredKeys.has(site.key))
+    .slice(0, METADATA_DISPATCH_SITE_LIMIT);
+
+  return [...limitedPreferredSites, ...remainingSites]
+    .slice(0, METADATA_DISPATCH_SITE_LIMIT + METADATA_PRIORITY_SITE_LIMIT);
+}
+
 export async function resolveVodDispatchMatches({
   keyword,
   fallbackTitle = "",
@@ -111,6 +209,9 @@ export async function resolveVodDispatchMatches({
   const cappedMaxMatches = Math.max(1, Math.min(maxMatches, 12));
   const originSite = config.sites.find((site) => site.key === resolvedOriginSiteKey) ?? null;
   const shouldDeferDetailResolution = isVodOriginMetadataSite(originSite);
+  const effectiveMaxMatches = shouldDeferDetailResolution
+    ? Math.min(cappedMaxMatches, METADATA_DISPATCH_MAX_MATCHES)
+    : cappedMaxMatches;
   const persistedResolution = await loadPersistedVodDispatchCache(
     sourceKey,
     repoUrl,
@@ -124,7 +225,7 @@ export async function resolveVodDispatchMatches({
       keyword: normalizedKeyword,
       cacheHit: true,
       backendStatuses: buildCacheHitStatuses(persistedResolution),
-      matches: persistedResolution.matches.slice(0, cappedMaxMatches),
+      matches: persistedResolution.matches.slice(0, effectiveMaxMatches),
     };
     return nextResolution;
   }
@@ -135,13 +236,16 @@ export async function resolveVodDispatchMatches({
   ]);
 
   const backendStatMap = new Map(backendStats.map((record) => [record.targetSiteKey, record]));
-  const orderedSites = sortVodDispatchBackendSites(
+  const sortedSites = sortVodDispatchBackendSites(
     config.sites,
     rankingRecords,
     backendStats,
     resolvedOriginSiteKey,
     activeSiteKey,
-  ).slice(0, 12);
+  );
+  const orderedSites = shouldDeferDetailResolution
+    ? buildMetadataDispatchSites(sortedSites)
+    : sortedSites.slice(0, DEFAULT_DISPATCH_SITE_LIMIT);
 
   const initialStatuses: VodDispatchBackendStatus[] = orderedSites.map((site, order) => {
     const previous = backendStatMap.get(site.key);
@@ -169,11 +273,15 @@ export async function resolveVodDispatchMatches({
   let backendStatuses = initialStatuses;
   const matches: Array<{ order: number; value: VodDispatchResolution["matches"][number] }> = [];
 
-  await runWithConcurrencyLimit(
-    orderedSites,
-    Math.min(concurrency, orderedSites.length),
-    async (site, order) => {
-      if (isStale() || matches.length >= cappedMaxMatches) {
+  const executeSearchBatch = async (
+    batchSites: NormalizedTvBoxSite[],
+    batchOffset: number,
+  ) => runWithConcurrencyLimit(
+    batchSites,
+    Math.min(concurrency, batchSites.length),
+    async (site, batchIndex) => {
+      const order = batchOffset + batchIndex;
+      if (isStale() || matches.length >= effectiveMaxMatches) {
         return;
       }
 
@@ -384,6 +492,21 @@ export async function resolveVodDispatchMatches({
     },
   );
 
+  if (shouldDeferDetailResolution) {
+    for (let batchOffset = 0; batchOffset < orderedSites.length; batchOffset += METADATA_DISPATCH_BATCH_SIZE) {
+      if (isStale() || matches.length >= effectiveMaxMatches) {
+        break;
+      }
+      const batchSites = orderedSites.slice(batchOffset, batchOffset + METADATA_DISPATCH_BATCH_SIZE);
+      await executeSearchBatch(batchSites, batchOffset);
+      if (matches.length > 0) {
+        break;
+      }
+    }
+  } else {
+    await executeSearchBatch(orderedSites, 0);
+  }
+
   if (isStale()) {
     return {
       originSiteKey: resolvedOriginSiteKey,
@@ -396,7 +519,7 @@ export async function resolveVodDispatchMatches({
 
   const resolvedMatches = matches
     .sort((left, right) => left.order - right.order)
-    .slice(0, cappedMaxMatches)
+    .slice(0, effectiveMaxMatches)
     .map((item) => item.value);
 
   const resolution: VodDispatchResolution = {

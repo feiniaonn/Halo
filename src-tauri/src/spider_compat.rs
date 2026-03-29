@@ -52,6 +52,29 @@ const COMPAT_PACKS: &[CompatPackDefinition] = &[
     },
 ];
 
+fn normalize_token_segments(tokens: &[String]) -> Vec<String> {
+    tokens
+        .iter()
+        .flat_map(|token| {
+            token
+                .split(|ch: char| !ch.is_ascii_alphanumeric())
+                .filter_map(|segment| {
+                    let trimmed = segment.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_ascii_lowercase())
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn segment_matches_legacy_app_family(segment: &str) -> bool {
+    segment.starts_with("app") && segment.len() > 3
+}
+
 fn compat_pack_definition(pack_id: &str) -> Option<&'static CompatPackDefinition> {
     COMPAT_PACKS.iter().find(|item| item.id == pack_id)
 }
@@ -306,7 +329,7 @@ fn collect_known_helper_ports(input: &str, ports: &mut BTreeSet<u16>) {
     }
 }
 
-async fn load_ext_or_common_config_text(ext: &str) -> Option<String> {
+async fn load_ext_helper_probe_text(ext: &str) -> Option<String> {
     let trimmed = ext.trim();
     if trimmed.is_empty() {
         return None;
@@ -323,37 +346,29 @@ async fn load_ext_or_common_config_text(ext: &str) -> Option<String> {
         return response.text().await.ok();
     }
 
-    let parsed = serde_json::from_str::<serde_json::Value>(trimmed).ok()?;
-    let common_config_url = parsed
-        .get("commonConfig")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| value.starts_with("http://") || value.starts_with("https://"))?;
-
-    let client = crate::media_cmds::build_client().ok()?;
-    let response = client
-        .get(common_config_url)
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await
-        .ok()?;
-    response.text().await.ok()
+    None
 }
 
 pub async fn detect_helper_ports(ext: &str) -> Vec<u16> {
     let mut ports = BTreeSet::new();
     collect_known_helper_ports(ext, &mut ports);
 
-    if let Some(extra_text) = load_ext_or_common_config_text(ext).await {
+    if let Some(extra_text) = load_ext_helper_probe_text(ext).await {
         collect_known_helper_ports(&extra_text, &mut ports);
     }
 
     ports.into_iter().collect()
 }
 
-fn derive_pack_ids_from_tokens(tokens: &[String], packs: &mut BTreeSet<String>) {
+fn derive_fallback_pack_ids_from_tokens(tokens: &[String], packs: &mut BTreeSet<String>) {
     let joined = tokens.join(" ").to_ascii_lowercase();
-    if joined.contains("appysv2") || joined.contains("apprj") || joined.contains("hxq") {
+    let segments = normalize_token_segments(tokens);
+
+    if segments
+        .iter()
+        .any(|segment| segment_matches_legacy_app_family(segment))
+        || joined.contains("hxq")
+    {
         packs.insert("legacy-custom-spider".to_string());
         packs.insert("legacy-jsapi".to_string());
     }
@@ -365,11 +380,43 @@ fn derive_pack_ids_from_tokens(tokens: &[String], packs: &mut BTreeSet<String>) 
         packs.insert("legacy-custom-spider".to_string());
         packs.insert("legacy-jsapi".to_string());
     }
+    if segments
+        .iter()
+        .any(|segment| segment.ends_with("amns") || segment.ends_with("amnsr"))
+    {
+        packs.insert("legacy-core".to_string());
+        packs.insert("legacy-custom-spider".to_string());
+        packs.insert("legacy-jsapi".to_string());
+    }
+}
+
+fn add_full_compat_pack_set(packs: &mut BTreeSet<String>) {
+    packs.insert("legacy-core".to_string());
+    packs.insert("legacy-custom-spider".to_string());
+    packs.insert("legacy-jsapi".to_string());
+}
+
+fn class_name_matches_amns_family(value: &str) -> bool {
+    let lowered = value.trim().to_ascii_lowercase();
+    lowered.ends_with("amns") || lowered.ends_with("amnsr")
+}
+
+fn artifact_needs_bridge_foundation(artifact: &SpiderArtifactAnalysis) -> bool {
+    if !artifact.native_libs.is_empty() {
+        return true;
+    }
+
+    artifact.class_inventory.iter().any(|class_name| {
+        let lowered = class_name.trim().to_ascii_lowercase();
+        lowered.contains("basespideramns")
+            || lowered.contains("dexnative")
+            || lowered.contains(".spider.init")
+    })
 }
 
 pub fn build_compat_plan(
     app: &AppHandle,
-    _artifact: &SpiderArtifactAnalysis,
+    artifact: &SpiderArtifactAnalysis,
     site_key: &str,
     api_class: &str,
     ext: &str,
@@ -377,16 +424,23 @@ pub fn build_compat_plan(
     helper_ports: &[u16],
 ) -> CompatPlan {
     let mut packs = BTreeSet::new();
-    let mut tokens = vec![
+    let fallback_tokens = vec![
         site_key.trim().to_string(),
         api_class.trim().to_string(),
-        ext.trim().to_string(),
     ];
 
     if let Some(profile) = site_profile {
-        tokens.push(profile.class_name.clone());
-        tokens.extend(profile.native_methods.iter().cloned());
         if profile.needs_context_shim {
+            packs.insert("legacy-core".to_string());
+        }
+        if profile.has_native_init
+            || profile.has_native_content_method
+            || !profile.native_methods.is_empty()
+            || class_name_matches_amns_family(&profile.class_name)
+        {
+            add_full_compat_pack_set(&mut packs);
+        }
+        if profile.has_context_init && !profile.has_non_context_init {
             packs.insert("legacy-core".to_string());
         }
     }
@@ -396,6 +450,17 @@ pub fn build_compat_plan(
         packs.insert("legacy-custom-spider".to_string());
     }
 
+    if matches!(
+        artifact.required_runtime,
+        SpiderExecutionTarget::DesktopCompatPack
+    ) {
+        add_full_compat_pack_set(&mut packs);
+    }
+
+    if artifact_needs_bridge_foundation(artifact) {
+        add_full_compat_pack_set(&mut packs);
+    }
+
     if ext.to_ascii_lowercase().contains(".js")
         || ext.to_ascii_lowercase().contains("drpy")
         || ext.to_ascii_lowercase().contains("commonconfig")
@@ -403,7 +468,11 @@ pub fn build_compat_plan(
         packs.insert("legacy-jsapi".to_string());
     }
 
-    derive_pack_ids_from_tokens(&tokens, &mut packs);
+    let mut fallback_tokens = fallback_tokens;
+    if let Some(profile) = site_profile {
+        fallback_tokens.push(profile.class_name.clone());
+    }
+    derive_fallback_pack_ids_from_tokens(&fallback_tokens, &mut packs);
 
     let required_compat_packs: Vec<String> = packs.into_iter().collect();
     let _ = resolve_compat_pack_jars(app, &required_compat_packs);
@@ -411,9 +480,23 @@ pub fn build_compat_plan(
     let execution_target = if !helper_ports.is_empty() {
         SpiderExecutionTarget::DesktopHelper
     } else if !required_compat_packs.is_empty()
+        || matches!(
+            artifact.required_runtime,
+            SpiderExecutionTarget::DesktopCompatPack
+        )
+        || artifact_needs_bridge_foundation(artifact)
         || site_profile
             .as_ref()
             .map(|profile| profile.needs_context_shim)
+            .unwrap_or(false)
+        || site_profile
+            .as_ref()
+            .map(|profile| {
+                profile.has_native_init
+                    || profile.has_native_content_method
+                    || !profile.native_methods.is_empty()
+                    || class_name_matches_amns_family(&profile.class_name)
+            })
             .unwrap_or(false)
     {
         SpiderExecutionTarget::DesktopCompatPack
@@ -464,13 +547,19 @@ pub fn augment_site_profile(
 
 #[cfg(test)]
 mod tests {
-    use super::derive_pack_ids_from_tokens;
+    use super::{
+        artifact_needs_bridge_foundation, class_name_matches_amns_family, detect_helper_ports,
+        derive_fallback_pack_ids_from_tokens,
+    };
+    use crate::spider_cmds_runtime::{
+        SpiderArtifactAnalysis, SpiderArtifactKind, SpiderExecutionTarget,
+    };
     use std::collections::BTreeSet;
 
     #[test]
     fn adds_legacy_core_for_douban_tokens() {
         let mut packs = BTreeSet::new();
-        derive_pack_ids_from_tokens(
+        derive_fallback_pack_ids_from_tokens(
             &[
                 "csp_Douban".to_string(),
                 "com.github.catvod.spider.Douban".to_string(),
@@ -486,7 +575,7 @@ mod tests {
     #[test]
     fn adds_legacy_core_for_hxq_tokens() {
         let mut packs = BTreeSet::new();
-        derive_pack_ids_from_tokens(
+        derive_fallback_pack_ids_from_tokens(
             &[
                 "csp_Hxq".to_string(),
                 "com.github.catvod.spider.Hxq".to_string(),
@@ -497,5 +586,89 @@ mod tests {
         assert!(packs.contains("legacy-core"));
         assert!(packs.contains("legacy-custom-spider"));
         assert!(packs.contains("legacy-jsapi"));
+    }
+
+    #[test]
+    fn adds_legacy_packs_for_generic_app_family_tokens() {
+        let mut packs = BTreeSet::new();
+        derive_fallback_pack_ids_from_tokens(
+            &[
+                "csp_AppQi".to_string(),
+                "com.github.catvod.spider.AppYsV2".to_string(),
+            ],
+            &mut packs,
+        );
+
+        assert!(packs.contains("legacy-custom-spider"));
+        assert!(packs.contains("legacy-jsapi"));
+    }
+
+    #[test]
+    fn adds_legacy_packs_for_amns_families() {
+        let mut packs = BTreeSet::new();
+        derive_fallback_pack_ids_from_tokens(
+            &[
+                "csp_CzzyAmns".to_string(),
+                "com.github.catvod.spider.HHkkAmnsr".to_string(),
+            ],
+            &mut packs,
+        );
+
+        assert!(packs.contains("legacy-core"));
+        assert!(packs.contains("legacy-custom-spider"));
+        assert!(packs.contains("legacy-jsapi"));
+    }
+
+    #[test]
+    fn does_not_require_manual_feimao_family_tokens_as_fallbacks() {
+        let mut packs = BTreeSet::new();
+        derive_fallback_pack_ids_from_tokens(
+            &[
+                "csp_GuaZi".to_string(),
+                "com.github.catvod.spider.qiao2".to_string(),
+                "csp_ConfigCenter".to_string(),
+            ],
+            &mut packs,
+        );
+
+        assert!(packs.is_empty());
+    }
+
+    #[test]
+    fn recognizes_amnsr_class_names_generically() {
+        assert!(class_name_matches_amns_family(
+            "com.github.catvod.spider.QmdjAmnsr"
+        ));
+        assert!(class_name_matches_amns_family(
+            "com.github.catvod.spider.QmdjAmns"
+        ));
+        assert!(!class_name_matches_amns_family(
+            "com.github.catvod.spider.JianPian"
+        ));
+    }
+
+    #[test]
+    fn artifact_markers_trigger_bridge_foundation_generically() {
+        let artifact = SpiderArtifactAnalysis {
+            artifact_kind: SpiderArtifactKind::JvmJar,
+            required_runtime: SpiderExecutionTarget::DesktopDirect,
+            transformable: false,
+            original_jar_path: "demo.jar".to_string(),
+            prepared_jar_path: "demo.desktop.jar".to_string(),
+            class_inventory: vec![
+                "com.github.catvod.spider.BaseSpiderAmns".to_string(),
+                "com.github.catvod.spider.DexNative".to_string(),
+            ],
+            native_libs: Vec::new(),
+        };
+
+        assert!(artifact_needs_bridge_foundation(&artifact));
+    }
+
+    #[tokio::test]
+    async fn ignores_common_config_objects_when_detecting_helper_ports() {
+        let ext = r#"{"commonConfig":"https://example.com/peizhi.json"}"#;
+        let ports = detect_helper_ports(ext).await;
+        assert!(ports.is_empty());
     }
 }

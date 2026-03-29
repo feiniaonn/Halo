@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { reportStartupStep } from "@/lib/startupLog";
 import { EVENT_SYSTEM_OVERVIEW_UPDATED } from "@/modules/shared/services/events";
 import { getDashboardSystemOverview } from "../services/dashboardService";
 import type { DashboardSystemOverview } from "../types/dashboard.types";
@@ -39,11 +40,14 @@ export function useSystemOverview(): UseSystemOverviewResult {
 
     const bootstrap = async () => {
       try {
+        reportStartupStep("useSystemOverview bootstrap start");
         const initial = await getDashboardSystemOverview();
         applyOverview(initial);
-      } catch (e) {
+        reportStartupStep("useSystemOverview bootstrap success");
+      } catch (error) {
         if (cancelled) return;
-        setSystemError(`读取失败：${String(e)}`);
+        reportStartupStep(`useSystemOverview bootstrap failed: ${String(error)}`, "warn");
+        setSystemError(`读取失败：${String(error)}`);
         setSystemLoading(false);
       }
 
@@ -51,9 +55,9 @@ export function useSystemOverview(): UseSystemOverviewResult {
         unlisten = await listen<DashboardSystemOverview>(EVENT_SYSTEM_OVERVIEW_UPDATED, (event) => {
           applyOverview(event.payload);
         });
-      } catch (e) {
+      } catch (error) {
         if (cancelled) return;
-        setSystemError((prev) => prev ?? `事件订阅失败：${String(e)}`);
+        setSystemError((prev) => prev ?? `事件订阅失败：${String(error)}`);
       }
     };
 

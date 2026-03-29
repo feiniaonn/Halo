@@ -31,7 +31,8 @@ fn clean_path(path: &Path) -> String {
 }
 
 fn jar_contains_entry(path: &Path, entry_name: &str) -> bool {
-    let file = match std::fs::File::open(path) {
+    let normalized_path = clean_path(path);
+    let file = match std::fs::File::open(&normalized_path) {
         Ok(file) => file,
         Err(_) => return false,
     };
@@ -238,6 +239,7 @@ pub(crate) async fn profile_prepared_spider_site(
     cmd.arg("-Dfile.encoding=UTF-8")
         .arg("-Dsun.stdout.encoding=UTF-8")
         .arg("-Dsun.stderr.encoding=UTF-8")
+        .arg("-noverify")
         .arg("-Xmx256m")
         .arg("-cp")
         .arg(&classpath)

@@ -216,6 +216,7 @@ fn spawn_helper_process(
         .arg("-Dfile.encoding=UTF-8")
         .arg("-Dsun.stdout.encoding=UTF-8")
         .arg("-Dsun.stderr.encoding=UTF-8")
+        .arg("-noverify")
         .arg("-Xmx256m")
         .arg("-cp")
         .arg(helper_jar_path)

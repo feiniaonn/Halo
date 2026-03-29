@@ -372,25 +372,6 @@ pub(crate) async fn resolve_spider_jar_with_fallback(
         return Ok(cached);
     }
 
-    if class_hint_prefers_anotherds_primary(class_hint) {
-        if let Some(anotherds_jar) = resolve_anotherds_spider_jar(app) {
-            let prepared = PreparedSpiderJar {
-                original_jar_path: anotherds_jar.clone(),
-                prepared_jar_path: anotherds_jar.clone(),
-                artifact: analyze_spider_artifact(&anotherds_jar, &anotherds_jar)?,
-            };
-            let direct_log = format!(
-                "[SpiderBridge] Using bundled anotherds_spider.jar as primary runtime for {} [{}]",
-                method,
-                normalized_class_hint(class_hint)
-            );
-            println!("{}", direct_log);
-            append_spider_debug_log(&direct_log);
-            store_prepared_spider(spider_url, class_hint, &prepared);
-            return Ok(prepared);
-        }
-    }
-
     let resolved = match ensure_spider_jar(app, spider_url).await {
         Ok(original_jar_path) => {
             let prepared_jar_path =
@@ -430,6 +411,25 @@ pub(crate) async fn resolve_spider_jar_with_fallback(
                 append_spider_debug_log(&cached_log);
                 store_prepared_spider(spider_url, class_hint, &cached_match);
                 return Ok(cached_match);
+            }
+            if class_hint_allows_anotherds_fallback(class_hint) {
+                if let Some(anotherds_jar) = resolve_anotherds_spider_jar(app) {
+                    let fallback_log = format!(
+                        "[SpiderBridge] Source spider prepare failed for {} [{}]: {}. Falling back to bundled anotherds_spider.jar.",
+                        method,
+                        normalized_class_hint(class_hint),
+                        primary_err
+                    );
+                    println!("{}", fallback_log);
+                    append_spider_debug_log(&fallback_log);
+                    let prepared = PreparedSpiderJar {
+                        original_jar_path: anotherds_jar.clone(),
+                        prepared_jar_path: anotherds_jar.clone(),
+                        artifact: analyze_spider_artifact(&anotherds_jar, &anotherds_jar)?,
+                    };
+                    store_prepared_spider(spider_url, class_hint, &prepared);
+                    return Ok(prepared);
+                }
             }
             if should_fallback_after_prepare_failure(&primary_err, class_hint) {
                 if let Some(fallback_jar) = resolve_halo_spider_jar(app) {
@@ -536,11 +536,24 @@ pub(crate) fn resolve_anotherds_spider_jar(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
-fn class_hint_prefers_anotherds_primary(class_hint: Option<&str>) -> bool {
-    let normalized = normalized_class_hint(class_hint);
+fn class_hint_tokens(class_hint: Option<&str>) -> Vec<String> {
+    normalized_class_hint(class_hint)
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter_map(|token| {
+            let trimmed = token.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_ascii_lowercase())
+            }
+        })
+        .collect()
+}
+
+fn class_hint_allows_anotherds_fallback(class_hint: Option<&str>) -> bool {
+    let tokens = class_hint_tokens(class_hint);
     [
         "douban",
-        "config",
         "localfile",
         "ygp",
         "apprj",
@@ -553,7 +566,6 @@ fn class_hint_prefers_anotherds_primary(class_hint: Option<&str>) -> bool {
         "bili",
         "biliys",
         "xbpq",
-        "jpys",
         "wwys",
         "jianpian",
         "saohuo",
@@ -564,7 +576,7 @@ fn class_hint_prefers_anotherds_primary(class_hint: Option<&str>) -> bool {
         "kugou",
     ]
     .iter()
-    .any(|token| normalized.contains(token))
+    .any(|token| tokens.iter().any(|candidate| candidate == token))
 }
 
 fn spider_log_lock() -> &'static Mutex<()> {

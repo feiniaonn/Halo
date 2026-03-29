@@ -50,7 +50,9 @@ import {
   openVodRelaySession,
 } from '@/modules/media/services/vodMpvRelayClient';
 import {
+  describeVodStreamProbeFailure,
   inferVodStreamKind,
+  isVodStreamProbeBlockingReason,
   probeVodStream,
   type VodStreamKind,
   type VodStreamProbeResult,
@@ -74,6 +76,13 @@ const NATIVE_PLAYER_STARTUP_TIMEOUT_MS = 20_000;
 const HLS_STARTUP_TIMEOUT_MS = 15_000;
 const DIRECT_STARTUP_TIMEOUT_MS = 12_000;
 const VIDEO_ELEMENT_WAIT_TIMEOUT_MS = 1_500;
+const NATIVE_PREFERRED_VIDEO_HOSTS = [
+  'vod.pipi.cn',
+  'maoyan.com',
+  'mtime.com',
+  'mtime.cn',
+  '6huo.com',
+];
 
 interface KernelAttemptResult {
   ok: boolean;
@@ -87,8 +96,39 @@ interface ReusableResolvedPlayback {
   streamKind: VodStreamKind;
 }
 
+function shouldPreferNativeKernelForStream(
+  stream: VodResolvedStream,
+  streamKind: VodStreamKind,
+): boolean {
+  if (!['mp4', 'flv', 'dash', 'mpegts'].includes(streamKind)) {
+    return false;
+  }
+
+  if (stream.resolvedBy === 'spider') {
+    return true;
+  }
+
+  try {
+    const host = new URL(stream.url).hostname.toLowerCase();
+    return NATIVE_PREFERRED_VIDEO_HOSTS.some(
+      (pattern) => host === pattern || host.endsWith(`.${pattern}`),
+    );
+  } catch {
+    return false;
+  }
+}
+
 function inferReasonCode(reason: string): string {
   const lower = reason.toLowerCase();
+  if (lower.includes('stream_probe_hls_geo_blocked') || lower.includes('国内网络访问')) {
+    return 'geo_blocked';
+  }
+  if (lower.includes('stream_probe_hls_html_blocked')) {
+    return 'upstream_html_blocked';
+  }
+  if (lower.includes('stream_probe_hls_manifest_unreadable')) {
+    return 'invalid_hls_manifest';
+  }
   if (lower.includes('403')) return 'upstream_403';
   if (lower.includes('404')) return 'upstream_404';
   if (lower.includes('not m3u8')) return 'invalid_hls_manifest';
@@ -158,6 +198,9 @@ export function VodPlayer({
   onClose,
   onMpvActiveChange,
 }: VodPlayerProps) {
+  void _proxyDomains;
+  void _adHosts;
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -1008,6 +1051,26 @@ export function VodPlayer({
             `[VodPlayer] stream_probe kind=${probe.kind} probed=${probe.probed} final_url=${probe.finalUrl ?? stream.url} content_type=${probe.contentType ?? 'unknown'} reason=${probe.reason ?? 'none'}`,
             'info',
           );
+          if (isVodStreamProbeBlockingReason(probe.reason)) {
+            const probeFailure =
+              describeVodStreamProbeFailure(probe)
+              ?? `当前视频流探测失败：${probe.reason}`;
+            termLog(
+              `[VodPlayer] stream_probe blocked reason_code=${inferReasonCode(probe.reason ?? probeFailure)} detail=${probeFailure}`,
+              'warn',
+            );
+            setError(probeFailure);
+            showPlaybackNotice(null);
+            setLoading(false);
+            releaseVodPlaybackLock(playbackLockKey, playbackLock.token);
+            if (
+              activePlaybackLockRef.current?.key === playbackLockKey &&
+              activePlaybackLockRef.current.token === playbackLock.token
+            ) {
+              activePlaybackLockRef.current = null;
+            }
+            return;
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           termLog(`[VodPlayer] stream_probe skipped reason=${message}`, 'warn');
@@ -1027,6 +1090,7 @@ export function VodPlayer({
       const kernelPlan = buildVodKernelPlan(kernelModeRef.current, {
         streamKind: plannedStreamKind,
         preferProxy: Boolean(stream.preferProxy),
+        preferNative: shouldPreferNativeKernelForStream(stream, plannedStreamKind),
       });
       const resolveLog = buildPlaybackResolutionLog({
         routeName,

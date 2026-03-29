@@ -612,6 +612,22 @@ fn stop_backend(app: &AppHandle, window_label: &str, engine: NativePlayerEngine)
     }
 }
 
+pub(crate) fn shutdown_all_players(app: &AppHandle) {
+    let labels = native_player_sessions()
+        .lock()
+        .ok()
+        .map(|sessions| sessions.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    for window_label in labels {
+        let session = get_session(&window_label);
+        if let Some(engine) = session.engine {
+            stop_backend(app, &window_label, engine);
+        }
+        clear_session(&window_label);
+    }
+}
+
 #[tauri::command]
 pub fn native_player_init_or_attach(
     window: WebviewWindow,

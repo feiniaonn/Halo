@@ -297,6 +297,8 @@ function shouldRejectProbeResult(reason: string | null): boolean {
   return (
     reason === 'stream_probe_hls_image_manifest'
     || reason === 'stream_probe_hls_html_manifest'
+    || reason === 'stream_probe_hls_html_blocked'
+    || reason === 'stream_probe_hls_geo_blocked'
     || reason === 'stream_probe_hls_manifest_unreadable'
     || reason === 'stream_probe_audio_only'
   );

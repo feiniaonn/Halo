@@ -1,6 +1,8 @@
 use crate::db::PlayRecord;
 #[cfg(target_os = "windows")]
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "windows")]
+use tauri::Manager;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct MusicControlSource {
@@ -117,6 +119,47 @@ fn source_kind_from_id(source_id: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
+fn is_browser_like_source_id(source_id: &str) -> bool {
+    let lower = source_id.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+
+    [
+        "chrome",
+        "msedge",
+        "msedgewebview",
+        "webview",
+        "firefox",
+        "opera",
+        "brave",
+        "iexplore",
+        "browser",
+    ]
+    .iter()
+    .any(|token| lower.contains(token))
+}
+
+#[cfg(target_os = "windows")]
+fn is_halo_source_id(source_id: &str) -> bool {
+    let lower = source_id.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+
+    lower == "com.tauri-app.halo"
+        || lower.contains("tauri-app.halo")
+        || lower.ends_with("\\halo.exe")
+        || lower.ends_with("/halo.exe")
+        || lower.ends_with("halo.exe")
+}
+
+#[cfg(target_os = "windows")]
+fn should_ignore_music_control_source(source_id: &str) -> bool {
+    is_browser_like_source_id(source_id) || is_halo_source_id(source_id)
+}
+
+#[cfg(target_os = "windows")]
 fn source_name_from_id(source_id: &str) -> String {
     let trimmed = source_id.trim();
     if trimmed.is_empty() {
@@ -154,6 +197,14 @@ fn fallback_target_from_current(
     current: &Arc<Mutex<Option<crate::CurrentPlayingInfo>>>,
 ) -> Option<MusicControlTarget> {
     let snapshot = current.lock().ok().and_then(|g| g.clone())?;
+    let source_seed = snapshot
+        .source_app_id
+        .as_deref()
+        .or(snapshot.source_platform.as_deref())
+        .unwrap_or("unknown");
+    if should_ignore_music_control_source(source_seed) {
+        return None;
+    }
     if snapshot.title.trim().is_empty() && snapshot.artist.trim().is_empty() {
         return None;
     }
@@ -167,11 +218,6 @@ fn fallback_target_from_current(
         source_name = "NetEase Cloud Music".to_string();
     }
 
-    let source_seed = snapshot
-        .source_app_id
-        .as_deref()
-        .or(snapshot.source_platform.as_deref())
-        .unwrap_or("unknown");
     let source_id = normalize_source_id(source_seed);
     let source_kind = source_kind_from_id(source_seed);
 
@@ -219,6 +265,9 @@ fn query_sessions_sync() -> Result<(Vec<SessionSnapshot>, Option<String>), Strin
             Ok(v) => v.to_string(),
             Err(_) => continue,
         };
+        if should_ignore_music_control_source(&source_id) {
+            continue;
+        }
         let source_norm = normalize_source_id(&source_id);
         let source_name = source_name_from_id(&source_id);
         let source_kind = source_kind_from_id(&source_id);
@@ -413,56 +462,80 @@ fn build_state_sync(fallback_target: Option<MusicControlTarget>) -> MusicControl
 
 #[cfg(target_os = "windows")]
 #[tauri::command]
-pub fn music_get_control_state(
-    current: tauri::State<'_, Arc<Mutex<Option<crate::CurrentPlayingInfo>>>>,
-) -> MusicControlState {
-    let fallback_target = fallback_target_from_current(current.inner());
-    build_state_sync(fallback_target)
+pub async fn music_get_control_state(
+    app: tauri::AppHandle,
+) -> Result<MusicControlState, String> {
+    let fallback_target = {
+        let current = app.state::<Arc<Mutex<Option<crate::CurrentPlayingInfo>>>>();
+        fallback_target_from_current(current.inner())
+    };
+    Ok(
+        tauri::async_runtime::spawn_blocking(move || build_state_sync(fallback_target))
+            .await
+            .unwrap_or_else(|_| MusicControlState {
+                target: None,
+                sources_count: 0,
+                reason: Some("music_control_state_join_failed".to_string()),
+            }),
+    )
 }
 
 #[cfg(target_os = "windows")]
 #[tauri::command]
-pub fn music_get_control_sources(
-    current: tauri::State<'_, Arc<Mutex<Option<crate::CurrentPlayingInfo>>>>,
-) -> Vec<MusicControlSource> {
-    let result = query_sessions_sync();
-    let Ok((sessions, _)) = result else {
-        return fallback_target_from_current(current.inner())
-            .map(|target| MusicControlSource {
-                source_id: target.source_id,
-                source_name: target.source_name,
-                source_kind: target.source_kind,
-                can_prev: false,
-                can_play_pause: false,
-                can_next: false,
-            })
-            .into_iter()
-            .collect::<Vec<_>>();
+pub async fn music_get_control_sources(
+    app: tauri::AppHandle,
+) -> Result<Vec<MusicControlSource>, String> {
+    let fallback_target = {
+        let current = app.state::<Arc<Mutex<Option<crate::CurrentPlayingInfo>>>>();
+        fallback_target_from_current(current.inner())
     };
-    let mut out = sessions
-        .into_iter()
-        .map(|v| MusicControlSource {
-            source_id: v.target.source_id,
-            source_name: v.target.source_name,
-            source_kind: v.target.source_kind,
-            can_prev: v.can_prev,
-            can_play_pause: v.can_play_pause,
-            can_next: v.can_next,
+    Ok(
+        tauri::async_runtime::spawn_blocking(move || {
+            let result = query_sessions_sync();
+            let Ok((sessions, _)) = result else {
+                return fallback_target
+                    .map(|target| MusicControlSource {
+                        source_id: target.source_id,
+                        source_name: target.source_name,
+                        source_kind: target.source_kind,
+                        can_prev: false,
+                        can_play_pause: false,
+                        can_next: false,
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>();
+            };
+
+            let mut out = sessions
+                .into_iter()
+                .map(|v| MusicControlSource {
+                    source_id: v.target.source_id,
+                    source_name: v.target.source_name,
+                    source_kind: v.target.source_kind,
+                    can_prev: v.can_prev,
+                    can_play_pause: v.can_play_pause,
+                    can_next: v.can_next,
+                })
+                .collect::<Vec<_>>();
+
+            if out.is_empty() {
+                if let Some(target) = fallback_target {
+                    out.push(MusicControlSource {
+                        source_id: target.source_id,
+                        source_name: target.source_name,
+                        source_kind: target.source_kind,
+                        can_prev: false,
+                        can_play_pause: false,
+                        can_next: false,
+                    });
+                }
+            }
+
+            out
         })
-        .collect::<Vec<_>>();
-    if out.is_empty() {
-        if let Some(target) = fallback_target_from_current(current.inner()) {
-            out.push(MusicControlSource {
-                source_id: target.source_id,
-                source_name: target.source_name,
-                source_kind: target.source_kind,
-                can_prev: false,
-                can_play_pause: false,
-                can_next: false,
-            });
-        }
-    }
-    out
+        .await
+        .unwrap_or_default(),
+    )
 }
 
 #[tauri::command]

@@ -56,7 +56,9 @@ export async function fetchTvboxPayload(url: string): Promise<unknown> {
 }
 
 export async function fetchTvboxLeafPayload(url: string): Promise<unknown> {
-  const response = await fetchTextResource(url);
+  // Repo leaf configs can still be encrypted/obfuscated TVBox payloads,
+  // so they must go through the same resolver/decrypt pipeline as root configs.
+  const response = await fetchTvboxConfigText(url);
   return parseTvboxJsonLoose(response);
 }
 

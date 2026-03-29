@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.117 - 2026-03-29
+
+### Release Highlights
+
+- Stabilized TVBox source resolution for HTML wrapper style roots such as `fty`, with candidate extraction from clipboard/data attributes and a source-level retry path in the VOD center.
+- Hardened the desktop spider compatibility chain by reducing shared Jar races, improving runtime/profile based pack selection, and expanding the desktop bridge host for more Android-oriented spiders.
+- Refined music and mini-player behavior by filtering browser media sessions out of music capture, improving karaoke timing stability, and reducing startup/close regressions.
+
+### Added
+
+- Added wrapper candidate recovery for `data-clipboard-text`, `data-url`, and `data-src` based TVBox pages.
+- Added source parse failure UI with direct “重新解析” recovery action in the VOD center.
+- Added more desktop bridge Android stubs and runtime helpers required by shared spider families.
+
+### Changed
+
+- Changed source parsing to prefer wrapper candidate probing before falling back to brittle external decrypt proxy endpoints.
+- Changed VOD site/runtime selection to isolate deterministic empty or incompatible spider sites more safely.
+- Changed the music module to prefer native software sessions and ignore browser/WebView playback sessions.
+
+### Fixed
+
+- Fixed several source roots that intermittently failed on desktop because the HTML wrapper was treated as an unrecognized payload.
+- Fixed browser video playback being captured by the music module as if it were a native audio source.
+- Fixed startup/restore/close paths that could leave the app hidden in tray-only or appear briefly unresponsive during shutdown.
+
 ## 0.3.117 - 2026-03-26
 
 ### 发布重点

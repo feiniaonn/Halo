@@ -33,6 +33,7 @@ const streamProbeCache = new Map<
     expiresAt: number;
   }
 >();
+
 const inflightStreamProbeCache = new Map<string, Promise<VodStreamProbeResult>>();
 
 function normalizeProbeHeaders(
@@ -54,6 +55,38 @@ function buildStreamProbeCacheKey(url: string, headers: Record<string, string> |
 
 function cloneProbeResult(result: VodStreamProbeResult): VodStreamProbeResult {
   return { ...result };
+}
+
+const BLOCKING_STREAM_PROBE_REASONS = new Set([
+  "stream_probe_hls_image_manifest",
+  "stream_probe_hls_html_manifest",
+  "stream_probe_hls_html_blocked",
+  "stream_probe_hls_geo_blocked",
+  "stream_probe_hls_manifest_unreadable",
+  "stream_probe_audio_only",
+]);
+
+export function isVodStreamProbeBlockingReason(reason: string | null | undefined): boolean {
+  return !!reason && BLOCKING_STREAM_PROBE_REASONS.has(reason);
+}
+
+export function describeVodStreamProbeFailure(result: VodStreamProbeResult): string | null {
+  switch (result.reason) {
+    case "stream_probe_hls_geo_blocked":
+      return "当前视频源返回了地域或网络限制页面，不是真正的 m3u8 视频清单。";
+    case "stream_probe_hls_html_blocked":
+      return "当前视频源返回了 HTML 错误页或拦截页，不是真正的视频清单。";
+    case "stream_probe_hls_image_manifest":
+      return "当前地址看起来像 HLS，但实际返回的是图片切片，不是真正的视频流。";
+    case "stream_probe_hls_html_manifest":
+      return "当前地址看起来像 HLS，但实际返回的是 HTML 页面，不是真正的视频流。";
+    case "stream_probe_hls_manifest_unreadable":
+      return "当前 m3u8 地址无法读出有效清单，可能是错误页、过期链或上游访问限制。";
+    case "stream_probe_audio_only":
+      return "当前地址返回的是音频流，不是可用的视频流。";
+    default:
+      return null;
+  }
 }
 
 export function inferVodStreamKind(url: string): VodStreamKind {
@@ -101,34 +134,36 @@ export async function probeVodStream(
     url: normalizedUrl,
     headers: normalizedHeaders,
     timeoutMs,
-  }).then((result) => {
-    const nextKind =
-      result.kind === "hls" ||
-      result.kind === "flv" ||
-      result.kind === "mp4" ||
-      result.kind === "dash" ||
-      result.kind === "mpegts"
-      ? result.kind
-      : "unknown";
+  })
+    .then((result) => {
+      const nextKind =
+        result.kind === "hls" ||
+        result.kind === "flv" ||
+        result.kind === "mp4" ||
+        result.kind === "dash" ||
+        result.kind === "mpegts"
+          ? result.kind
+          : "unknown";
 
-    const normalizedResult: VodStreamProbeResult = {
-      kind: nextKind,
-      reason: result.reason ?? null,
-      contentType: result.content_type ?? null,
-      finalUrl:
-        sanitizeMediaUrlCandidate(result.final_url)
-        || (typeof result.final_url === "string" ? result.final_url.trim() : "")
-        || normalizedUrl,
-      probed: true,
-    };
-    streamProbeCache.set(cacheKey, {
-      result: normalizedResult,
-      expiresAt: Date.now() + STREAM_PROBE_CACHE_TTL_MS,
+      const normalizedResult: VodStreamProbeResult = {
+        kind: nextKind,
+        reason: result.reason ?? null,
+        contentType: result.content_type ?? null,
+        finalUrl:
+          sanitizeMediaUrlCandidate(result.final_url)
+          || (typeof result.final_url === "string" ? result.final_url.trim() : "")
+          || normalizedUrl,
+        probed: true,
+      };
+      streamProbeCache.set(cacheKey, {
+        result: normalizedResult,
+        expiresAt: Date.now() + STREAM_PROBE_CACHE_TTL_MS,
+      });
+      return normalizedResult;
+    })
+    .finally(() => {
+      inflightStreamProbeCache.delete(inflightKey);
     });
-    return normalizedResult;
-  }).finally(() => {
-    inflightStreamProbeCache.delete(inflightKey);
-  });
 
   inflightStreamProbeCache.set(inflightKey, pending);
   const result = await pending;

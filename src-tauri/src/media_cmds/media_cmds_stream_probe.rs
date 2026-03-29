@@ -137,6 +137,41 @@ fn detect_hls_manifest_anomaly(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+fn looks_like_html_document(bytes: &[u8], content_type: Option<&str>) -> bool {
+    if let Some(content_type) = content_type {
+        let lower = content_type.to_ascii_lowercase();
+        if lower.contains("text/html") || lower.contains("application/xhtml") {
+            return true;
+        }
+    }
+
+    let body = String::from_utf8_lossy(bytes);
+    let lower = body.to_ascii_lowercase();
+    lower.contains("<html")
+        || lower.contains("<!doctype html")
+        || lower.contains("<body")
+        || lower.contains("</html>")
+}
+
+fn detect_hls_blocked_page_reason(
+    bytes: &[u8],
+    content_type: Option<&str>,
+) -> Option<&'static str> {
+    if !looks_like_html_document(bytes, content_type) {
+        return None;
+    }
+
+    let body = String::from_utf8_lossy(bytes);
+    let lower = body.to_ascii_lowercase();
+    if lower.contains("请使用国内网络访问此页面")
+        || lower.contains("国内网络访问")
+        || lower.contains("country")
+    {
+        return Some("stream_probe_hls_geo_blocked");
+    }
+    Some("stream_probe_hls_html_blocked")
+}
+
 pub async fn probe_stream_kind(
     url: String,
     headers: Option<HashMap<String, String>>,
@@ -218,6 +253,15 @@ pub async fn probe_stream_kind(
         .await
         .map_err(|e| format!("probe_read_failed:{e}"))?;
     let detected_kind = detect_kind_from_bytes(bytes.as_ref());
+    if should_fetch_full_hls_manifest && detected_kind != Some("hls") {
+        if let Some(reason) =
+            detect_hls_blocked_page_reason(bytes.as_ref(), result.content_type.as_deref())
+        {
+            result.kind = "unknown".to_string();
+            result.reason = Some(reason.to_string());
+            return Ok(result);
+        }
+    }
     if let Some(kind) = detected_kind {
         if kind == "hls" {
             if let Some(reason) = detect_hls_manifest_anomaly(bytes.as_ref()) {
@@ -242,7 +286,8 @@ pub async fn probe_stream_kind(
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_hls_manifest_anomaly, detect_kind_from_content_type, is_audio_only_content_type,
+        detect_hls_blocked_page_reason, detect_hls_manifest_anomaly,
+        detect_kind_from_content_type, is_audio_only_content_type,
     };
 
     #[test]
@@ -281,5 +326,23 @@ mod tests {
     fn ignores_normal_hls_manifest() {
         let manifest = b"#EXTM3U\n#EXTINF:10,\nsegment-1.ts\n#EXTINF:10,\nsegment-2.ts\n";
         assert_eq!(detect_hls_manifest_anomaly(manifest), None);
+    }
+
+    #[test]
+    fn detects_geo_blocked_hls_html_page() {
+        let html = "<!DOCTYPE html><html><body><h1>404 Page Not Found</h1><p>请使用国内网络访问此页面。</p><p>DEBUG: IP 15.168.39.218 country 5</p></body></html>";
+        assert_eq!(
+            detect_hls_blocked_page_reason(html.as_bytes(), Some("text/html; charset=utf-8")),
+            Some("stream_probe_hls_geo_blocked")
+        );
+    }
+
+    #[test]
+    fn detects_generic_hls_html_block_page() {
+        let html = "<!DOCTYPE html><html><body><h1>Forbidden</h1></body></html>";
+        assert_eq!(
+            detect_hls_blocked_page_reason(html.as_bytes(), Some("text/html; charset=utf-8")),
+            Some("stream_probe_hls_html_blocked")
+        );
     }
 }

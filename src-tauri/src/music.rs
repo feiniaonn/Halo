@@ -347,6 +347,51 @@ fn detect_source_platform(source_id: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
+fn is_browser_like_music_source(source_id: &str) -> bool {
+    let lower = source_id.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+
+    [
+        "chrome",
+        "msedge",
+        "msedgewebview",
+        "webview",
+        "firefox",
+        "opera",
+        "brave",
+        "iexplore",
+        "browser",
+    ]
+    .iter()
+    .any(|token| lower.contains(token))
+}
+
+#[cfg(target_os = "windows")]
+fn is_halo_music_source(source_id: &str) -> bool {
+    let lower = source_id.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+
+    lower == "com.tauri-app.halo"
+        || lower.contains("tauri-app.halo")
+        || lower.ends_with("\\halo.exe")
+        || lower.ends_with("/halo.exe")
+        || lower.ends_with("halo.exe")
+}
+
+#[cfg(target_os = "windows")]
+fn should_ignore_music_source(source_id: &str, platform: Option<&str>) -> bool {
+    if is_browser_like_music_source(source_id) || is_halo_music_source(source_id) {
+        return true;
+    }
+
+    matches!(platform, Some("browser") | Some("webview") | Some("halo"))
+}
+
+#[cfg(target_os = "windows")]
 fn normalize_track_token(value: &str) -> String {
     value
         .trim()
@@ -842,6 +887,15 @@ fn query_current_via_windows_api() -> Option<CurrentPlayingInfo> {
         };
         let source_norm = source.to_ascii_lowercase();
         let platform = detect_source_platform(&source);
+        if should_ignore_music_source(&source, Some(platform.as_str())) {
+            if music_debug_enabled() {
+                eprintln!(
+                    "[music-debug] windows api candidate ignored by browser/self policy source='{}' platform='{}'",
+                    source, platform
+                );
+            }
+            continue;
+        }
         if platform == "netease" {
             if music_debug_enabled() {
                 eprintln!(
@@ -1418,7 +1472,7 @@ fn same_current(a: &Option<CurrentPlayingInfo>, b: &Option<CurrentPlayingInfo>) 
 fn choose_current_snapshot<'a>(state: &'a ListenerState) -> Option<(usize, &'a SessionSnapshot)> {
     if let Some(id) = state.current_session_id {
         if let Some(snapshot) = state.sessions.get(&id) {
-            if snapshot.model.is_some() {
+            if snapshot.model.is_some() && !should_ignore_music_source(&snapshot.source, None) {
                 return Some((id, snapshot));
             }
         }
@@ -1428,21 +1482,28 @@ fn choose_current_snapshot<'a>(state: &'a ListenerState) -> Option<(usize, &'a S
         .sessions
         .iter()
         .find(|(_, v)| {
-            v.model
-                .as_ref()
-                .and_then(|m| m.playback.as_ref())
-                .map(|p| p.status == PlaybackStatus::Playing)
-                .unwrap_or(false)
+            !should_ignore_music_source(&v.source, None)
+                && v.model
+                    .as_ref()
+                    .and_then(|m| m.playback.as_ref())
+                    .map(|p| p.status == PlaybackStatus::Playing)
+                    .unwrap_or(false)
         })
         .map(|(k, v)| (*k, v))
         .or_else(|| {
             state
                 .sessions
                 .iter()
-                .find(|(_, v)| v.model.is_some())
+                .find(|(_, v)| v.model.is_some() && !should_ignore_music_source(&v.source, None))
                 .map(|(k, v)| (*k, v))
         })
-        .or_else(|| state.sessions.iter().next().map(|(k, v)| (*k, v)))
+        .or_else(|| {
+            state
+                .sessions
+                .iter()
+                .find(|(_, v)| !should_ignore_music_source(&v.source, None))
+                .map(|(k, v)| (*k, v))
+        })
 }
 
 #[cfg(target_os = "windows")]

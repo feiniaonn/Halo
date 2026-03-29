@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { isVodOriginMetadataSite } from "@/modules/media/services/vodDispatchHealth";
 import { fetchVodDetail } from "@/modules/media/services/vodDetail";
 import {
+  buildVodImageRenderCandidates,
   normalizeVodImageUrl,
   proxyVodImage,
   shouldPreferProxyImage,
@@ -129,7 +130,12 @@ export function MediaDetailModal({
   const [dispatchBackendStatuses, setDispatchBackendStatuses] = useState<VodDispatchBackendStatus[]>([]);
   const [dispatchLoading, setDispatchLoading] = useState(false);
   const [dispatchError, setDispatchError] = useState<string | null>(null);
+  const [dispatchRequested, setDispatchRequested] = useState(false);
   const isDisplayOnlySite = isVodOriginMetadataSite(site);
+
+  useEffect(() => {
+    setDispatchRequested(false);
+  }, [site.key, vodId]);
 
   useEffect(() => {
     let mounted = true;
@@ -164,6 +170,8 @@ export function MediaDetailModal({
   useEffect(() => {
     const keyword = fallbackTitle.trim() || detail?.vod_name?.trim() || "";
     const shouldResolveDispatch = Boolean(keyword)
+      && isDisplayOnlySite
+      && dispatchRequested
       && Boolean(onResolveSearchDispatch)
       && !loading
       && (Boolean(error) || !detail || routes.length === 0);
@@ -211,12 +219,24 @@ export function MediaDetailModal({
     return () => {
       cancelled = true;
     };
-  }, [detail, error, fallbackTitle, isDisplayOnlySite, loading, onResolveSearchDispatch, routes.length, site.key, site.name]);
+  }, [
+    detail,
+    dispatchRequested,
+    error,
+    fallbackTitle,
+    isDisplayOnlySite,
+    loading,
+    onResolveSearchDispatch,
+    routes.length,
+    site.key,
+    site.name,
+  ]);
 
   useEffect(() => {
     let mounted = true;
     const nextSrc = normalizeVodImageUrl(detail?.vod_pic ?? "");
-    setBackgroundImageSrc(shouldPreferProxyImage(nextSrc) ? "" : nextSrc);
+    const renderCandidates = buildVodImageRenderCandidates(nextSrc);
+    setBackgroundImageSrc(renderCandidates[0] ?? nextSrc);
 
     if (!nextSrc || !shouldPreferProxyImage(nextSrc)) {
       return () => {
@@ -225,8 +245,15 @@ export function MediaDetailModal({
     }
 
     void proxyVodImage(nextSrc).then((resolved) => {
-      if (!mounted || !resolved) return;
-      setBackgroundImageSrc(resolved);
+      if (!mounted) return;
+      if (resolved) {
+        setBackgroundImageSrc(resolved);
+        return;
+      }
+      const fallbackSrc = renderCandidates[0] ?? nextSrc;
+      if (fallbackSrc) {
+        setBackgroundImageSrc(fallbackSrc);
+      }
     });
 
     return () => {
@@ -315,7 +342,9 @@ export function MediaDetailModal({
     vod_pic: "",
   };
   const displayTitle = detail?.vod_name || fallbackTitle || "影视详情";
-  const shouldShowDispatchFallback = Boolean(onResolveSearchDispatch)
+  const shouldShowDispatchFallback = isDisplayOnlySite
+    && dispatchRequested
+    && Boolean(onResolveSearchDispatch)
     && !loading
     && (Boolean(error) || !detail || routes.length === 0);
   const recommendedDispatchCandidate = dispatchCandidates[0] ?? null;
@@ -446,6 +475,29 @@ export function MediaDetailModal({
                   </div>
                 )}
 
+                {isDisplayOnlySite && onResolveSearchDispatch && (
+                  <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-sky-500/20 bg-sky-500/8 px-4 py-3 text-sm text-sky-900/82 shadow-sm dark:text-sky-100/82">
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="rounded-full"
+                      disabled={dispatchLoading}
+                      onClick={() => setDispatchRequested(true)}
+                    >
+                      {dispatchLoading ? (
+                        <>
+                          <Loader2 className="mr-2 size-3.5 animate-spin" />
+                          正在匹配资源
+                        </>
+                      ) : (
+                        "匹配资源播放"
+                      )}
+                    </Button>
+                    <span className="text-xs leading-5">
+                      仅在你主动点击后才会跨接口匹配，避免把 50 多个接口逐个串搜导致详情卡住。
+                    </span>
+                  </div>
+                )}
 
                 {shouldShowDispatchFallback && (
                   <div className="space-y-3 rounded-2xl border border-border/60 bg-background/72 p-4 shadow-sm">

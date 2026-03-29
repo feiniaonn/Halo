@@ -41,13 +41,45 @@ function buildHlsKernelPlan(startDisplay: VodKernelDisplay): VodKernelDisplay[] 
   }
 }
 
+function buildDirectFileKernelPlan(startDisplay: VodKernelDisplay): VodKernelDisplay[] {
+  switch (startDisplay) {
+    case 'potplayer':
+      return ['potplayer'];
+    case 'mpv':
+      return ['mpv', 'hls-direct'];
+    case 'hls-direct':
+    default:
+      return ['mpv', 'hls-direct'];
+  }
+}
+
 export function buildVodKernelPlan(
   startMode: VodKernelMode,
-  options?: { streamKind?: VodKernelPlanStreamKind | null; preferProxy?: boolean },
+  options?: {
+    streamKind?: VodKernelPlanStreamKind | null;
+    preferProxy?: boolean;
+    preferNative?: boolean;
+  },
 ): VodKernelDisplay[] {
   const startDisplay = toVodKernelDisplay(startMode);
-  if (options?.streamKind !== 'hls') {
-    return [startDisplay];
+  if (options?.streamKind === 'hls') {
+    return buildHlsKernelPlan(startDisplay);
   }
-  return buildHlsKernelPlan(startDisplay);
+
+  const directFileLike =
+    options?.preferNative ||
+    options?.streamKind === 'mp4' ||
+    options?.streamKind === 'flv' ||
+    options?.streamKind === 'dash' ||
+    options?.streamKind === 'mpegts';
+
+  if (directFileLike) {
+    return buildDirectFileKernelPlan(startDisplay);
+  }
+
+  if (startDisplay !== 'potplayer') {
+    return [startDisplay, 'mpv'];
+  }
+
+  return [startDisplay];
 }

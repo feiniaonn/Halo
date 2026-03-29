@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
-import { Clapperboard, Loader2, Play, Search, RotateCcw } from "lucide-react";
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { Clapperboard, Loader2, Play, RotateCcw, Search } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type {
   NormalizedTvBoxSite,
@@ -60,7 +61,13 @@ function EmptyState({
   );
 }
 
-function PanelTag({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "primary" | "danger" }) {
+function PanelTag({
+  children,
+  tone = "neutral",
+}: {
+  children: ReactNode;
+  tone?: "neutral" | "primary" | "danger";
+}) {
   return (
     <span
       data-tone={tone}
@@ -103,6 +110,7 @@ export function VodWorkbenchPanel({
   const canSearch = activeSite?.capability.canSearch ?? false;
   const isSearchOnly = activeSite?.capability.searchOnly ?? false;
   const isDisplayOnlySite = activeSite?.capability.dispatchRole === "origin-metadata";
+  const desktopUnsupportedReason = activeSite?.capability.desktopUnsupportedReason?.trim() ?? "";
   const isSearchMode = Boolean(activeSearchKeyword);
   const isAggregateMode = browseMode === "aggregate";
   const aggregateProgressText = aggregateSessionState
@@ -119,8 +127,9 @@ export function VodWorkbenchPanel({
                 <PanelTag>{isAggregateMode ? `优先：${activeSite.name}` : `当前：${activeSite.name}`}</PanelTag>
               )}
               {isDisplayOnlySite && <PanelTag tone="primary">仅展示</PanelTag>}
-              {isAggregateMode && aggregateProgressText && <PanelTag>搜刮进度：{aggregateProgressText}</PanelTag>}
+              {isAggregateMode && aggregateProgressText && <PanelTag>搜索进度：{aggregateProgressText}</PanelTag>}
               {isSearchMode && <PanelTag tone="primary">搜索：{activeSearchKeyword}</PanelTag>}
+              {desktopUnsupportedReason && <PanelTag tone="danger">桌面端不支持</PanelTag>}
               {!detailEnabled && <PanelTag tone="danger">不支持详情</PanelTag>}
             </div>
 
@@ -137,18 +146,25 @@ export function VodWorkbenchPanel({
                         if (event.key === "Enter") onSearchSubmit?.();
                       }}
                       placeholder={isAggregateMode ? "搜索全仓..." : "搜索本站..."}
-                      className="h-8 pl-9 text-xs bg-background/40 backdrop-blur-xl border-border/50 shadow-sm"
+                      className="h-8 border-border/50 bg-background/40 pl-9 text-xs shadow-sm backdrop-blur-xl"
                     />
                   </div>
-                  <Button onClick={() => onSearchSubmit?.()} size="sm" className="h-8 px-4 text-xs bg-primary/80 backdrop-blur-md">搜索</Button>
+                  <Button
+                    onClick={() => onSearchSubmit?.()}
+                    size="sm"
+                    className="h-8 bg-primary/80 px-4 text-xs backdrop-blur-md"
+                  >
+                    搜索
+                  </Button>
                   {isSearchMode && (
                     <Button variant="ghost" onClick={() => onSearchReset?.()} size="sm" className="h-8 px-3 text-xs">
-                      <RotateCcw className="mr-2 size-3" /> 重置
+                      <RotateCcw className="mr-2 size-3" />
+                      重置
                     </Button>
                   )}
                 </div>
               )}
-              
+
               {supportsAggregateBrowse && (
                 <div className="inline-flex rounded-lg border border-border bg-background p-0.5 shadow-sm">
                   <button
@@ -263,7 +279,7 @@ export function VodWorkbenchPanel({
                           </div>
                         </div>
 
-                        <div className="absolute left-2 top-2 right-2 flex items-start justify-between gap-2">
+                        <div className="absolute left-2 right-2 top-2 flex items-start justify-between gap-2">
                           <div className="flex flex-wrap gap-1">
                             {isDisplayOnlySite && !("aggregateSource" in item) && (
                               <span className="rounded-full bg-sky-500/90 px-2 py-0.5 text-[9px] font-semibold text-white">
@@ -299,11 +315,19 @@ export function VodWorkbenchPanel({
                     </div>
                   </div>
                 ))
+              ) : desktopUnsupportedReason ? (
+                <div className="col-span-full py-10">
+                  <EmptyState
+                    title="桌面端暂不支持该接口"
+                    description={desktopUnsupportedReason}
+                    icon={Clapperboard}
+                  />
+                </div>
               ) : isSearchOnly && !isSearchMode ? (
                 <div className="col-span-full py-10">
                   <EmptyState
                     title="等待搜索指令"
-                    description="当前接口没有默认内容列表，请输入片名后进行搜索。"
+                    description="当前接口没有默认内容列表，请输入片名后再进行搜索。"
                     icon={Clapperboard}
                   />
                 </div>
@@ -331,7 +355,7 @@ export function VodWorkbenchPanel({
             </div>
 
             {vodList.length > 0 && hasMore && (
-              <div className="flex justify-center pt-6 pb-2">
+              <div className="flex justify-center pb-2 pt-6">
                 <Button variant="outline" size="lg" className="w-full max-w-sm" onClick={onLoadMore} disabled={loadingMore}>
                   {loadingMore ? (
                     <>
@@ -346,7 +370,7 @@ export function VodWorkbenchPanel({
             )}
 
             {vodList.length > 0 && !hasMore && !loadingVod && (
-              <div className="pt-4 pb-2 text-center text-sm font-medium text-muted-foreground">
+              <div className="pb-2 pt-4 text-center text-sm font-medium text-muted-foreground">
                 已经到底了，没有更多内容。
               </div>
             )}

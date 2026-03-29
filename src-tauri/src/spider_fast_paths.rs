@@ -5,6 +5,7 @@ use serde_json::{json, Map, Value};
 
 mod app3q;
 mod appqi;
+mod ygp;
 
 const DOUBAN_COUNT: u32 = 20;
 const DOUBAN_API_KEY: &str = "0ac44ae016490db2204ce0a042db2916";
@@ -35,11 +36,24 @@ pub(crate) async fn try_execute_fast_path(
     if normalized.contains("appqi") {
         return appqi::try_execute_fast_path(site_key, ext, method, args).await;
     }
+    if normalized.contains("ygp") {
+        return ygp::try_execute_fast_path(site_key, method, args).await;
+    }
     if normalized.contains("biliys") {
         return try_execute_biliys_fast_path(site_key, ext, method, args).await;
     }
-    if normalized.contains("xbpq") {
-        return try_execute_xbpq_fast_path(site_key, ext, method, args).await;
+    if let Some(family_label) = rule_fast_path_family(&normalized, ext) {
+        match try_execute_rule_config_fast_path(site_key, family_label, ext, method, args).await {
+            Ok(Some(payload)) => return Ok(Some(payload)),
+            Ok(None) => {}
+            Err(err) if family_label == "RuleConfig" => {
+                crate::spider_cmds::append_spider_debug_log(&format!(
+                    "[SpiderFastPath][RuleConfig] {} skipped generic rule fast-path: {}",
+                    site_key, err
+                ));
+            }
+            Err(err) => return Err(err),
+        }
     }
     Ok(None)
 }
@@ -151,8 +165,25 @@ async fn try_execute_biliys_fast_path(
 const RULE_UNKNOWN_PAGECOUNT: u32 = 2_147_483_647;
 const RULE_MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 11; Ghxi Build/RKQ1.200826.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/76.0.3809.89 Mobile Safari/537.36";
 
-async fn try_execute_xbpq_fast_path(
+fn rule_fast_path_family(normalized: &str, ext: &str) -> Option<&'static str> {
+    if normalized.contains("xbpq") {
+        return Some("XBPQ");
+    }
+    if normalized.contains("xyqhiker") {
+        return Some("XYQHiker");
+    }
+    if normalized.contains("hiker") {
+        return Some("RuleConfig");
+    }
+    if looks_like_rule_config_ext(ext) {
+        return Some("RuleConfig");
+    }
+    None
+}
+
+async fn try_execute_rule_config_fast_path(
     site_key: &str,
+    family_label: &str,
     ext: &str,
     method: &str,
     args: &[(&str, String)],
@@ -160,7 +191,9 @@ async fn try_execute_xbpq_fast_path(
     let config = load_rule_config(ext).await?;
     let classes = parse_rule_categories(&config);
     if classes.is_empty() {
-        return Err("XBPQ fast-path rule config did not expose categories".to_string());
+        return Err(format!(
+            "{family_label} fast-path rule config did not expose categories"
+        ));
     }
 
     match method {
@@ -172,11 +205,13 @@ async fn try_execute_xbpq_fast_path(
                 .unwrap_or_else(|| "1".to_string());
             append_fast_path_log(
                 site_key,
-                "XBPQ",
+                family_label,
                 method,
                 "seeding first category from rule config",
             );
-            let list = fetch_rule_category_payload(&config, &first_tid, 1, &HashMap::new()).await?;
+            let list =
+                fetch_rule_category_payload(family_label, &config, &first_tid, 1, &HashMap::new())
+                    .await?;
             let payload = json!({
                 "class": classes,
                 "filters": {},
@@ -195,11 +230,12 @@ async fn try_execute_xbpq_fast_path(
             let filters = parse_map_arg(args, 3);
             append_fast_path_log(
                 site_key,
-                "XBPQ",
+                family_label,
                 method,
                 &format!("requesting tid={tid} page={page}"),
             );
-            let list = fetch_rule_category_payload(&config, tid, page, &filters).await?;
+            let list = fetch_rule_category_payload(family_label, &config, tid, page, &filters)
+                .await?;
             let payload = json!({
                 "page": page,
                 "pagecount": RULE_UNKNOWN_PAGECOUNT,
@@ -226,8 +262,60 @@ async fn load_rule_config(ext: &str) -> Result<Value, String> {
     parse_ext_json(trimmed)
 }
 
+fn looks_like_rule_config_ext(ext: &str) -> bool {
+    let trimmed = ext.trim();
+    if trimmed.is_empty() || !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return false;
+    }
+
+    parse_json_value_loose(trimmed)
+        .map(|value| value_looks_like_rule_config(&value))
+        .unwrap_or(false)
+}
+
+fn value_looks_like_rule_config(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            let strong = [
+                "class_name",
+                "class_url",
+                "homeUrl",
+                "homeurl",
+                "\u{5206}\u{7c7b}\u{540d}\u{79f0}",
+                "\u{5206}\u{7c7b}\u{94fe}\u{63a5}",
+                "分类",
+                "分类url",
+                "数组",
+                "标题",
+                "图片",
+                "链接",
+            ]
+            .iter()
+            .filter(|key| map.contains_key(**key))
+            .count();
+
+            strong >= 4
+                || (strong >= 3
+                    && (map.contains_key("homeUrl")
+                        || map.contains_key("class_url")
+                        || map.contains_key("\u{5206}\u{7c7b}\u{94fe}\u{63a5}")
+                        || map.contains_key("分类url")
+                        || map.contains_key("homeurl")))
+        }
+        Value::Array(items) => items.iter().take(3).any(value_looks_like_rule_config),
+        _ => false,
+    }
+}
+
 fn parse_rule_categories(config: &Value) -> Vec<Value> {
-    if let Some(raw) = config_string(config, &["\u{5206}\u{7c7b}", "class_name"]) {
+    if let Some(raw) = config_string(
+        config,
+        &[
+            "\u{5206}\u{7c7b}",
+            "\u{5206}\u{7c7b}\u{540d}\u{79f0}",
+            "class_name",
+        ],
+    ) {
         let separator = if raw.contains('#') { '#' } else { '&' };
         let values = raw
             .split(separator)
@@ -247,7 +335,14 @@ fn parse_rule_categories(config: &Value) -> Vec<Value> {
                 .collect();
         }
 
-        if let Some(ids_raw) = config_string(config, &["\u{5206}\u{7c7b}\u{503c}", "class_url"]) {
+        if let Some(ids_raw) = config_string(
+            config,
+            &[
+                "\u{5206}\u{7c7b}\u{503c}",
+                "\u{5206}\u{7c7b}\u{540d}\u{79f0}\u{66ff}\u{6362}\u{8bcd}",
+                "class_url",
+            ],
+        ) {
             let ids = ids_raw
                 .split(separator)
                 .map(str::trim)
@@ -269,6 +364,7 @@ fn parse_rule_categories(config: &Value) -> Vec<Value> {
 }
 
 async fn fetch_rule_category_payload(
+    family_label: &str,
     config: &Value,
     tid: &str,
     page: u32,
@@ -278,7 +374,8 @@ async fn fetch_rule_category_payload(
     let headers = build_rule_headers(config);
     let body = fetch_text_value(&request_url, Some(headers)).await?;
     crate::spider_cmds::append_spider_debug_log(&format!(
-        "[SpiderFastPath][XBPQ] request_url={} chars={} has_xvd={}",
+        "[SpiderFastPath][{}] request_url={} chars={} has_xvd={}",
+        family_label,
         request_url,
         body.len(),
         body.contains("/xvd")
@@ -326,12 +423,14 @@ async fn fetch_rule_category_payload(
     if list.is_empty() {
         let preview = body.chars().take(180).collect::<String>();
         crate::spider_cmds::append_spider_debug_log(&format!(
-            "[SpiderFastPath][XBPQ] empty list preview={}",
+            "[SpiderFastPath][{}] empty list preview={}",
+            family_label,
             preview.replace('\r', " ").replace('\n', " ")
         ));
     } else {
         crate::spider_cmds::append_spider_debug_log(&format!(
-            "[SpiderFastPath][XBPQ] parsed {} items",
+            "[SpiderFastPath][{}] parsed {} items",
+            family_label,
             list.len()
         ));
     }
@@ -344,7 +443,14 @@ fn build_rule_category_url(
     page: u32,
     filters: &HashMap<String, String>,
 ) -> Result<String, String> {
-    let template = config_string(config, &["\u{5206}\u{7c7b}url", "class_url"])
+    let template = config_string(
+        config,
+        &[
+            "\u{5206}\u{7c7b}url",
+            "\u{5206}\u{7c7b}\u{94fe}\u{63a5}",
+            "class_url",
+        ],
+    )
         .ok_or_else(|| "rule config missing 閸掑棛琚玼rl".to_string())?;
     let template = template
         .split(";;")
@@ -810,6 +916,12 @@ fn parse_json_value_loose(body: &str) -> Result<Value, serde_json::Error> {
         return Ok(value);
     }
 
+    let sanitized = strip_json_line_comments(trimmed);
+    let trimmed = sanitized.trim_start();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return Ok(value);
+    }
+
     let first_obj = trimmed.find('{');
     let first_arr = trimmed.find('[');
     let start = match (first_obj, first_arr) {
@@ -833,6 +945,48 @@ fn parse_json_value_loose(body: &str) -> Result<Value, serde_json::Error> {
     }
 
     serde_json::from_str::<Value>(&trimmed[start..=end])
+}
+
+fn strip_json_line_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+            out.push(ch);
+            continue;
+        }
+
+        if ch == '/' && matches!(chars.peek(), Some('/')) {
+            chars.next();
+            for next in chars.by_ref() {
+                if next == '\n' {
+                    out.push('\n');
+                    break;
+                }
+            }
+            continue;
+        }
+
+        out.push(ch);
+    }
+
+    out
 }
 
 fn map_douban_items(items: &[Value]) -> Vec<Value> {
@@ -944,7 +1098,8 @@ fn append_fast_path_log(site_key: &str, family: &str, method: &str, detail: &str
 mod tests {
     use super::{
         build_douban_category_request, douban_home_categories, extract_rule_value, map_bili_item,
-        map_douban_item, parse_json_value_loose, parse_map_arg,
+        map_douban_item, parse_json_value_loose, parse_map_arg, parse_rule_categories,
+        rule_fast_path_family,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -991,6 +1146,35 @@ mod tests {
         let parsed =
             parse_json_value_loose("wrapper={\"class\":[],\"filters\":{}};").expect("wrapped json");
         assert!(parsed.get("filters").is_some());
+    }
+
+    #[test]
+    fn parses_json_with_line_comments() {
+        let parsed = parse_json_value_loose(
+            "{\n  \"分类名称\": \"电影&剧集\",\n  // comment\n  \"分类名称替换词\": \"movie&tv\"\n}",
+        )
+        .expect("json with comments");
+        assert_eq!(parsed["分类名称"], "电影&剧集");
+    }
+
+    #[test]
+    fn parses_alt_rule_categories_from_name_and_replacements() {
+        let config = json!({
+            "分类名称": "电影&剧集",
+            "分类名称替换词": "movie&tv"
+        });
+        let categories = parse_rule_categories(&config);
+        assert_eq!(categories.len(), 2);
+        assert_eq!(categories[0]["type_name"], "电影");
+        assert_eq!(categories[0]["type_id"], "movie");
+    }
+
+    #[test]
+    fn detects_xyqhiker_as_rule_fast_path_family() {
+        assert_eq!(
+            rule_fast_path_family("csp_xyqhiker", "https://example.com/rule.json"),
+            Some("XYQHiker")
+        );
     }
     #[test]
     fn extracts_prefixed_rule_value_from_trimmed_segment() {

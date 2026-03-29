@@ -2,6 +2,13 @@ import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { CoverImage } from "@/modules/music/components/CoverImage";
 
+const PLAYBACK_ORB_TRANSITION = {
+  type: "spring",
+  stiffness: 340,
+  damping: 28,
+  mass: 0.7,
+} as const;
+
 function clampProgress(value: number) {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
@@ -115,9 +122,10 @@ export function PlaybackOrb({
 
   return (
     <motion.div
-      layout
+      initial={false}
       className="relative flex shrink-0 items-center justify-center"
-      style={{ width: shellSize, height: shellSize }}
+      animate={{ width: shellSize, height: shellSize }}
+      transition={PLAYBACK_ORB_TRANSITION}
     >
       <svg className="pointer-events-none absolute inset-0 size-full -rotate-90" viewBox="0 0 100 100" aria-hidden>
         <circle cx="50" cy="50" r="42" fill="none" stroke="currentColor" strokeWidth="6" className="text-white/6" />
@@ -138,12 +146,15 @@ export function PlaybackOrb({
         />
       </svg>
 
-      <div
+      <motion.div
+        initial={false}
+        animate={{ width: size, height: size, scale: isPlaying ? 1 : 0.985 }}
+        transition={PLAYBACK_ORB_TRANSITION}
         className={cn(
           "relative overflow-hidden rounded-full border border-white/10 shadow-[0_10px_30px_-20px_rgba(0,0,0,0.88)]",
-          isPlaying ? "animate-[spin_18s_linear_infinite]" : "scale-[0.985]",
+          isPlaying && "animate-[spin_18s_linear_infinite]",
         )}
-        style={{ width: size, height: size, willChange: "transform" }}
+        style={{ willChange: "width, height, transform" }}
       >
         <CoverImage
           coverPath={coverPath}
@@ -151,7 +162,7 @@ export function PlaybackOrb({
           size="md"
           className="h-full w-full rounded-full object-cover"
         />
-      </div>
+      </motion.div>
     </motion.div>
   );
 }

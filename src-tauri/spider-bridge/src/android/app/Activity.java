@@ -7,14 +7,22 @@ import android.content.Context;
  */
 public class Activity extends android.content.ContextWrapper {
     public Activity() {
-        super(new Application());
+        this(ActivityThread.currentApplication());
+    }
+
+    public Activity(Context baseContext) {
+        super(baseContext == null ? ActivityThread.currentApplication() : baseContext);
     }
 
     public Context getApplicationContext() {
-        return getBaseContext();
+        return ActivityThread.currentApplication();
+    }
+
+    public Application getApplication() {
+        return ActivityThread.currentApplication();
     }
 
     public Context getBaseContext() {
-        return this;
+        return mBase == null ? ActivityThread.currentApplication() : mBase;
     }
 }

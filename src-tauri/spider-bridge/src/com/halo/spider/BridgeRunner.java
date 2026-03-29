@@ -8,8 +8,10 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import org.json.JSONArray;
@@ -193,16 +195,11 @@ public final class BridgeRunner {
                     }
                 }
 
-                // 4. Add site runtime jars in the preferred order.
-                if (fallbackJar != null && prefersAnotherdsPrimary(classHint)) {
+                // 4. Always prefer the source-provided runtime first.
+                urls.add(mainSpiderJar.toURI().toURL());
+                if (fallbackJar != null) {
                     urls.add(fallbackJar.toURI().toURL());
-                    urls.add(mainSpiderJar.toURI().toURL());
-                    System.err.println("DEBUG: Prioritizing anotherds runtime for " + classHint);
-                } else {
-                    urls.add(mainSpiderJar.toURI().toURL());
-                    if (fallbackJar != null) {
-                        urls.add(fallbackJar.toURI().toURL());
-                    }
+                    System.err.println("DEBUG: Added anotherds fallback after source runtime for " + classHint);
                 }
 
                 // Keep compat jars after the site jar so site-local runtimes win when both
@@ -215,7 +212,9 @@ public final class BridgeRunner {
             Object spider;
             ClassLoader loader = null;
             boolean isJsBridge = jarPath.endsWith(".js");
-
+            android.content.Context mockContext = new com.halo.spider.mock.MockContext(siteKey);
+            ClassLoader prevCtx = Thread.currentThread().getContextClassLoader();
+            try {
             if (isJsBridge) {
                 String jsContent = new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(jarPath)), StandardCharsets.UTF_8);
                 spider = new JSBridge(jsContent, readEnv("HALO_JS_RUNTIME_ROOT", ""));
@@ -238,27 +237,9 @@ public final class BridgeRunner {
                     }
                 }; */
 
-                String className = pickSpiderClassName(jarPath, siteKey, classHint, loader);
-                response.className = className;
-
-                Class<?> spiderClass = Class.forName(className, true, loader);
-                configureProxyRuntime(loader, proxyBaseUrl);
-                Constructor<?> constructor = spiderClass.getDeclaredConstructor();
-                constructor.setAccessible(true);
-                spider = constructor.newInstance();
-                seedSiteDefaults(spider, classHint, ext);
-            }
-
-            // Set context classloader so coerceArg can resolve Gson types from the spider JAR
-            ClassLoader prevCtx = Thread.currentThread().getContextClassLoader();
-            if (loader != null) {
                 Thread.currentThread().setContextClassLoader(loader);
-            }
-            try {
-                System.setProperty("http.agent", "Mozilla/5.0 (Linux; Android 11; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Mobile Safari/537.36");
-                android.content.Context mockContext = new com.halo.spider.mock.MockContext(siteKey);
-                invokeGlobalInit(loader, mockContext);
                 BridgeRuntimeSetup.ensureDesktopRuntimeFiles(mockContext);
+                invokeGlobalInit(loader, mockContext, ext);
                 ensureMergeC0HttpRuntime(loader);
                 ensureMergeHttpRuntime(loader);
                 BridgeRuntimeSetup.ensureMergeFmHttpRuntime(loader);
@@ -266,6 +247,23 @@ public final class BridgeRunner {
                 BridgeRuntimeSetup.ensureMergeE0HttpRuntime(loader);
                 BridgeRuntimeSetup.ensureMergeA0HttpRuntime(loader);
                 ensureMergeZzHttpRuntime(loader);
+                configureProxyRuntime(loader, proxyBaseUrl);
+
+                String className = pickSpiderClassName(jarPath, siteKey, classHint, loader);
+                response.className = className;
+
+                Class<?> spiderClass = Class.forName(className, true, loader);
+                Constructor<?> constructor = spiderClass.getDeclaredConstructor();
+                constructor.setAccessible(true);
+                spider = constructor.newInstance();
+                seedSiteDefaults(spider, classHint, ext);
+            }
+
+                // Set context classloader so coerceArg can resolve Gson types from the spider JAR
+                if (loader != null) {
+                    Thread.currentThread().setContextClassLoader(loader);
+                }
+                System.setProperty("http.agent", "Mozilla/5.0 (Linux; Android 11; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Mobile Safari/537.36");
                 invokeInitApi(spider);
                 invokeInit(spider, mockContext, ext, isJsBridge);
                 invokePrecallMethods(spider, readEnv("HALO_PRECALL_METHODS", ""));
@@ -631,34 +629,74 @@ public final class BridgeRunner {
         return bestClass;
     }
 
-    static boolean needsAnotherdsFallback(String classHint) {
+    private static Set<String> classHintTokens(String classHint) {
+        Set<String> tokens = new LinkedHashSet<>();
         if (classHint == null) {
+            return tokens;
+        }
+        for (String token : classHint.split("[^A-Za-z0-9]+")) {
+            if (token == null) {
+                continue;
+            }
+            String trimmed = token.trim().toLowerCase();
+            if (!trimmed.isEmpty()) {
+                tokens.add(trimmed);
+            }
+        }
+        return tokens;
+    }
+
+    private static boolean classHintHasAnyToken(String classHint, String... expectedTokens) {
+        Set<String> tokens = classHintTokens(classHint);
+        if (tokens.isEmpty()) {
             return false;
         }
-        String lower = classHint.toLowerCase();
-        return lower.contains("apprj")
-                || lower.contains("appget")
-                || lower.contains("appnox")
-                || lower.contains("appqi")
-                || lower.contains("appys")
-                || lower.contains("appysv2")
-                || lower.contains("hxq")
-                || lower.contains("jianpian")
-                || lower.contains("jpian")
-                || lower.contains("douban")
-                || lower.contains("ygp")
-                || lower.contains("config")
-                || lower.contains("localfile")
-                || lower.contains("bili")
-                || lower.contains("biliys")
-                || lower.contains("wwys")
-                || lower.contains("saohuo")
-                || lower.contains("gz360")
-                || lower.contains("liteapple")
-                || lower.contains("czsapp")
-                || lower.contains("sp360")
-                || lower.contains("kugou")
-                || lower.contains("xbpq");
+        for (String expected : expectedTokens) {
+            if (tokens.contains(expected)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean classHintHasAmnsFamilyToken(String classHint) {
+        Set<String> tokens = classHintTokens(classHint);
+        if (tokens.isEmpty()) {
+            return false;
+        }
+        for (String token : tokens) {
+            if (token != null && (token.endsWith("amns") || token.endsWith("amnsr"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean needsAnotherdsFallback(String classHint) {
+        return classHintHasAnyToken(
+                classHint,
+                "apprj",
+                "appget",
+                "appnox",
+                "appqi",
+                "appys",
+                "appysv2",
+                "hxq",
+                "jianpian",
+                "jpian",
+                "douban",
+                "ygp",
+                "localfile",
+                "bili",
+                "biliys",
+                "wwys",
+                "saohuo",
+                "gz360",
+                "liteapple",
+                "czsapp",
+                "sp360",
+                "kugou",
+                "xbpq");
     }
 
     private static String remapPreferredClassHint(String classHint) {
@@ -676,12 +714,15 @@ public final class BridgeRunner {
         return classHint;
     }
 
-    static boolean prefersAnotherdsPrimary(String classHint) {
-        if (classHint == null) {
-            return false;
-        }
-        String lower = classHint.toLowerCase();
-        return lower.contains("hxq");
+    private static boolean usesLegacySpiderBaseBridgeCompat(String classHint) {
+        return classHintHasAnyToken(
+                classHint,
+                "xbpq",
+                "xyqhiker",
+                "qiyou",
+                "lkdy",
+                "jianpian",
+                "jpian");
     }
 
     private static boolean shouldLoadCatvodRuntimeFirst(String name) {
@@ -699,24 +740,54 @@ public final class BridgeRunner {
         }
 
         java.util.LinkedHashSet<String> preferred = new java.util.LinkedHashSet<>();
+        preferred.add("com.github.catvod.spider.Init");
+        preferred.add("com.github.catvod.crawler.SpiderApi");
+        preferred.add("com.github.catvod.crawler.Spider");
+        preferred.add("com.github.catvod.spider.Spider");
+        addAndroidFoundationBridgeClasses(preferred);
         String lower = classHint.toLowerCase();
-        if (needsAnotherdsFallback(classHint) || lower.contains("xbpq")) {
+        boolean needsAnotherds = needsAnotherdsFallback(classHint) || lower.contains("xbpq");
+        boolean usesLegacySpiderBase = usesLegacySpiderBaseBridgeCompat(classHint);
+        boolean usesAppMergeCFamily = usesAppMergeCFamilyBridgeCompat(classHint);
+        boolean usesAppA0Runtime = usesAppA0RuntimeCompat(lower);
+        boolean usesMergeFmRuntime = usesMergeFmHttpRuntimeCompat(lower);
+
+        if (needsAnotherds) {
             preferred.add("com.github.catvod.spider.Init");
+            addAndroidFoundationBridgeClasses(preferred);
+        }
+        if (usesLegacySpiderBase) {
+            preferred.add("com.github.catvod.crawler.Spider");
+            preferred.add("com.github.catvod.spider.Spider");
+            addAndroidFoundationBridgeClasses(preferred);
         }
         if (lower.contains("hxq")) {
             preferred.add("com.github.catvod.crawler.Spider");
             preferred.add("com.github.catvod.spider.BaseSpiderAmns");
+            addAndroidFoundationBridgeClasses(preferred);
         }
-        if (usesMergeFmHttpRuntimeCompat(lower)) {
+        if (usesAppMergeCFamily) {
+            preferred.add("com.github.catvod.spider.Init");
+            preferred.add("com.github.catvod.crawler.Spider");
+            preferred.add("com.github.catvod.spider.Spider");
+            preferred.add("com.github.catvod.spider.BaseSpiderAmns");
+            addAndroidFoundationBridgeClasses(preferred);
+        }
+        if (usesMergeFmRuntime) {
             preferred.add("com.github.catvod.spider.merge.FM.m.c");
+            preferred.add("com.github.catvod.spider.Init");
+            addAndroidFoundationBridgeClasses(preferred);
         }
         if (lower.contains("douban")) {
             preferred.add("com.github.catvod.spider.merge.k.c");
             preferred.add("com.github.catvod.spider.merge.k.d");
+            preferred.add("com.github.catvod.spider.Init");
+            addAndroidFoundationBridgeClasses(preferred);
         }
         if (usesAppHttpRuntimeCompat(lower)) {
             preferred.add("com.github.catvod.spider.merge.k.c");
             preferred.add("com.github.catvod.spider.merge.k.d");
+            addAndroidFoundationBridgeClasses(preferred);
         }
         if (usesAppCryptoRuntimeCompat(lower)) {
             preferred.add("com.github.catvod.spider.merge.m.a");
@@ -725,8 +796,10 @@ public final class BridgeRunner {
             preferred.add("com.github.catvod.spider.merge.c.a");
             preferred.add("com.github.catvod.spider.merge.c.e");
         }
-        if (usesAppA0RuntimeCompat(lower)) {
+        if (usesAppA0Runtime) {
             preferred.add("com.github.catvod.spider.merge.A0.yi");
+            preferred.add("com.github.catvod.spider.Init");
+            addAndroidFoundationBridgeClasses(preferred);
         }
         if (lower.contains("biliys")) {
             preferred.add("com.github.catvod.crawler.Spider");
@@ -744,6 +817,23 @@ public final class BridgeRunner {
             preferred.add("com.github.catvod.spider.merge.b0.i");
         }
         return preferred;
+    }
+
+    private static void addAndroidFoundationBridgeClasses(java.util.LinkedHashSet<String> preferred) {
+        preferred.add("android.content.Context");
+        preferred.add("android.content.DialogInterface");
+        preferred.add("android.app.Application");
+        preferred.add("android.app.Activity");
+        preferred.add("android.app.ActivityThread");
+        preferred.add("android.view.View");
+        preferred.add("android.view.ViewGroup");
+        preferred.add("android.webkit.WebViewClient");
+        preferred.add("android.widget.TextView");
+        preferred.add("android.widget.EditText");
+        preferred.add("android.widget.FrameLayout");
+        preferred.add("android.widget.LinearLayout");
+        preferred.add("android.widget.Toast");
+        preferred.add("android.os.Environment");
     }
 
     private static boolean usesAppHttpRuntimeCompat(String lower) {
@@ -777,6 +867,21 @@ public final class BridgeRunner {
                         || lower.contains("hxq"));
     }
 
+    private static boolean usesAppMergeCFamilyBridgeCompat(String classHint) {
+        return classHintHasAmnsFamilyToken(classHint)
+                || classHintHasAnyToken(
+                        classHint,
+                        "guazi",
+                        "ttian",
+                        "jpys",
+                        "qiao2",
+                        "qiji",
+                        "xdai",
+                        "configcenter",
+                        "goconfigamnsr",
+                        "goconfigamns");
+    }
+
     private static boolean usesAppA0RuntimeCompat(String lower) {
         return lower != null
                 && (lower.contains("appysv2")
@@ -788,7 +893,7 @@ public final class BridgeRunner {
         return name != null && preferredBridgeClasses != null && preferredBridgeClasses.contains(name);
     }
 
-    static void invokeGlobalInit(ClassLoader loader, android.content.Context context) {
+    static void invokeGlobalInit(ClassLoader loader, android.content.Context context, String ext) {
         if (loader == null || context == null) {
             return;
         }
@@ -797,24 +902,24 @@ public final class BridgeRunner {
             Class<?> initClass = Class.forName("com.github.catvod.spider.Init", true, loader);
             ensureInitSingleton(initClass, context);
             Method[] methods = initClass.getMethods();
-            for (Method method : methods) {
+            for (Method method : orderInitMethods(methods)) {
                 if (!Modifier.isStatic(method.getModifiers()) || !"init".equals(method.getName())) {
                     continue;
                 }
 
-                Class<?>[] params = method.getParameterTypes();
-                if (params.length == 1 && isContextLikeType(params[0]) && params[0].isInstance(context)) {
-                    method.setAccessible(true);
-                    method.invoke(null, context);
-                    System.err.println("DEBUG: invokeGlobalInit matched Init.init(" + params[0].getSimpleName() + ")");
-                    return;
+                Object[] args = buildGlobalInitArgs(method, context, ext);
+                if (args == null) {
+                    continue;
                 }
 
-                if (params.length == 0) {
+                try {
                     method.setAccessible(true);
-                    method.invoke(null);
-                    System.err.println("DEBUG: invokeGlobalInit matched Init.init()");
+                    method.invoke(null, args);
+                    System.err.println("DEBUG: invokeGlobalInit matched Init." + describeInitSignature(method));
                     return;
+                } catch (Throwable error) {
+                    System.err.println("DEBUG: invokeGlobalInit candidate failed: Init."
+                            + describeInitSignature(method) + " -> " + error.getMessage());
                 }
             }
         } catch (ClassNotFoundException ignored) {
@@ -822,6 +927,81 @@ public final class BridgeRunner {
             System.err.println("DEBUG: invokeGlobalInit failed: " + error.getMessage());
             error.printStackTrace(System.err);
         }
+    }
+
+    private static List<Method> orderInitMethods(Method[] methods) {
+        List<Method> ordered = new ArrayList<>();
+        for (Method method : methods) {
+            if (!Modifier.isStatic(method.getModifiers()) || !"init".equals(method.getName())) {
+                continue;
+            }
+            ordered.add(method);
+        }
+        ordered.sort((left, right) -> Integer.compare(scoreInitMethod(right), scoreInitMethod(left)));
+        return ordered;
+    }
+
+    private static int scoreInitMethod(Method method) {
+        Class<?>[] params = method.getParameterTypes();
+        if (params.length == 2) {
+            if (isContextLikeType(params[0]) && params[1] == String.class) {
+                return 60;
+            }
+            if (params[0] == Object.class && params[1] == String.class) {
+                return 50;
+            }
+        }
+        if (params.length == 1) {
+            if (isContextLikeType(params[0])) {
+                return 40;
+            }
+            if (params[0] == Object.class) {
+                return 30;
+            }
+            if (params[0] == String.class) {
+                return 20;
+            }
+        }
+        return params.length == 0 ? 10 : 0;
+    }
+
+    private static Object[] buildGlobalInitArgs(Method method, android.content.Context context, String ext) {
+        Class<?>[] params = method.getParameterTypes();
+        if (params.length == 2) {
+            if (isContextLikeType(params[0]) && params[1] == String.class && params[0].isInstance(context)) {
+                return new Object[] { context, ext == null ? "" : ext };
+            }
+            if (params[0] == Object.class && params[1] == String.class) {
+                return new Object[] { context, ext == null ? "" : ext };
+            }
+            return null;
+        }
+        if (params.length == 1) {
+            if (isContextLikeType(params[0]) && params[0].isInstance(context)) {
+                return new Object[] { context };
+            }
+            if (params[0] == Object.class) {
+                return new Object[] { context };
+            }
+            if (params[0] == String.class) {
+                return new Object[] { ext == null ? "" : ext };
+            }
+            return null;
+        }
+        return params.length == 0 ? new Object[0] : null;
+    }
+
+    private static String describeInitSignature(Method method) {
+        StringBuilder builder = new StringBuilder("init(");
+        Class<?>[] params = method.getParameterTypes();
+        for (int index = 0; index < params.length; index++) {
+            if (index > 0) {
+                builder.append(", ");
+            }
+            builder.append(params[index].getSimpleName());
+        }
+        builder.append(')');
+        return builder.toString();
     }
 
     private static void ensureInitSingleton(Class<?> initClass, android.content.Context context) {
@@ -1280,6 +1460,58 @@ public final class BridgeRunner {
                 || name.endsWith(".Context");
     }
 
+    private static boolean isBaseSpiderInitMethod(Method method) {
+        return method != null
+                && method.getDeclaringClass() != null
+                && "com.github.catvod.crawler.Spider".equals(method.getDeclaringClass().getName());
+    }
+
+    private static boolean tryInvokeInitPass(
+            List<Method> initMethods,
+            Object spider,
+            android.content.Context context,
+            String ext,
+            int pass,
+            Throwable[] lastErrorHolder) {
+        for (Method method : initMethods) {
+            Class<?>[] params = method.getParameterTypes();
+            try {
+                if (pass == 1 && params.length == 2 && isContextLikeType(params[0])) {
+                    System.err.println("DEBUG: invokeInit Match Pass 1: init(Context, " + params[1].getSimpleName() + ")");
+                    Object extArg = coerceArg(ext, params[1]);
+                    method.setAccessible(true);
+                    method.invoke(spider, new Object[] { context, extArg });
+                    return true;
+                }
+                if (pass == 2 && params.length == 1 && !isContextLikeType(params[0])) {
+                    System.err.println("DEBUG: invokeInit Match Pass 2: init(" + params[0].getSimpleName() + ")");
+                    String extToPass = (ext == null || ext.isEmpty()) ? "{}" : ext;
+                    Object extArg = coerceArg(extToPass, params[0]);
+                    method.setAccessible(true);
+                    method.invoke(spider, new Object[] { extArg });
+                    return true;
+                }
+                if (pass == 3 && params.length == 0) {
+                    System.err.println("DEBUG: invokeInit Match Pass 3: init()");
+                    method.setAccessible(true);
+                    method.invoke(spider);
+                    return true;
+                }
+                if (pass == 4 && params.length == 1 && isContextLikeType(params[0])) {
+                    System.err.println("DEBUG: invokeInit Match Pass 4: init(Context)");
+                    method.setAccessible(true);
+                    method.invoke(spider, context);
+                    return true;
+                }
+            } catch (Throwable e) {
+                System.err.println("DEBUG: invokeInit Pass " + pass + " failed for method " + method.getName());
+                e.printStackTrace(System.err);
+                lastErrorHolder[0] = e;
+            }
+        }
+        return false;
+    }
+
     static void invokeInit(Object spider, android.content.Context context, String ext, boolean isJsBridge) throws Exception {
         Method[] methods = spider.getClass().getMethods();
         List<Method> initMethods = new ArrayList<>();
@@ -1301,80 +1533,48 @@ public final class BridgeRunner {
             return;
         }
 
-        Throwable lastError = null;
-
-        // Pass 1: 2-param (Context, X) methods
+        List<Method> preferredInitMethods = new ArrayList<>();
+        List<Method> fallbackInitMethods = new ArrayList<>();
         for (Method method : initMethods) {
-            Class<?>[] params = method.getParameterTypes();
-            if (params.length == 2 && isContextLikeType(params[0])) {
-                try {
-                    System.err.println("DEBUG: invokeInit Match Pass 1: init(Context, " + params[1].getSimpleName() + ")");
-                    Object extArg = coerceArg(ext, params[1]);
-                    method.setAccessible(true);
-                    method.invoke(spider, new Object[] { context, extArg });
+            if (isBaseSpiderInitMethod(method)) {
+                fallbackInitMethods.add(method);
+            } else {
+                preferredInitMethods.add(method);
+            }
+        }
+
+        List<List<Method>> initGroups = new ArrayList<>();
+        if (!preferredInitMethods.isEmpty()) {
+            initGroups.add(preferredInitMethods);
+        }
+        if (!fallbackInitMethods.isEmpty()) {
+            initGroups.add(fallbackInitMethods);
+        }
+        if (initGroups.isEmpty()) {
+            initGroups.add(initMethods);
+        }
+
+        Throwable[] lastErrorHolder = new Throwable[1];
+
+        for (List<Method> initGroup : initGroups) {
+            for (int pass = 1; pass <= 4; pass++) {
+                if (tryInvokeInitPass(initGroup, spider, context, ext, pass, lastErrorHolder)) {
                     return;
-                } catch (Throwable e) {
-                    System.err.println("DEBUG: invokeInit Pass 1 failed for method " + method.getName());
-                    e.printStackTrace(System.err);
-                    lastError = e;
                 }
             }
         }
 
         // Pass 2: 1-param non-Context methods 鈥?pass coerced ext
-        for (Method method : initMethods) {
-            Class<?>[] params = method.getParameterTypes();
-            if (params.length == 1 && !isContextLikeType(params[0])) {
-                try {
-                    System.err.println("DEBUG: invokeInit Match Pass 2: init(" + params[0].getSimpleName() + ")");
-                    String extToPass = (ext == null || ext.isEmpty()) ? "{}" : ext;
-                    Object extArg = coerceArg(extToPass, params[0]);
-                    method.setAccessible(true);
-                    method.invoke(spider, new Object[] { extArg });
-                    return;
-                } catch (Throwable e) {
-                    System.err.println("DEBUG: invokeInit Pass 2 failed for method " + method.getName());
-                    e.printStackTrace(System.err);
-                    lastError = e;
-                }
-            }
-        }
+        
 
         // Pass 3: 0-param init()
-        for (Method method : initMethods) {
-            if (method.getParameterCount() == 0) {
-                try {
-                    System.err.println("DEBUG: invokeInit Match Pass 3: init()");
-                    method.setAccessible(true);
-                    method.invoke(spider);
-                    return;
-                } catch (Throwable e) {
-                    System.err.println("DEBUG: invokeInit Pass 3 failed for method " + method.getName());
-                    e.printStackTrace(System.err);
-                    lastError = e;
-                }
-            }
-        }
+        
 
         // Pass 4: init(Context)
-        for (Method method : initMethods) {
-            Class<?>[] params = method.getParameterTypes();
-            if (params.length == 1 && isContextLikeType(params[0])) {
-                try {
-                    System.err.println("DEBUG: invokeInit Match Pass 4: init(Context)");
-                    method.setAccessible(true);
-                    method.invoke(spider, context);
-                    return;
-                } catch (Throwable e) {
-                    System.err.println("DEBUG: invokeInit Pass 4 failed for method " + method.getName());
-                    e.printStackTrace(System.err);
-                    lastError = e;
-                }
-            }
-        }
+        
 
-        if (lastError != null) {
-            throw new RuntimeException("invoke init failed", lastError);
+        if (lastErrorHolder[0] != null) {
+            throw new RuntimeException("invoke init failed", lastErrorHolder[0]);
         }
         System.err.println("DEBUG: No init method found to invoke.");
     }
@@ -1677,4 +1877,3 @@ public final class BridgeRunner {
         return sb.toString();
     }
 }
-

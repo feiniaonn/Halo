@@ -216,6 +216,7 @@ async fn spawn_daemon_process(app: &AppHandle) -> Result<Arc<SpiderDaemonProcess
         .arg("-Dfile.encoding=UTF-8")
         .arg("-Dsun.stdout.encoding=UTF-8")
         .arg("-Dsun.stderr.encoding=UTF-8")
+        .arg("-noverify")
         .arg("-Xmx512m")
         .arg("-cp")
         .arg(classpath)
@@ -509,24 +510,67 @@ pub(crate) async fn daemon_call(
     }
     request_guard.mark_sent();
 
-    let envelope = match tokio::time::timeout(timeout, receiver).await {
-        Ok(Ok(Ok(envelope))) => envelope,
-        Ok(Ok(Err(err))) => {
-            request_guard.disarm();
-            return Err(err);
-        }
-        Ok(Err(_)) => {
-            request_guard.disarm();
-            return Err("spider daemon response channel closed".to_string());
-        }
-        Err(_) => {
-            remove_pending_request(&process, request_id).await;
-            let _ = send_cancel_command(&process, request_id).await;
-            request_guard.disarm();
-            return Err(format!(
-                "spider daemon execution timeout exceeded after {}s",
-                timeout.as_secs()
+    let receiver = receiver;
+    tokio::pin!(receiver);
+    let initial_deadline = tokio::time::sleep(timeout);
+    tokio::pin!(initial_deadline);
+
+    let envelope = tokio::select! {
+        response = &mut receiver => match response {
+            Ok(Ok(envelope)) => envelope,
+            Ok(Err(err)) => {
+                request_guard.disarm();
+                return Err(err);
+            }
+            Err(_) => {
+                request_guard.disarm();
+                return Err("spider daemon response channel closed".to_string());
+            }
+        },
+        _ = &mut initial_deadline => {
+            let grace = if timeout >= Duration::from_secs(8) {
+                Duration::from_millis(1500)
+            } else {
+                Duration::from_millis(900)
+            };
+            crate::spider_cmds::append_spider_debug_log(&format!(
+                "[SpiderDaemon] request {} exceeded primary timeout for {}, waiting {:?} grace before cancel",
+                request_id,
+                timeout.as_secs(),
+                grace
             ));
+
+            let grace_deadline = tokio::time::sleep(grace);
+            tokio::pin!(grace_deadline);
+
+            tokio::select! {
+                response = &mut receiver => match response {
+                    Ok(Ok(envelope)) => {
+                        crate::spider_cmds::append_spider_debug_log(&format!(
+                            "[SpiderDaemon] request {} recovered during grace window",
+                            request_id
+                        ));
+                        envelope
+                    }
+                    Ok(Err(err)) => {
+                        request_guard.disarm();
+                        return Err(err);
+                    }
+                    Err(_) => {
+                        request_guard.disarm();
+                        return Err("spider daemon response channel closed".to_string());
+                    }
+                },
+                _ = &mut grace_deadline => {
+                    remove_pending_request(&process, request_id).await;
+                    let _ = send_cancel_command(&process, request_id).await;
+                    request_guard.disarm();
+                    return Err(format!(
+                        "spider daemon execution timeout exceeded after {}s",
+                        timeout.as_secs()
+                    ));
+                }
+            }
         }
     };
 
@@ -548,6 +592,6 @@ pub(crate) async fn shutdown_daemon() {
     process.healthy.store(false, Ordering::SeqCst);
     fail_all_pending(&process, "spider daemon shut down".to_string()).await;
     let mut child = process.child.lock().await;
-    let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
+    let _ = tokio::time::timeout(Duration::from_millis(250), child.wait()).await;
     let _ = child.kill().await;
 }

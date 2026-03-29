@@ -31,7 +31,7 @@ import { Card } from "@/components/ui/card";
 type MusicTab = "top10" | "all";
 
 const DEFAULT_SETTINGS: MusicSettings = {
-  music_control_target_mode: "auto",
+  music_control_target_mode: "native",
   music_control_timeout_ms: 1200,
   music_control_retry_count: 1,
   music_control_whitelist: [],

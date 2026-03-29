@@ -115,17 +115,25 @@ public final class DexSpiderTransformer {
     private static byte[] sanitizeClass(byte[] byArray) {
         ClassNode classNode = new ClassNode();
         new ClassReader(byArray).accept((ClassVisitor)classNode, 0);
+        boolean rewriteConstructors = DexSpiderTransformer.shouldRewriteConstructors(classNode);
         for (MethodNode methodNode : classNode.methods) {
-            if ("<init>".equals(methodNode.name)) {
+            if ("<init>".equals(methodNode.name) && rewriteConstructors) {
                 DexSpiderTransformer.rewriteConstructor(classNode, methodNode);
-                continue;
             }
-            if (!"<clinit>".equals(methodNode.name)) continue;
-            DexSpiderTransformer.rewriteClassInitializer(methodNode);
         }
         SafeClassWriter object = new SafeClassWriter(3);
         classNode.accept(object);
         return object.toByteArray();
+    }
+
+    private static boolean shouldRewriteConstructors(ClassNode classNode) {
+        if (classNode == null || classNode.name == null) {
+            return false;
+        }
+        if (classNode.name.startsWith("com/github/catvod/en/")) {
+            return classNode.name.indexOf(36) < 0;
+        }
+        return false;
     }
 
     private static void rewriteConstructor(ClassNode classNode, MethodNode methodNode) {
@@ -138,17 +146,6 @@ public final class DexSpiderTransformer {
         methodNode.instructions.add((AbstractInsnNode)new InsnNode(177));
         methodNode.maxLocals = Math.max(1, Type.getArgumentTypes((String)methodNode.desc).length + 1);
         methodNode.maxStack = 1;
-    }
-
-    private static void rewriteClassInitializer(MethodNode methodNode) {
-        methodNode.access &= 0xFFFFFA88;
-        methodNode.access |= 8;
-        methodNode.instructions = new InsnList();
-        methodNode.tryCatchBlocks = new ArrayList();
-        methodNode.localVariables = new ArrayList();
-        methodNode.instructions.add((AbstractInsnNode)new InsnNode(177));
-        methodNode.maxLocals = 0;
-        methodNode.maxStack = 0;
     }
 
     private static void copy(InputStream inputStream, OutputStream outputStream) throws IOException {
@@ -170,4 +167,3 @@ public final class DexSpiderTransformer {
         }
     }
 }
-

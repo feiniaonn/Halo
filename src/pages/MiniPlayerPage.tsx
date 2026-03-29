@@ -42,6 +42,8 @@ const DEFAULT_MINI_SETTINGS: MiniSettingsState = {
   restoreHomeHotkey: "Control+Shift+H",
 };
 
+const MINI_WINDOW_SIDE_BUFFER = 2;
+
 function normalizeShortcut(input: string | null | undefined): string | null {
   if (!input) return null;
   const parts = input
@@ -309,6 +311,9 @@ export function MiniPlayerPage({
     displayState === "expanded"
       ? Math.min(Math.round(islandHeight * 0.5), 28)
       : Math.min(Math.round(islandHeight / 2), 999);
+  const shellWidth = islandWidth + MINI_WINDOW_SIDE_BUFFER * 2;
+  const shellHeight = islandHeight;
+  const shellRadius = borderRadius;
 
   const hasCustomBg = bgType !== "none" && !!bgPath;
   const backgroundScale = 1.05;
@@ -488,12 +493,10 @@ export function MiniPlayerPage({
         ref={islandRef}
         initial={false}
         data-tauri-drag-region
-        animate={{ width: islandWidth, height: islandHeight, borderRadius }}
+        animate={{ width: shellWidth, height: shellHeight, borderRadius: shellRadius }}
         onClick={handleIslandClick}
         className={cn(
-          "halo-mini-standalone pointer-events-auto relative isolate overflow-hidden border border-white/8 bg-black/[0.96] text-white transform-gpu",
-          "shadow-[0_22px_56px_-30px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(255,255,255,0.08)]",
-          hasCustomBg && "bg-black/88 backdrop-blur-[22px]",
+          "halo-mini-standalone pointer-events-auto relative isolate overflow-hidden bg-transparent text-white transform-gpu",
           canExpand ? "cursor-pointer" : "cursor-default",
           className,
         )}
@@ -501,45 +504,56 @@ export function MiniPlayerPage({
         style={{ originX: 0.5, originY: 0.5, willChange: "width, height, border-radius" }}
         transition={MINI_LAYOUT_TRANSITION}
       >
-        {hasCustomBg && (
-          <motion.div
-            layout
-            className="pointer-events-none absolute inset-0 overflow-hidden [mask-image:radial-gradient(circle_at_center,black_18%,black_48%,transparent_100%)]"
-          >
-            {bgType === "image" ? (
-              <img
-                key={bgPath ?? "none"}
-                src={bgPath ?? ""}
-                alt=""
-                className="absolute inset-0 h-full w-full object-cover opacity-26"
-                style={{
-                  filter: `blur(${Math.max(0, normalizedBgBlur * 0.36)}px) saturate(0.92)`,
-                  transform: `scale(${Math.max(1.02, backgroundScale - 0.02)})`,
-                }}
-              />
-            ) : (
-              <video
-                key={bgPath ?? "none"}
-                ref={bgVideoRef}
-                src={bgPath ?? ""}
-                autoPlay
-                loop
-                muted
-                playsInline
-                className="absolute inset-0 h-full w-full object-cover opacity-22"
-                style={{
-                  filter: `blur(${Math.max(0, normalizedBgBlur * 0.28)}px) saturate(0.9)`,
-                  transform: `scale(${Math.max(1.02, backgroundScale - 0.02)})`,
-                }}
-              />
-            )}
+        <motion.div
+          layout
+          className={cn(
+            "absolute inset-y-0 overflow-hidden border border-white/8 bg-black/[0.96] text-white",
+            "shadow-[0_22px_56px_-30px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(255,255,255,0.08)]",
+            hasCustomBg && "bg-black/88 backdrop-blur-[22px]",
+          )}
+          style={{ left: MINI_WINDOW_SIDE_BUFFER, right: MINI_WINDOW_SIDE_BUFFER, borderRadius }}
+          transition={MINI_LAYOUT_TRANSITION}
+        >
+          {hasCustomBg && (
+            <motion.div
+              layout
+              className="pointer-events-none absolute inset-0 overflow-hidden [mask-image:radial-gradient(circle_at_center,black_18%,black_48%,transparent_100%)]"
+            >
+              {bgType === "image" ? (
+                <img
+                  key={bgPath ?? "none"}
+                  src={bgPath ?? ""}
+                  alt=""
+                  className="absolute inset-0 h-full w-full object-cover opacity-26"
+                  style={{
+                    filter: `blur(${Math.max(0, normalizedBgBlur * 0.36)}px) saturate(0.92)`,
+                    transform: `scale(${Math.max(1.02, backgroundScale - 0.02)})`,
+                  }}
+                />
+              ) : (
+                <video
+                  key={bgPath ?? "none"}
+                  ref={bgVideoRef}
+                  src={bgPath ?? ""}
+                  autoPlay
+                  loop
+                  muted
+                  playsInline
+                  className="absolute inset-0 h-full w-full object-cover opacity-22"
+                  style={{
+                    filter: `blur(${Math.max(0, normalizedBgBlur * 0.28)}px) saturate(0.9)`,
+                    transform: `scale(${Math.max(1.02, backgroundScale - 0.02)})`,
+                  }}
+                />
+              )}
+            </motion.div>
+          )}
+
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_-15%,rgba(255,255,255,0.18),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.05),transparent_40%,rgba(0,0,0,0.18))]" />
+
+          <motion.div layout className="relative z-10 h-full w-full" transition={MINI_LAYOUT_TRANSITION}>
+            {moduleContent}
           </motion.div>
-        )}
-
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_-15%,rgba(255,255,255,0.18),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.05),transparent_40%,rgba(0,0,0,0.18))]" />
-
-        <motion.div layout className="relative z-10 h-full w-full" transition={MINI_LAYOUT_TRANSITION}>
-          {moduleContent}
         </motion.div>
       </motion.div>
     </div>

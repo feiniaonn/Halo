@@ -613,6 +613,76 @@ fn preferred_execution_target(
         .unwrap_or(fallback)
 }
 
+fn profile_matches_app_merge_c_family(profile: &SpiderSiteProfile) -> bool {
+    let class_name = profile.class_name.trim().to_ascii_lowercase();
+    let has_full_compat_stack = profile.required_compat_packs.iter().any(|pack| pack == "legacy-core")
+        && profile
+            .required_compat_packs
+            .iter()
+            .any(|pack| pack == "legacy-custom-spider")
+        && profile
+            .required_compat_packs
+            .iter()
+            .any(|pack| pack == "legacy-jsapi");
+
+    class_name.ends_with("amns")
+        || class_name.ends_with("amnsr")
+        || class_name.contains("basespideramns")
+        || (profile.needs_context_shim
+            && (profile.has_native_init
+                || profile.has_native_content_method
+                || !profile.native_methods.is_empty()))
+        || (profile.needs_context_shim && has_full_compat_stack)
+}
+
+fn artifact_matches_app_merge_c_family(artifact: &SpiderArtifactAnalysis) -> bool {
+    artifact.class_inventory.iter().any(|class_name| {
+        let lowered = class_name.trim().to_ascii_lowercase();
+        lowered.contains("basespideramns")
+            || lowered.contains("dexnative")
+            || lowered.contains(".spider.init")
+            || lowered.contains("merge.c.")
+    })
+}
+
+fn artifact_matches_a0_js_heavy_family(artifact: &SpiderArtifactAnalysis) -> bool {
+    artifact.class_inventory.iter().any(|class_name| {
+        class_name
+            .trim()
+            .to_ascii_lowercase()
+            .contains("merge.a0.")
+    })
+}
+
+fn infer_runtime_family_from_context(
+    site_key: &str,
+    class_name: Option<&str>,
+    artifact: Option<&SpiderArtifactAnalysis>,
+    site_profile: Option<&SpiderSiteProfile>,
+) -> SpiderRuntimeFamily {
+    let detected = detect_runtime_family(site_key, class_name);
+    if detected != SpiderRuntimeFamily::Unknown {
+        return detected;
+    }
+
+    if site_profile.map(profile_matches_app_merge_c_family).unwrap_or(false)
+        || artifact
+            .map(artifact_matches_app_merge_c_family)
+            .unwrap_or(false)
+    {
+        return SpiderRuntimeFamily::AppMergeC;
+    }
+
+    if artifact
+        .map(artifact_matches_a0_js_heavy_family)
+        .unwrap_or(false)
+    {
+        return SpiderRuntimeFamily::A0JsHeavy;
+    }
+
+    SpiderRuntimeFamily::Unknown
+}
+
 fn infer_transport_target(
     execution_target: &SpiderExecutionTarget,
     runtime_family: &SpiderRuntimeFamily,
@@ -647,7 +717,12 @@ pub(crate) fn success_report(
         site_profile.as_ref(),
         SpiderExecutionTarget::DesktopDirect,
     );
-    let runtime_family = detect_runtime_family(site_key, class_name.as_deref());
+    let runtime_family = infer_runtime_family_from_context(
+        site_key,
+        class_name.as_deref(),
+        artifact.as_ref(),
+        site_profile.as_ref(),
+    );
     let request_id = next_request_id(site_key, method);
     let timings = SpiderExecutionTimings {
         started_at_ms: checked_at_ms,
@@ -699,7 +774,12 @@ pub(crate) fn failure_report(
     let checked_at_ms = now_unix_ms();
     let execution_target =
         preferred_execution_target(artifact.as_ref(), site_profile.as_ref(), fallback_target);
-    let runtime_family = detect_runtime_family(site_key, class_name.as_deref());
+    let runtime_family = infer_runtime_family_from_context(
+        site_key,
+        class_name.as_deref(),
+        artifact.as_ref(),
+        site_profile.as_ref(),
+    );
     let (failure_code, retryable, source_health_impact) =
         classify_failure_code(message, &failure_kind);
     let request_id = next_request_id(site_key, method);
@@ -868,9 +948,12 @@ pub(crate) fn build_prefetch_result(prepared: &PreparedSpiderJar) -> SpiderPrefe
 mod tests {
     use super::{
         analyze_spider_artifact, classify_failure_code, classify_spider_failure,
-        SpiderArtifactKind, SpiderExecutionTarget, SpiderFailureKind,
+        infer_runtime_family_from_context, SpiderArtifactAnalysis, SpiderArtifactKind,
+        SpiderExecutionTarget, SpiderFailureKind, SpiderSiteProfile,
     };
-    use crate::spider_runtime_contract::{SpiderFailureCode, SpiderSourceHealthImpact};
+    use crate::spider_runtime_contract::{
+        SpiderFailureCode, SpiderRuntimeFamily, SpiderSourceHealthImpact,
+    };
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -959,6 +1042,71 @@ mod tests {
         assert_eq!(kind, SpiderFailureKind::NeedsLocalHelper);
         assert_eq!(target, SpiderExecutionTarget::DesktopHelper);
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn infers_app_merge_c_family_from_profile_without_manual_tokens() {
+        let artifact = SpiderArtifactAnalysis {
+            artifact_kind: SpiderArtifactKind::DexNative,
+            required_runtime: SpiderExecutionTarget::DesktopCompatPack,
+            transformable: false,
+            original_jar_path: "demo.jar".to_string(),
+            prepared_jar_path: "demo.desktop.jar".to_string(),
+            class_inventory: vec!["com.github.catvod.spider.merge.c.a".to_string()],
+            native_libs: vec!["assets/libs/arm64-v8a/libstub.so".to_string()],
+        };
+        let profile = SpiderSiteProfile {
+            class_name: "com.github.catvod.spider.CustomRuntime".to_string(),
+            has_context_init: true,
+            declares_context_init: true,
+            has_non_context_init: false,
+            has_native_init: false,
+            has_native_content_method: false,
+            native_methods: vec!["notify()".to_string()],
+            init_signatures: vec!["init(android.content.Context)".to_string()],
+            needs_context_shim: true,
+            required_compat_packs: vec![
+                "legacy-core".to_string(),
+                "legacy-custom-spider".to_string(),
+                "legacy-jsapi".to_string(),
+            ],
+            required_helper_ports: Vec::new(),
+            recommended_target: SpiderExecutionTarget::DesktopCompatPack,
+            routing_reason: None,
+        };
+
+        assert_eq!(
+            infer_runtime_family_from_context(
+                "mystery-site",
+                Some("com.github.catvod.spider.CustomRuntime"),
+                Some(&artifact),
+                Some(&profile),
+            ),
+            SpiderRuntimeFamily::AppMergeC
+        );
+    }
+
+    #[test]
+    fn infers_a0_js_heavy_family_from_artifact_markers() {
+        let artifact = SpiderArtifactAnalysis {
+            artifact_kind: SpiderArtifactKind::JvmJar,
+            required_runtime: SpiderExecutionTarget::DesktopDirect,
+            transformable: false,
+            original_jar_path: "demo.jar".to_string(),
+            prepared_jar_path: "demo.desktop.jar".to_string(),
+            class_inventory: vec!["com.github.catvod.spider.merge.A0.yi".to_string()],
+            native_libs: Vec::new(),
+        };
+
+        assert_eq!(
+            infer_runtime_family_from_context(
+                "unknown-site",
+                Some("com.github.catvod.spider.CustomA0"),
+                Some(&artifact),
+                None,
+            ),
+            SpiderRuntimeFamily::A0JsHeavy
+        );
     }
 
     #[test]

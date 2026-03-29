@@ -164,27 +164,95 @@ pub fn detect_runtime_family(site_key: &str, class_name: Option<&str>) -> Spider
         site_key.trim().to_ascii_lowercase(),
         class_name.unwrap_or_default().trim().to_ascii_lowercase()
     );
+    let tokens = combined
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter_map(|token| {
+            let trimmed = token.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_ascii_lowercase())
+            }
+        })
+        .collect::<Vec<_>>();
 
     if combined.contains("jsbridge") || combined.ends_with(".js") {
         return SpiderRuntimeFamily::PureJsBridge;
     }
 
-    if combined.contains("douban") || combined.contains("ygp") || combined.contains("anotherds") {
+    if ["douban", "ygp", "anotherds"]
+        .iter()
+        .any(|token| tokens.iter().any(|candidate| candidate == token))
+    {
         return SpiderRuntimeFamily::FmAnotherds;
     }
 
-    if combined.contains("app3q")
-        || combined.contains("appjg")
-        || combined.contains("appqi")
-        || combined.contains("apprj")
-        || combined.contains("hxq")
+    if tokens
+        .iter()
+        .any(|candidate| token_matches_app_merge_c_family(candidate))
     {
         return SpiderRuntimeFamily::AppMergeC;
     }
 
-    if combined.contains("appysv2") || combined.contains("appfox") || combined.contains("appnox") {
+    if ["appysv2", "appfox", "appnox"]
+        .iter()
+        .any(|token| tokens.iter().any(|candidate| candidate == token))
+    {
         return SpiderRuntimeFamily::A0JsHeavy;
     }
 
     SpiderRuntimeFamily::Unknown
+}
+
+fn token_matches_app_merge_c_family(token: &str) -> bool {
+    matches!(
+        token,
+        "app3q"
+            | "appjg"
+            | "appqi"
+            | "apprj"
+            | "hxq"
+            | "guazi"
+            | "ttian"
+            | "jpys"
+            | "qiao2"
+            | "qiji"
+            | "xdai"
+            | "configcenter"
+            | "goconfigamnsr"
+            | "goconfigamns"
+    ) || token.ends_with("amns")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{detect_runtime_family, SpiderRuntimeFamily};
+
+    #[test]
+    fn detects_feimao_yoursmile_families_as_app_merge_c() {
+        assert_eq!(
+            detect_runtime_family("csp_GuaZi", Some("com.github.catvod.spider.GuaZi")),
+            SpiderRuntimeFamily::AppMergeC
+        );
+        assert_eq!(
+            detect_runtime_family("ConfigCenter", Some("csp_ConfigCenter")),
+            SpiderRuntimeFamily::AppMergeC
+        );
+        assert_eq!(
+            detect_runtime_family("csp_qiao2", Some("com.github.catvod.spider.qiao2")),
+            SpiderRuntimeFamily::AppMergeC
+        );
+    }
+
+    #[test]
+    fn detects_amns_family_tokens_as_app_merge_c() {
+        assert_eq!(
+            detect_runtime_family("csp_CzzyAmns", Some("com.github.catvod.spider.CzzyAmns")),
+            SpiderRuntimeFamily::AppMergeC
+        );
+        assert_eq!(
+            detect_runtime_family("csp_HHkkAmns", Some("com.github.catvod.spider.HHkkAmns")),
+            SpiderRuntimeFamily::AppMergeC
+        );
+    }
 }

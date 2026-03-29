@@ -77,6 +77,7 @@ MEMORY.md
 memory/
 plans/
 docs/
+tests/
 tests/github_origin_snapshot/
 
 # Research / scratch outputs
@@ -93,3 +94,5 @@ ggg.txt
 一键更新测试/.publish-secrets.json
 一键更新测试/密钥.txt
 一键更新测试/更新公告.txt
+一键更新测试/*.bak-*
+发布产物/

@@ -60,7 +60,13 @@ export async function fetchVodDetail(
   const normalizedVodId = String(vodId).trim();
   if (!context.forceRefresh && sourceKey) {
     const persisted = await loadPersistedVodDetailCache(sourceKey, repoUrl, site.key, normalizedVodId);
-    if (persisted) {
+    const shouldBypassPersistedCache = Boolean(
+      persisted
+      && site.capability.supportsPlay
+      && !site.capability.displayOnly
+      && persisted.routes.length === 0,
+    );
+    if (persisted && !shouldBypassPersistedCache) {
       return persisted;
     }
   }
@@ -69,7 +75,6 @@ export async function fetchVodDetail(
     sessionKey: context.runtimeSessionKey,
     policyGeneration: context.policyGeneration,
   });
-  let rawResponse = "";
   let normalizedPayload: unknown;
   if (site.capability.requiresSpider) {
     const response = await invokeSpiderDetailV2({
@@ -79,19 +84,19 @@ export async function fetchVodDetail(
       ext: extInput,
       ids: [String(vodId)],
     });
-    rawResponse = response.rawPayload;
+    if (!response.rawPayload?.trim()) {
+      throw new Error("源站返回空详情。");
+    }
     normalizedPayload = response.normalizedPayload;
   } else {
     const response = await invoke<string>("fetch_vod_detail", {
       apiUrl: site.api,
       ids: String(vodId),
     });
-    rawResponse = response;
+    if (!response?.trim()) {
+      throw new Error("源站返回空详情。");
+    }
     normalizedPayload = response;
-  }
-
-  if (!rawResponse || !rawResponse.trim()) {
-    throw new Error("源站返回空详情。");
   }
 
   const detail = parseVodDetailResponse(normalizedPayload).list?.[0] as VodDetail | undefined;

@@ -5,20 +5,124 @@ import type {
   SpiderFailureKind,
   SpiderSiteRuntimeState,
   SpiderRuntimeStatus,
+  SpiderFailureCode,
+  VodResponse,
 } from "@/modules/media/types/tvbox.types";
 
 const SOFT_DISABLE_THRESHOLD = 3;
 const PREFLIGHT_METHODS = new Set(["prefetch", "profile"]);
+const EMPTY_HOME_CONTENT_PATTERNS = [
+  /homecontent returned no canonical class or list/i,
+  /homecontent returned no canonical list/i,
+  /homecontent returned neither class nor list/i,
+];
+const DETERMINISTIC_INIT_FAILURE_PATTERNS = [
+  /Expected URL scheme 'http' or 'https' but no colon was found/i,
+  /no protocol:/i,
+  /MalformedURLException/i,
+];
+const BLOCKED_HTML_PATTERNS = [
+  /<!doctype html/i,
+  /<html[\s>]/i,
+  /Protected By .* WAF/i,
+  /window\.product_data/i,
+  /SafeLine/i,
+];
 
 function isPreflightMethod(method?: string | null): boolean {
   return PREFLIGHT_METHODS.has((method ?? "").trim());
+}
+
+function matchesEmptyHomeContentFailure(message?: string | null): boolean {
+  const normalized = (message ?? "").trim();
+  if (!normalized) return false;
+  return EMPTY_HOME_CONTENT_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function isEmptyHomeContentFailure(report: SpiderExecutionReport): boolean {
+  return !report.ok
+    && report.method === "homeContent"
+    && report.failureKind === "ResponseShapeError"
+    && matchesEmptyHomeContentFailure(report.failureMessage);
+}
+
+function matchesDeterministicInitFailure(message?: string | null): boolean {
+  const normalized = (message ?? "").trim();
+  if (!normalized) return false;
+  return DETERMINISTIC_INIT_FAILURE_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function isDeterministicInitFailure(
+  report: Pick<SpiderExecutionReport, "failureKind" | "failureCode" | "failureMessage" | "method" | "ok">,
+): boolean {
+  if (report.ok || report.method !== "homeContent") {
+    return false;
+  }
+  if (report.failureKind !== "InitError" && report.failureCode !== "RuntimeInitFailed") {
+    return false;
+  }
+  return matchesDeterministicInitFailure(report.failureMessage);
+}
+
+function isClassSelectionFailure(report: SpiderExecutionReport | SpiderSiteRuntimeState): boolean {
+  const failureCode = "failureCode" in report
+    ? report.failureCode
+    : (report as SpiderSiteRuntimeState).lastFailureCode;
+  const failureKind = "failureKind" in report
+    ? report.failureKind
+    : (report as SpiderSiteRuntimeState).lastFailureKind;
+  return failureCode === "ClassSelectionMiss"
+    || failureKind === "ClassSelectionError";
+}
+
+function matchesBlockedHtmlPayload(rawPayload?: string | null): boolean {
+  const normalized = (rawPayload ?? "").trim();
+  if (!normalized) return false;
+  return BLOCKED_HTML_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function isBlockedHtmlFailureCode(code?: SpiderFailureCode | null): boolean {
+  return code === "UpstreamForbidden";
+}
+
+function hasCanonicalVodPayload(payload?: Pick<VodResponse, "class" | "list"> | null): boolean {
+  return Boolean(payload?.class?.length || payload?.list?.length);
 }
 
 function isImmediateSourceFailure(report: SpiderExecutionReport): boolean {
   if (report.ok || report.method !== "homeContent") return false;
 
   if (report.sourceHealthImpact === "hard") return true;
-  return report.failureCode === "ClassSelectionMiss" || report.failureKind === "ClassSelectionError";
+  return isClassSelectionFailure(report)
+    || isDeterministicInitFailure(report)
+    || isEmptyHomeContentFailure(report);
+}
+
+export function buildDerivedSpiderPayloadReport(
+  report: SpiderExecutionReport,
+  rawPayload: string | null | undefined,
+  payload: Pick<VodResponse, "class" | "list"> | null | undefined,
+): SpiderExecutionReport | null {
+  if (!report.ok || report.method !== "homeContent") {
+    return null;
+  }
+  if (hasCanonicalVodPayload(payload)) {
+    return null;
+  }
+  if (!matchesBlockedHtmlPayload(rawPayload)) {
+    return null;
+  }
+
+  return {
+    ...report,
+    ok: false,
+    failureKind: "ResponseShapeError",
+    failureCode: "UpstreamForbidden",
+    failureMessage: "上游返回了 WAF/拦截 HTML，未提供可解析的首页数据。",
+    sourceHealthImpact: "hard",
+    retryable: false,
+    checkedAtMs: report.checkedAtMs + 1,
+  };
 }
 
 function statusFromExecutionTarget(target: SpiderExecutionTarget): SpiderRuntimeStatus {
@@ -213,6 +317,49 @@ export function shouldBlockAutoLoad(
   return state?.runtimeStatus === "temporarily-disabled";
 }
 
+export function shouldHideRuntimeSite(
+  state: SpiderSiteRuntimeState | null | undefined,
+): boolean {
+  if (!state?.softDisabled) {
+    return false;
+  }
+  if (state.lastReportMethod !== "homeContent") {
+    return false;
+  }
+  if (isClassSelectionFailure(state)) {
+    return true;
+  }
+  if (matchesDeterministicInitFailure(state.lastFailureMessage)
+    && (state.lastFailureKind === "InitError" || state.lastFailureCode === "RuntimeInitFailed")) {
+    return true;
+  }
+  if (state.lastFailureKind === "ResponseShapeError" && matchesEmptyHomeContentFailure(state.lastFailureMessage)) {
+    return true;
+  }
+  return isBlockedHtmlFailureCode(state.lastFailureCode);
+}
+
+export function shouldDeprioritizeRuntimeSite(
+  state: SpiderSiteRuntimeState | null | undefined,
+): boolean {
+  if (!state) {
+    return false;
+  }
+  if (shouldHideRuntimeSite(state)) {
+    return true;
+  }
+  switch (state.runtimeStatus) {
+    case "temporarily-disabled":
+    case "site-error":
+    case "missing-dependency":
+    case "needs-compat-pack":
+    case "needs-local-helper":
+      return true;
+    default:
+      return false;
+  }
+}
+
 export function getSpiderRuntimeLabel(
   state: SpiderSiteRuntimeState | null | undefined,
 ): string {
@@ -297,6 +444,14 @@ export function buildSpiderFailureNotice(
   if (!report) return fallbackMessage;
   if (report.method === "prefetch" && report.failureKind === "FetchError") {
     return "Spider 运行资源预取失败，当前接口会在真实请求时继续重试；若持续失败，再考虑切换接口。";
+  }
+
+  if (isBlockedHtmlFailureCode(report.failureCode)) {
+    return "当前接口被上游风控/WAF 拦截，桌面端已暂时隔离，避免继续空跑。";
+  }
+
+  if (isDeterministicInitFailure(report)) {
+    return "当前接口初始化时构造了非法 URL，这类站点属于确定性失败，桌面端会暂时隔离避免反复空跑。";
   }
 
   if (isImmediateSourceFailure(report)) {

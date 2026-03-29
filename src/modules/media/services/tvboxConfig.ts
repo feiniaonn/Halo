@@ -248,8 +248,59 @@ function isSearchNameHint(name: string): boolean {
   return /(search|搜索|搜片|搜剧|检索|聚搜)/i.test(name);
 }
 
+function isSearchOnlyHint(name: string, api: string): boolean {
+  return isSearchNameHint(name)
+    || /(仅搜索|只搜索|搜索专用|搜片专用)/i.test(name)
+    || /(?:^|[_./-])(m?search|searchonly|search-only)(?:$|[_./-])/i.test(api);
+}
+
+function isNoSearchHint(name: string, api: string): boolean {
+  return /(无搜索|免搜索|不支持搜索)/i.test(name)
+    || /(?:^|[_./-])(nosearch|no-search|searchless)(?:$|[_./-])/i.test(api);
+}
+
+function isDirectPlayHint(name: string, api: string): boolean {
+  return /(直连|直鏈|免解析|直链)/i.test(name)
+    || /(?:^|[_./-])(direct|directplay|lib|zxzj)(?:$|[_./-])/i.test(api);
+}
+
 function isMetadataNameHint(name: string): boolean {
-  return /(douban|豆瓣|预告|片单|榜单|热播|热映|热剧|推荐)/i.test(name);
+  return /(douban|豆瓣|片单|榜单|影单|片库|影视资料|电影资料)/i.test(name);
+}
+
+function isYgpApi(api: string): boolean {
+  return /(?:^|_)ygp$/i.test(api) || /csp_ygp/i.test(api);
+}
+
+function normalizeHintTokens(value: string): string[] {
+  return value
+    .split(/[^A-Za-z0-9]+/)
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function detectDesktopUnsupportedReason(api: string, name: string): string | null {
+  const apiTokens = normalizeHintTokens(api);
+  const nameTokens = normalizeHintTokens(name);
+  const hasApiToken = (...expected: string[]) => expected.some((token) => apiTokens.includes(token));
+  const hasNameToken = (...expected: string[]) => expected.some((token) => nameTokens.includes(token));
+
+  if (hasApiToken("configcenter", "config") || hasNameToken("configcenter")) {
+    return "配置中心依赖 Android TVBox 客户端内置设置，桌面端不显示这些功能。";
+  }
+  if (hasApiToken("goconfigamnsr", "goconfigamns")) {
+    return "弹幕/自动启动这类接口属于客户端配置服务，桌面端不显示这些功能。";
+  }
+  if (hasApiToken("pushagent") || /(推送|push\s*agent)/i.test(name)) {
+    return "推送/剪贴板这类接口属于客户端服务，桌面端不显示这些功能。";
+  }
+  if (hasApiToken("living", "live") || /(直播|live)/i.test(name)) {
+    return "该接口属于直播源，请在直播模式中使用。";
+  }
+  if (hasApiToken("localfile") || hasNameToken("localfile")) {
+    return "本地视频依赖 Android 文件夹授权与媒体扫描，桌面端暂不支持。";
+  }
+  return null;
 }
 
 function inferDispatchRole(site: {
@@ -267,8 +318,16 @@ function inferDispatchRole(site: {
     return "search-only-backend";
   }
 
-  const metadataHint = isMetadataNameHint(site.name) || /(?:douban|trailer|preview)/i.test(site.api);
-  if (!site.canSearch && (site.displayOnly || metadataHint || (site.requiresSpider && (site.canHome || site.canCategory) && !site.hasPlayUrl))) {
+  if (isYgpApi(site.api)) {
+    return "resource-backend";
+  }
+
+  const metadataHint = isMetadataNameHint(site.name) || /(?:douban|metadata|movielist|ranklist)/i.test(site.api);
+  if (metadataHint && site.requiresSpider && (site.canHome || site.canCategory) && !site.hasPlayUrl) {
+    return "origin-metadata";
+  }
+
+  if (!site.canSearch && site.displayOnly && !site.hasPlayUrl) {
     return "origin-metadata";
   }
 
@@ -289,13 +348,35 @@ function inferSiteCapability(site: {
 }): NormalizedTvBoxSite["capability"] {
   const requiresSpider = site.type === 3 || site.type === 4 || !!site.jar || /^csp_/i.test(site.api);
   const sourceKind = requiresSpider ? "spider" : "cms";
-  const canSearch = site.searchable || site.quickSearch;
+  const noSearchHint = isNoSearchHint(site.name, site.api);
+  const directPlayHint = isDirectPlayHint(site.name, site.api);
+  const canSearch = !noSearchHint && (site.searchable || site.quickSearch);
   const hasPresetCategories = site.categories.length > 0;
-  const searchOnlyHint = isSearchNameHint(site.name) || /(?:^|[_./-])(m?search)(?:$|[_./-])/i.test(site.api);
+  const searchOnlyHint = isSearchOnlyHint(site.name, site.api);
   const searchOnly = canSearch && !hasPresetCategories && !site.filterable && searchOnlyHint;
+  const desktopUnsupportedReason = detectDesktopUnsupportedReason(site.api, site.name);
+  if (desktopUnsupportedReason) {
+    return {
+      sourceKind,
+      dispatchRole: "resource-backend",
+      desktopUnsupportedReason,
+      canHome: false,
+      canCategory: false,
+      canSearch: false,
+      searchOnly: false,
+      displayOnly: false,
+      requiresSpider,
+      supportsDetail: false,
+      supportsPlay: false,
+      mayNeedParse: false,
+      supportsBrowserParse: false,
+      hasRemoteExt: site.extKind === "url",
+      hasPlayUrl: !!site.playUrl,
+      hasPresetCategories,
+    };
+  }
   const canCategory = !searchOnly && (hasPresetCategories || site.filterable || sourceKind === "cms" || requiresSpider);
   const canHome = !searchOnly && (sourceKind === "cms" || requiresSpider || hasPresetCategories);
-  const displayOnly = canHome && !canSearch;
   const dispatchRole = inferDispatchRole({
     api: site.api,
     name: site.name,
@@ -303,24 +384,34 @@ function inferSiteCapability(site: {
     searchOnly,
     canHome,
     canCategory,
-    displayOnly,
+    displayOnly: isMetadataNameHint(site.name),
     hasPlayUrl: !!site.playUrl,
     requiresSpider,
   });
+  const displayOnly = dispatchRole === "origin-metadata";
+  const supportsDetail = sourceKind === "cms" || requiresSpider;
+  const supportsPlay = dispatchRole !== "origin-metadata" && (sourceKind === "cms" || requiresSpider);
+  const supportsBrowserParse = !directPlayHint
+    && dispatchRole !== "origin-metadata"
+    && (sourceKind === "cms" || !!site.playUrl);
+  const mayNeedParse = !directPlayHint
+    && dispatchRole !== "origin-metadata"
+    && (sourceKind === "cms" || !!site.playUrl);
 
   return {
     sourceKind,
     dispatchRole,
+    desktopUnsupportedReason: null,
     canHome,
     canCategory: !searchOnly && canCategory,
     canSearch,
     searchOnly,
     displayOnly,
     requiresSpider,
-    supportsDetail: sourceKind === "cms" || requiresSpider,
-    supportsPlay: sourceKind === "cms" || requiresSpider,
-    mayNeedParse: sourceKind === "cms" || !!site.playUrl,
-    supportsBrowserParse: sourceKind === "cms" || !!site.playUrl,
+    supportsDetail,
+    supportsPlay,
+    mayNeedParse,
+    supportsBrowserParse,
     hasRemoteExt: site.extKind === "url",
     hasPlayUrl: !!site.playUrl,
     hasPresetCategories,

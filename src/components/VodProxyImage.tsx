@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import {
+  buildVodImageProxyCandidates,
+  buildVodImageRenderCandidates,
   normalizeVodImageUrl,
   proxyVodImage,
   shouldPreferProxyImage,
@@ -25,9 +27,19 @@ function ResolvedVodProxyImage({
   emptyLabel,
 }: ResolvedVodProxyImageProps) {
   const prefersProxy = shouldPreferProxyImage(normalizedSrc);
+  const renderCandidates = useMemo(
+    () => buildVodImageRenderCandidates(normalizedSrc),
+    [normalizedSrc],
+  );
+  const proxyCandidates = useMemo(
+    () => buildVodImageProxyCandidates(normalizedSrc),
+    [normalizedSrc],
+  );
   const [error, setError] = useState(false);
-  const [displaySrc, setDisplaySrc] = useState(() => (prefersProxy ? "" : normalizedSrc));
-  const [proxyAttempted, setProxyAttempted] = useState(false);
+  const [candidateIndex, setCandidateIndex] = useState(0);
+  const [displaySrc, setDisplaySrc] = useState(() => renderCandidates[0] ?? "");
+  const [proxySettled, setProxySettled] = useState(false);
+  const shouldWaitForProxy = prefersProxy && !proxySettled;
 
   useEffect(() => {
     let cancelled = false;
@@ -42,51 +54,57 @@ function ResolvedVodProxyImage({
         cancelled = true;
       };
     }
-    void proxyVodImage(normalizedSrc).then((resolved) => {
-      if (cancelled) return;
-      if (!resolved) {
-        setProxyAttempted(false);
-        setDisplaySrc(normalizedSrc);
+
+    void (async () => {
+      for (const candidate of proxyCandidates) {
+        const resolved = await proxyVodImage(candidate);
+        if (cancelled) return;
+        if (!resolved || resolved === candidate) {
+          continue;
+        }
+        setDisplaySrc(resolved);
+        setError(false);
+        setProxySettled(true);
         return;
       }
-      setProxyAttempted(true);
-      setDisplaySrc(resolved);
-      setError(false);
-    });
+
+      if (!cancelled) {
+        setProxySettled(true);
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [normalizedSrc, prefersProxy]);
+  }, [normalizedSrc, prefersProxy, proxyCandidates]);
 
   const handleImageError = useCallback(() => {
-    const normalized = normalizedSrc;
-    if (!normalized) {
-      setError(true);
-      return;
-    }
-
-    if (proxyAttempted || displaySrc.startsWith("data:")) {
-      setError(true);
-      return;
-    }
-
-    setProxyAttempted(true);
-    void proxyVodImage(normalized).then((resolved) => {
-      if (!resolved) {
-        if (displaySrc !== normalized) {
-          setDisplaySrc(normalized);
-          setProxyAttempted(false);
-          setError(false);
-          return;
-        }
+    if (!renderCandidates.length) {
+      if (!shouldWaitForProxy) {
         setError(true);
-        return;
       }
-      setDisplaySrc(resolved);
+      return;
+    }
+
+    if (displaySrc.startsWith("data:")) {
+      if (!shouldWaitForProxy) {
+        setError(true);
+      }
+      return;
+    }
+
+    const nextIndex = candidateIndex + 1;
+    if (nextIndex < renderCandidates.length) {
+      setCandidateIndex(nextIndex);
+      setDisplaySrc(renderCandidates[nextIndex] ?? "");
       setError(false);
-    });
-  }, [displaySrc, normalizedSrc, proxyAttempted]);
+      return;
+    }
+
+    if (!shouldWaitForProxy) {
+      setError(true);
+    }
+  }, [candidateIndex, displaySrc, renderCandidates, shouldWaitForProxy]);
 
   if (error || !displaySrc) {
     return (

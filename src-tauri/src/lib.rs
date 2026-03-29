@@ -12,6 +12,7 @@ mod music_settings;
 mod native_player;
 mod settings;
 mod shortcut_launcher;
+pub mod spider_probe;
 mod spider_artifact_download;
 mod spider_bridge_payload;
 mod spider_cmds;
@@ -63,6 +64,7 @@ use url::Url;
 const COVER_DATA_URL_MAX_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) const MPV_TEST_LOG_FILE: &str = "mpv_log.txt";
 static MPV_TEST_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static APP_EXIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 static WINDOW_HIT_TEST_REGIONS: OnceLock<
     Mutex<std::collections::HashMap<isize, RoundedHitRegion>>,
@@ -375,6 +377,17 @@ fn normalize_path_input(input: &str) -> String {
 fn show_main_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         #[cfg(target_os = "windows")]
+        {
+            use windows::Win32::Graphics::Gdi::SetWindowRgn;
+
+            if let Ok(hwnd) = w.hwnd() {
+                if let Ok(mut regions) = window_hit_test_regions().lock() {
+                    regions.remove(&(hwnd.0 as isize));
+                }
+                let _ = unsafe { SetWindowRgn(hwnd, None, true) };
+            }
+        }
+        #[cfg(target_os = "windows")]
         tune_windows_chrome(&w);
         let _ = w.unminimize();
         let _ = w.show();
@@ -392,6 +405,22 @@ fn show_main_window(app: &AppHandle) {
 fn shutdown_background_processes() {
     tauri::async_runtime::block_on(async {
         crate::spider_daemon::shutdown_daemon().await;
+    });
+}
+
+fn begin_graceful_app_exit(app: AppHandle) {
+    if APP_EXIT_IN_PROGRESS.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+
+    std::thread::spawn(move || {
+        crate::native_player::shutdown_all_players(&app);
+        shutdown_background_processes();
+        std::process::exit(0);
     });
 }
 
@@ -472,7 +501,7 @@ fn set_current_window_hit_region_rounded(
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::Graphics::Gdi::SetWindowRgn;
+        use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
 
         ensure_window_hit_test_subclass(&window)?;
         let hwnd = window.hwnd().map_err(|e| e.to_string())?;
@@ -491,7 +520,27 @@ fn set_current_window_hit_region_rounded(
         regions.insert(window_key, normalized_region);
         drop(regions);
 
-        let _ = unsafe { SetWindowRgn(hwnd, None, true) };
+        let diameter = (normalized_region.radius.max(0) * 2).max(1);
+        let region = unsafe {
+            CreateRoundRectRgn(
+                normalized_region.x,
+                normalized_region.y,
+                normalized_region.x + normalized_region.width + 1,
+                normalized_region.y + normalized_region.height + 1,
+                diameter,
+                diameter,
+            )
+        };
+
+        if region.0.is_null() {
+            return Err("CreateRoundRectRgn failed".to_string());
+        }
+
+        let result = unsafe { SetWindowRgn(hwnd, Some(region), true) };
+        if result == 0 {
+            let _ = unsafe { DeleteObject(region.into()) };
+            return Err("SetWindowRgn failed".to_string());
+        }
 
         Ok(())
     }
@@ -871,10 +920,12 @@ pub fn run() {
             rust_log,
         ])
         .setup(move |app| {
+            eprintln!("[startup][rust] setup begin");
             let handle = app.handle().clone();
 
             // 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?Window setup + close behaviour 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?
             if let Some(w) = handle.get_webview_window("main") {
+                eprintln!("[startup][rust] setup main window found");
                 let _ = w.set_decorations(false);
                 #[cfg(target_os = "windows")]
                 tune_windows_chrome(&w);
@@ -898,13 +949,13 @@ pub fn run() {
                                 }
                             }
                             _ => {
-                                shutdown_background_processes();
-                                std::process::exit(0);
+                                begin_graceful_app_exit(close_handle.clone());
                             }
                         }
                     }
                 });
             }
+            eprintln!("[startup][rust] setup main window configured");
 
             // 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?System tray icon 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?
             // Show main window early to reduce perceived startup delay.
@@ -913,11 +964,8 @@ pub fn run() {
                 if let Some(w) = handle.get_webview_window("main") {
                     let _ = w.hide();
                 }
-            } else {
-                if let Some(w) = handle.get_webview_window("main") {
-                    let _ = w.hide();
-                }
             }
+            eprintln!("[startup][rust] setup autostart visibility handled");
 
             {
                 let tray_handle = handle.clone();
@@ -938,8 +986,7 @@ pub fn run() {
                             }
                         }
                         "quit" => {
-                            shutdown_background_processes();
-                            std::process::exit(0);
+                            begin_graceful_app_exit(app_handle.clone());
                         }
                         _ => {}
                     })
@@ -959,6 +1006,7 @@ pub fn run() {
                     .build(app)
                     .ok();
             }
+            eprintln!("[startup][rust] tray initialized");
 
             // 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?GSMTC music listener (Windows) 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?
             #[cfg(target_os = "windows")]
@@ -970,10 +1018,12 @@ pub fn run() {
                     music::run_gsmtc_listener(music_handle, music_stop, music_cp).await;
                 });
             }
+            eprintln!("[startup][rust] gsmtc listener spawned");
 
             // 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?System overview sampler 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?
             let overview_state = app.state::<DashboardOverviewState>().inner().clone();
             start_system_overview_sampler(handle.clone(), overview_state);
+            eprintln!("[startup][rust] system overview sampler started");
 
             {
                 let daemon_handle = handle.clone();
@@ -981,8 +1031,10 @@ pub fn run() {
                     let _ = crate::spider_daemon::warmup_daemon(&daemon_handle).await;
                 });
             }
+            eprintln!("[startup][rust] spider daemon warmup spawned");
 
             // 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?Show / hide based on startup args 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?
+            eprintln!("[startup][rust] setup complete");
             Ok(())
         })
         .run(tauri::generate_context!())

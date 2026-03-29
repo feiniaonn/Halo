@@ -162,6 +162,7 @@ pub(crate) async fn execute_proxy_bridge(
     cmd.arg("-Dfile.encoding=UTF-8")
         .arg("-Dsun.stdout.encoding=UTF-8")
         .arg("-Dsun.stderr.encoding=UTF-8")
+        .arg("-noverify")
         .arg(format!("-Dspider.lib.dir={}", clean_path(&lib_dir)))
         .arg("-Xmx256m")
         .arg("-cp")

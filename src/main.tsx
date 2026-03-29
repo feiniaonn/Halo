@@ -9,6 +9,7 @@ import { LivePlayerWindowPage as LivePlayerWindowPageStatic } from "@/pages/Live
 import { LIVE_PLAYER_WINDOW_LABEL } from "@/modules/live/services/livePlayerWindow";
 import { VodPlayerWindowPage as VodPlayerWindowPageStatic } from "@/pages/VodPlayerWindowPage";
 import { VOD_PLAYER_WINDOW_LABEL } from "@/modules/media/services/vodPlayerWindow";
+import { reportStartupStep } from "@/lib/startupLog";
 import "./index.css";
 
 const MainApp = App;
@@ -99,6 +100,10 @@ class RootErrorBoundary extends React.Component<React.PropsWithChildren, RootErr
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error("[startup] React render crashed:", error, errorInfo.componentStack);
+    reportStartupStep(
+      `RootErrorBoundary caught render error: ${error.message}`,
+      "error",
+    );
   }
 
   render() {
@@ -114,9 +119,13 @@ function RuntimeGuardedApp() {
   const [runtimeError, setRuntimeError] = React.useState<string | null>(null);
   const [windowRole, setWindowRole] = React.useState<WindowRole>(() => {
     const role = resolveWindowRoleFromUrl();
-    console.log(`[Runtime] Initial windowRole set to: ${role} (URL: ${window.location.search})`);
+    reportStartupStep(`RuntimeGuardedApp initial role=${role} url=${window.location.search || "<none>"}`);
     return role;
   });
+
+  React.useEffect(() => {
+    reportStartupStep("RuntimeGuardedApp mounted");
+  }, []);
 
   React.useEffect(() => {
     const onError = (event: ErrorEvent) => {
@@ -125,6 +134,7 @@ function RuntimeGuardedApp() {
         event.filename ? `file: ${event.filename}:${event.lineno}:${event.colno}` : "",
       ].filter(Boolean);
       const stack = event.error instanceof Error ? event.error.stack ?? "" : "";
+      reportStartupStep(`window.onerror: ${parts.join(" | ")}`, "error");
       setRuntimeError([...parts, stack].filter(Boolean).join("\n"));
     };
 
@@ -132,6 +142,7 @@ function RuntimeGuardedApp() {
       const reason = event.reason instanceof Error
         ? `${event.reason.message}\n${event.reason.stack ?? ""}`
         : String(event.reason);
+      reportStartupStep(`unhandledrejection: ${reason}`, "error");
       setRuntimeError(`Unhandled promise rejection\n${reason}`);
     };
 
@@ -177,9 +188,9 @@ function RuntimeGuardedApp() {
     
     // Check URL first as it's the most reliable for our custom navigation
     const fromUrl = resolveWindowRoleFromUrl();
-    console.log(`[Runtime] useEffect checking windowRole. URL role: ${fromUrl}`);
+    reportStartupStep(`RuntimeGuardedApp effect role check urlRole=${fromUrl}`);
     if (fromUrl !== "main") {
-      console.log(`[Runtime] Switching role to ${fromUrl} based on URL`);
+      reportStartupStep(`RuntimeGuardedApp switching role from URL -> ${fromUrl}`);
       setWindowRole(fromUrl);
       return;
     }
@@ -187,13 +198,14 @@ function RuntimeGuardedApp() {
     // Fallback to window label
     try {
       const label = getCurrentWindow().label;
-      console.log(`[Runtime] window label is: ${label}`);
+      reportStartupStep(`RuntimeGuardedApp current window label=${label}`);
       if (label === LIVE_PLAYER_WINDOW_LABEL || label === VOD_PLAYER_WINDOW_LABEL) {
-        console.log(`[Runtime] Switching role to ${label} based on label`);
+        reportStartupStep(`RuntimeGuardedApp switching role from label -> ${label}`);
         setWindowRole(label);
       }
     } catch (error) {
       console.error("[Runtime] Failed to read window label:", error);
+      reportStartupStep(`RuntimeGuardedApp failed to read window label: ${String(error)}`, "warn");
     }
   }, []);
 
@@ -224,4 +236,9 @@ const startupNode = import.meta.env.DEV ? (
   </React.StrictMode>
 );
 
+reportStartupStep("main.tsx before createRoot");
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(startupNode);
+reportStartupStep("main.tsx after createRoot.render");
+window.requestAnimationFrame(() => {
+  reportStartupStep("main.tsx first animation frame");
+});

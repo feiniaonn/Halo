@@ -202,7 +202,12 @@ fn preview_text(value: &str, max_chars: usize) -> String {
 }
 
 fn jar_contains_entry(path: &std::path::Path, entry_name: &str) -> bool {
-    let file = match std::fs::File::open(path) {
+    let normalized = path.to_string_lossy();
+    let normalized = normalized
+        .strip_prefix("\\\\?\\")
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| normalized.to_string());
+    let file = match std::fs::File::open(&normalized) {
         Ok(file) => file,
         Err(_) => return false,
     };

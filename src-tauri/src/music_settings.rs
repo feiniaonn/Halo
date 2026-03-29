@@ -40,7 +40,7 @@ impl Default for MusicSettings {
         );
 
         Self {
-            music_control_target_mode: "auto".to_string(),
+            music_control_target_mode: "native".to_string(),
             music_control_timeout_ms: 1200,
             music_control_retry_count: 1,
             music_control_whitelist: Vec::new(),
@@ -69,11 +69,10 @@ fn settings_file_path() -> PathBuf {
 }
 
 fn normalize_settings(mut value: MusicSettings) -> MusicSettings {
-    if !matches!(
-        value.music_control_target_mode.as_str(),
-        "auto" | "browser" | "native"
-    ) {
-        value.music_control_target_mode = "auto".to_string();
+    if value.music_control_target_mode == "browser" {
+        value.music_control_target_mode = "native".to_string();
+    } else if !matches!(value.music_control_target_mode.as_str(), "auto" | "native") {
+        value.music_control_target_mode = "native".to_string();
     }
     if !matches!(value.music_hotkeys_scope.as_str(), "focus" | "global") {
         value.music_hotkeys_scope = "focus".to_string();

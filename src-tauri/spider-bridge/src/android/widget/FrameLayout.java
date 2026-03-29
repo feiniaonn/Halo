@@ -1,5 +1,6 @@
 package android.widget;
 
+import android.content.Context;
 import android.view.ViewGroup;
 
 /**
@@ -14,5 +15,13 @@ public class FrameLayout extends ViewGroup {
         public LayoutParams(int width, int height) {
             super(width, height);
         }
+    }
+
+    public FrameLayout() {
+        super();
+    }
+
+    public FrameLayout(Context context) {
+        super(context);
     }
 }

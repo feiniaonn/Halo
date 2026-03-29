@@ -27,11 +27,89 @@ fn desktop_spider_output_path(jar_path: &Path) -> PathBuf {
 }
 
 fn desktop_spider_temp_output_path(output_jar: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.converting.jar", output_jar.to_string_lossy()))
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or_default();
+    PathBuf::from(format!(
+        "{}.converting.{}.{}.jar",
+        output_jar.to_string_lossy(),
+        pid,
+        nanos
+    ))
+}
+
+fn desktop_spider_lock_path(output_jar: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.lock", output_jar.to_string_lossy()))
 }
 
 fn dex_transform_lock() -> &'static tokio::sync::Mutex<()> {
     DEX_TRANSFORM_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+struct DesktopTransformFileLock {
+    path: PathBuf,
+}
+
+impl Drop for DesktopTransformFileLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn lock_file_is_stale(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|elapsed| elapsed > Duration::from_secs(180))
+}
+
+async fn acquire_desktop_transform_file_lock(
+    output_jar: &Path,
+) -> Result<DesktopTransformFileLock, String> {
+    let lock_path = desktop_spider_lock_path(output_jar);
+    let started = std::time::Instant::now();
+
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                let _ = writeln!(
+                    file,
+                    "pid={} acquired={}",
+                    std::process::id(),
+                    chrono::Local::now().to_rfc3339()
+                );
+                return Ok(DesktopTransformFileLock { path: lock_path });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if lock_file_is_stale(&lock_path) {
+                    let _ = std::fs::remove_file(&lock_path);
+                    continue;
+                }
+                if started.elapsed() > Duration::from_secs(120) {
+                    return Err(format!(
+                        "Timed out waiting for shared dex transform lock: {}",
+                        lock_path.display()
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+            Err(err) => {
+                return Err(format!(
+                    "Failed to acquire shared dex transform lock {}: {}",
+                    lock_path.display(),
+                    err
+                ));
+            }
+        }
+    }
 }
 
 fn transformed_jar_is_fresh(app: &AppHandle, input: &Path, output: &Path) -> bool {
@@ -209,6 +287,39 @@ async fn transform_dex_jar(
     Ok(())
 }
 
+fn cleanup_stale_temp_outputs(output_jar: &Path) {
+    let Some(parent) = output_jar.parent() else {
+        return;
+    };
+    let Some(prefix) = output_jar.file_name().and_then(|value| value.to_str()) else {
+        return;
+    };
+    let converting_prefix = format!("{prefix}.converting.");
+
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let should_remove = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name.starts_with(&converting_prefix) && name.ends_with(".jar"));
+        if !should_remove {
+            continue;
+        }
+
+        let is_stale = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_none_or(|elapsed| elapsed > Duration::from_secs(30));
+        if is_stale {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 pub(crate) async fn ensure_desktop_spider_jar(
     app: &AppHandle,
     jar_path: &Path,
@@ -227,12 +338,32 @@ pub(crate) async fn ensure_desktop_spider_jar(
         return Ok(output_jar);
     }
 
+    let _file_guard = acquire_desktop_transform_file_lock(&output_jar).await?;
+    if output_jar.is_file() && transformed_jar_is_fresh(app, jar_path, &output_jar) {
+        return Ok(output_jar);
+    }
+
+    cleanup_stale_temp_outputs(&output_jar);
+
     let temp_output_jar = desktop_spider_temp_output_path(&output_jar);
     if temp_output_jar.exists() {
         let _ = std::fs::remove_file(&temp_output_jar);
     }
 
-    transform_dex_jar(app, jar_path, &output_jar).await?;
+    transform_dex_jar(app, jar_path, &temp_output_jar).await?;
+    if output_jar.exists() {
+        let _ = std::fs::remove_file(&output_jar);
+    }
+    std::fs::rename(&temp_output_jar, &output_jar).map_err(|err| {
+        let _ = std::fs::remove_file(&temp_output_jar);
+        format!(
+            "Failed to finalize transformed desktop spider jar {} -> {}: {}",
+            temp_output_jar.display(),
+            output_jar.display(),
+            err
+        )
+    })?;
+    validate_transformed_jar(&output_jar)?;
     Ok(output_jar)
 }
 
@@ -303,12 +434,13 @@ mod tests {
     }
 
     #[test]
-    fn builds_temp_output_path_next_to_target_jar() {
+    fn builds_unique_temp_output_path_next_to_target_jar() {
         let output = PathBuf::from(r"D:\tmp\demo.desktop.v3.jar");
-        let temp = desktop_spider_temp_output_path(&output);
-        assert_eq!(
-            temp,
-            PathBuf::from(r"D:\tmp\demo.desktop.v3.jar.converting.jar")
-        );
+        let temp_a = desktop_spider_temp_output_path(&output);
+        let temp_b = desktop_spider_temp_output_path(&output);
+        let temp_a_text = temp_a.to_string_lossy();
+        assert!(temp_a_text.starts_with(r"D:\tmp\demo.desktop.v3.jar.converting."));
+        assert!(temp_a_text.ends_with(".jar"));
+        assert_ne!(temp_a, temp_b);
     }
 }

@@ -11,6 +11,7 @@ import { getMusicSettings } from "@/modules/music/services/musicService";
 import type { MusicSettings } from "@/modules/music/types/music.types";
 import { resolveCurrentLyricText, resolvePlaybackMs } from "@/modules/music/utils/lyrics";
 import { NowPlayingBlock } from "@/modules/music/components/NowPlayingBlock";
+import { reportStartupStep } from "@/lib/startupLog";
 
 const DEFAULT_FLOAT_SETTINGS = {
   lyricsEnabled: true,
@@ -28,6 +29,9 @@ function mapFloatSettings(settings: MusicSettings | null) {
 export function FloatingPlayer() {
   const { data: current } = useCurrentPlaying();
   const [floatSettings, setFloatSettings] = useState(DEFAULT_FLOAT_SETTINGS);
+  useEffect(() => {
+    reportStartupStep("FloatingPlayer mounted");
+  }, []);
 
   const { state: controlState, runCommand, runningCommand } = useMusicControl();
 

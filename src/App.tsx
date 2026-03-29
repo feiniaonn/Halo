@@ -18,6 +18,7 @@ import { message } from "@tauri-apps/plugin-dialog";
 import { EVENT_SETTINGS_BG_VIDEO_OPTIMIZED, EVENT_WINDOW_FORCE_MINI_MODE } from "@/modules/shared/services/events";
 import { getAppSettings, importBackgroundAsset, setBackground } from "@/modules/settings/services/settingsService";
 import { initializeMusicHotkeyManager } from "@/modules/music/services/musicHotkeyManager";
+import { reportStartupStep } from "@/lib/startupLog";
 
 const HomePage = import.meta.env.DEV
   ? HomePageStatic
@@ -116,6 +117,7 @@ type ConnectedAnimationPayload = {
 function App() {
   const prefersReducedMotion = useReducedMotion();
   const [page, setPage] = useState<Page>("dashboard");
+  const [activatedPages, setActivatedPages] = useState<Page[]>(["dashboard"]);
   const [hasUpdate, setHasUpdate] = useState(false);
   const isTauri = useMemo(() => isTauriRuntime(), []);
   const [isMiniMode, setIsMiniMode] = useState(false);
@@ -130,6 +132,8 @@ function App() {
   const [bgFsPath, setBgFsPath] = useState<string | null>(null);
   const [bgBlur, setBgBlur] = useState<number>(12);
   const [bgRev, setBgRev] = useState(0);
+  const [startupReady, setStartupReady] = useState(false);
+  const [nonCriticalReady, setNonCriticalReady] = useState(false);
 
   const [miniModeWidth, setMiniModeWidth] = useState(700);
   const [miniModeHeight, setMiniModeHeight] = useState(50);
@@ -143,6 +147,32 @@ function App() {
   const miniToggleLockRef = useRef(false);
   const miniModeWidthRef = useRef(miniModeWidth);
   const miniModeHeightRef = useRef(miniModeHeight);
+
+  useEffect(() => {
+    reportStartupStep("App mounted");
+    let startupTimer: number | null = null;
+    let nonCriticalTimer: number | null = null;
+    const rafId = window.requestAnimationFrame(() => {
+      startupTimer = window.setTimeout(() => {
+        reportStartupStep("App startupReady=true");
+        setStartupReady(true);
+      }, 120);
+      nonCriticalTimer = window.setTimeout(() => {
+        reportStartupStep("App nonCriticalReady=true");
+        setNonCriticalReady(true);
+      }, 720);
+    });
+
+    return () => {
+      if (startupTimer !== null) {
+        window.clearTimeout(startupTimer);
+      }
+      if (nonCriticalTimer !== null) {
+        window.clearTimeout(nonCriticalTimer);
+      }
+      window.cancelAnimationFrame(rafId);
+    };
+  }, []);
 
   useEffect(() => {
     miniModeWidthRef.current = miniModeWidth;
@@ -203,6 +233,10 @@ function App() {
   }, [isMiniMode]);
 
   useEffect(() => {
+    setActivatedPages((current) => (current.includes(page) ? current : [...current, page]));
+  }, [page]);
+
+  useEffect(() => {
     restoreStateRef.current = restoreState;
   }, [restoreState]);
 
@@ -213,6 +247,10 @@ function App() {
   }, [updateCheckHint]);
 
   useEffect(() => {
+    if (!nonCriticalReady) {
+      return;
+    }
+
     if (!isTauri) {
       const legacyType = (localStorage.getItem("halo_bg_type") as "none" | "image" | "video") || "none";
       const legacyPath = localStorage.getItem("halo_bg_path");
@@ -225,6 +263,7 @@ function App() {
 
     void (async () => {
       try {
+        reportStartupStep("App loading app settings");
         const cfg = await getAppSettings();
         const cfgType = (cfg.background_type as "none" | "image" | "video" | undefined) ?? null;
         const cfgPath = cfg.background_path ?? null;
@@ -270,7 +309,9 @@ function App() {
         if (p) localStorage.setItem("halo_bg_path", p);
         else localStorage.removeItem("halo_bg_path");
         localStorage.setItem("halo_bg_blur", String(cfgBlur));
+        reportStartupStep("App app settings applied");
       } catch {
+        reportStartupStep("App app settings load failed, falling back to localStorage", "warn");
         const legacyType = (localStorage.getItem("halo_bg_type") as "none" | "image" | "video") || "none";
         const legacyPath = localStorage.getItem("halo_bg_path");
         const legacyBlur = normalizeBackgroundBlur(localStorage.getItem("halo_bg_blur"));
@@ -280,12 +321,42 @@ function App() {
         setBgRev((prev) => prev + 1);
       }
     })();
-  }, [isTauri]);
+  }, [isTauri, nonCriticalReady]);
 
   useEffect(() => {
-    if (!isTauri) return;
-    void initializeMusicHotkeyManager();
-  }, [isTauri]);
+    if (!nonCriticalReady || !isTauri) return;
+    let cancelled = false;
+    let timeoutId: number | null = null;
+    let idleId: number | null = null;
+    const requestIdle = typeof window.requestIdleCallback === "function"
+      ? window.requestIdleCallback.bind(window)
+      : null;
+    const cancelIdle = typeof window.cancelIdleCallback === "function"
+      ? window.cancelIdleCallback.bind(window)
+      : null;
+
+    const start = () => {
+      if (cancelled) return;
+      reportStartupStep("App initializing music hotkeys");
+      void initializeMusicHotkeyManager();
+    };
+
+    if (requestIdle) {
+      idleId = requestIdle(() => start(), { timeout: 1200 });
+    } else {
+      timeoutId = window.setTimeout(() => start(), 320);
+    }
+
+    return () => {
+      cancelled = true;
+      if (idleId !== null && cancelIdle) {
+        cancelIdle(idleId);
+      }
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [isTauri, nonCriticalReady]);
 
   const updateBackground = (type: "none" | "image" | "video", fsPath: string | null) => {
     setBgType(type);
@@ -499,7 +570,7 @@ function App() {
   }, [setMiniMode]);
 
   useEffect(() => {
-    if (!isTauri) return;
+    if (!nonCriticalReady || !isTauri) return;
     let unlisten: (() => void) | undefined;
 
     void listen(EVENT_WINDOW_FORCE_MINI_MODE, () => {
@@ -513,10 +584,10 @@ function App() {
     return () => {
       unlisten?.();
     };
-  }, [isTauri, setMiniMode]);
+  }, [isTauri, setMiniMode, nonCriticalReady]);
 
   useEffect(() => {
-    if (!isTauri) return;
+    if (!nonCriticalReady || !isTauri) return;
     let unlisten: (() => void) | undefined;
 
     void listen<BackgroundVideoOptimizedPayload>(
@@ -541,7 +612,7 @@ function App() {
     return () => {
       unlisten?.();
     };
-  }, [isTauri, bgType]);
+  }, [isTauri, bgType, nonCriticalReady]);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -580,22 +651,7 @@ function App() {
   }, [isTauri]);
 
   useEffect(() => {
-    if (!isTauri) return;
-    const win = getCurrentWindow();
-    void win.show().then(async () => {
-      try {
-        await win.unminimize();
-        await win.setFocus();
-      } catch {
-        void 0;
-      }
-    }).catch(() => {
-      void 0;
-    });
-  }, [isTauri]);
-
-  useEffect(() => {
-    if (!isTauri) return;
+    if (!startupReady || !isTauri) return;
     const win = getCurrentWindow();
     void win.setDecorations(false).then(async () => {
       try {
@@ -606,7 +662,7 @@ function App() {
     }).catch(() => {
       void 0;
     });
-  }, [isTauri]);
+  }, [isTauri, startupReady]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -633,6 +689,7 @@ function App() {
         miniTransitioning={miniTransitioning}
         connectedAnimation={connectedAnimation}
         onToggleMini={toggleMiniMode}
+        startupReady={nonCriticalReady}
       >
         <Suspense fallback={<PageLoadingFallback />}>
           {isMiniMode ? (
@@ -645,7 +702,8 @@ function App() {
               bgBlur={bgBlur}
             />
           ) : (
-            <div className="relative h-full w-full halo-page-stage">
+            startupReady ? (
+              <div className="relative h-full w-full halo-page-stage">
               <motion.div
                 initial={false}
                 animate={page === "dashboard" ? "active" : "inactive"}
@@ -653,7 +711,7 @@ function App() {
                 transition={pageTransition}
                 className="absolute inset-0 overflow-y-auto overflow-x-hidden will-change-transform"
               >
-                <HomePage />
+                {activatedPages.includes("dashboard") ? <HomePage /> : null}
               </motion.div>
               <motion.div
                 initial={false}
@@ -662,7 +720,7 @@ function App() {
                 transition={pageTransition}
                 className="absolute inset-0 flex flex-col overflow-hidden will-change-transform"
               >
-                <MediaPage />
+                {activatedPages.includes("media") ? <MediaPage /> : null}
               </motion.div>
               <motion.div
                 initial={false}
@@ -671,7 +729,7 @@ function App() {
                 transition={pageTransition}
                 className="absolute inset-0 flex flex-col overflow-hidden will-change-transform"
               >
-                <MusicPage />
+                {activatedPages.includes("music") ? <MusicPage /> : null}
               </motion.div>
                               <motion.div
                   initial={false}
@@ -680,14 +738,16 @@ function App() {
                   transition={pageTransition}
                   className="absolute inset-0 flex flex-col overflow-hidden will-change-transform"
                 >
-                                    <IslandPage
-                                                            onSaveMiniModeSize={async (w, h) => {
-                      try {
-                        const { setMiniModeSize } = await import("@/modules/settings/services/settingsService");
-                        await setMiniModeSize(w, h);
-                      } catch (e) { console.error(e); }
-                    }}
-                  />
+                  {activatedPages.includes("island") ? (
+                    <IslandPage
+                      onSaveMiniModeSize={async (w, h) => {
+                        try {
+                          const { setMiniModeSize } = await import("@/modules/settings/services/settingsService");
+                          await setMiniModeSize(w, h);
+                        } catch (e) { console.error(e); }
+                      }}
+                    />
+                  ) : null}
                 </motion.div>
                 <motion.div
                 initial={false}
@@ -696,15 +756,20 @@ function App() {
                 transition={pageTransition}
                 className="absolute inset-0 flex flex-col overflow-y-auto overflow-x-hidden will-change-transform"
               >
-                <SettingsPage
-                  bgType={bgType}
-                  bgFsPath={bgFsPath}
-                  bgBlur={bgBlur}
-                  onBgChange={updateBackground}
-                  onBgBlurChange={updateBackgroundBlur}
-                />
+                {activatedPages.includes("settings") ? (
+                  <SettingsPage
+                    bgType={bgType}
+                    bgFsPath={bgFsPath}
+                    bgBlur={bgBlur}
+                    onBgChange={updateBackground}
+                    onBgBlurChange={updateBackgroundBlur}
+                  />
+                ) : null}
               </motion.div>
-            </div>
+              </div>
+            ) : (
+              <PageLoadingFallback />
+            )
           )}
         </Suspense>
       </AppLayout>

@@ -199,15 +199,10 @@ final class BridgeRuntimeHost {
         File mainSpiderJar = new File(invocation.jarPath);
         File fallbackJar = resolveFallbackJar(invocation, bridgeDir);
 
-        if (fallbackJar != null && BridgeRunner.prefersAnotherdsPrimary(invocation.classHint)) {
+        urls.add(mainSpiderJar.toURI().toURL());
+        if (fallbackJar != null) {
             urls.add(fallbackJar.toURI().toURL());
-            urls.add(mainSpiderJar.toURI().toURL());
-            System.err.println("DEBUG: [BridgeDaemon] Prioritizing anotherds runtime for " + invocation.classHint);
-        } else {
-            urls.add(mainSpiderJar.toURI().toURL());
-            if (fallbackJar != null) {
-                urls.add(fallbackJar.toURI().toURL());
-            }
+            System.err.println("DEBUG: [BridgeDaemon] Added anotherds fallback after source runtime for " + invocation.classHint);
         }
         urls.addAll(compatUrls);
 
@@ -226,18 +221,26 @@ final class BridgeRuntimeHost {
                     urls,
                     BridgeRunner.class.getClassLoader(),
                     BridgeRunner.collectPreferredBridgeClasses(invocation.classHint));
+            session.mockContext = new com.halo.spider.mock.MockContext(invocation.siteKey);
+            prepareSessionRuntime(session.loader, session.mockContext, invocation.proxyBaseUrl, invocation.ext);
             session.className = BridgeRunner.pickSpiderClassName(
                     invocation.jarPath,
                     invocation.siteKey,
                     invocation.classHint,
                     session.loader);
-
-            Class<?> spiderClass = Class.forName(session.className, true, session.loader);
-            BridgeRunner.configureProxyRuntime(session.loader, invocation.proxyBaseUrl);
-            Constructor<?> constructor = spiderClass.getDeclaredConstructor();
-            constructor.setAccessible(true);
-            session.spider = constructor.newInstance();
-            BridgeRunner.seedSiteDefaults(session.spider, invocation.classHint, invocation.ext);
+            ClassLoader previousContext = Thread.currentThread().getContextClassLoader();
+            if (session.loader != null) {
+                Thread.currentThread().setContextClassLoader(session.loader);
+            }
+            try {
+                Class<?> spiderClass = Class.forName(session.className, true, session.loader);
+                Constructor<?> constructor = spiderClass.getDeclaredConstructor();
+                constructor.setAccessible(true);
+                session.spider = constructor.newInstance();
+                BridgeRunner.seedSiteDefaults(session.spider, invocation.classHint, invocation.ext);
+            } finally {
+                Thread.currentThread().setContextClassLoader(previousContext);
+            }
         }
 
         initializeSession(session, invocation);
@@ -266,18 +269,39 @@ final class BridgeRuntimeHost {
             System.setProperty(
                     "http.agent",
                     "Mozilla/5.0 (Linux; Android 11; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Mobile Safari/537.36");
-            Context mockContext = new com.halo.spider.mock.MockContext(invocation.siteKey);
-            BridgeRunner.invokeGlobalInit(session.loader, mockContext);
-            BridgeRuntimeSetup.ensureDesktopRuntimeFiles(mockContext);
-            BridgeRunner.ensureMergeC0HttpRuntime(session.loader);
-            BridgeRunner.ensureMergeHttpRuntime(session.loader);
-            BridgeRuntimeSetup.ensureMergeFmHttpRuntime(session.loader);
-            BridgeRuntimeSetup.ensureMergeKHttpRuntime(session.loader);
-            BridgeRuntimeSetup.ensureMergeE0HttpRuntime(session.loader);
-            BridgeRuntimeSetup.ensureMergeA0HttpRuntime(session.loader);
-            BridgeRunner.ensureMergeZzHttpRuntime(session.loader);
+            Context mockContext = session.mockContext != null
+                    ? session.mockContext
+                    : new com.halo.spider.mock.MockContext(invocation.siteKey);
+            if (session.loader != null) {
+                BridgeRunner.configureProxyRuntime(session.loader, invocation.proxyBaseUrl);
+            }
             BridgeRunner.invokeInitApi(session.spider);
             BridgeRunner.invokeInit(session.spider, mockContext, invocation.ext, session.isJsBridge);
+        } finally {
+            Thread.currentThread().setContextClassLoader(previousContext);
+        }
+    }
+
+    private static void prepareSessionRuntime(
+            ClassLoader loader,
+            Context mockContext,
+            String proxyBaseUrl,
+            String ext) {
+        ClassLoader previousContext = Thread.currentThread().getContextClassLoader();
+        if (loader != null) {
+            Thread.currentThread().setContextClassLoader(loader);
+        }
+        try {
+            BridgeRuntimeSetup.ensureDesktopRuntimeFiles(mockContext);
+            BridgeRunner.invokeGlobalInit(loader, mockContext, ext);
+            BridgeRunner.ensureMergeC0HttpRuntime(loader);
+            BridgeRunner.ensureMergeHttpRuntime(loader);
+            BridgeRuntimeSetup.ensureMergeFmHttpRuntime(loader);
+            BridgeRuntimeSetup.ensureMergeKHttpRuntime(loader);
+            BridgeRuntimeSetup.ensureMergeE0HttpRuntime(loader);
+            BridgeRuntimeSetup.ensureMergeA0HttpRuntime(loader);
+            BridgeRunner.ensureMergeZzHttpRuntime(loader);
+            BridgeRunner.configureProxyRuntime(loader, proxyBaseUrl);
         } finally {
             Thread.currentThread().setContextClassLoader(previousContext);
         }
@@ -319,5 +343,6 @@ final class BridgeRuntimeHost {
         Object spider;
         ClassLoader loader;
         boolean isJsBridge;
+        Context mockContext;
     }
 }

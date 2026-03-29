@@ -3,9 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 
 import {
   buildCheckingSpiderRuntimeState,
+  buildDerivedSpiderPayloadReport,
   buildSpiderFailureNotice,
   mergePrefetchArtifactState,
   mergeSpiderExecutionReport,
+  shouldHideRuntimeSite,
   resetSpiderRuntimeIsolation,
   shouldBlockAutoLoad,
 } from "@/modules/media/services/spiderRuntime";
@@ -45,6 +47,8 @@ import {
 } from "@/modules/media/services/vodSpiderWarmup";
 import {
   clearVodSourceSelectionSnapshot,
+  pickRuntimeVisibleSiteKey,
+  sortRuntimeAwareSites,
   pickStoredSiteKey,
   readVodSourceSelectionSnapshot,
   writeVodSourceSelectionSnapshot,
@@ -68,6 +72,11 @@ import {
   parseVodResponse,
   resolveSiteSpiderUrl,
 } from "@/modules/media/services/tvboxConfig";
+import {
+  invokeSpiderCategoryV2,
+  invokeSpiderHomeV2,
+  invokeSpiderSearchV2,
+} from "@/modules/media/services/spiderV2";
 import { openVodPlayerWindow } from "@/modules/media/services/vodPlayerWindow";
 import { clearTvBoxRuntimeCaches, resolveSiteExtInput } from "@/modules/media/services/tvboxRuntime";
 import type { MediaNotice } from "@/modules/media/types/mediaPage.types";
@@ -117,6 +126,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
   const [activeSiteKey, setActiveSiteKey] = useState("");
   const [siteRuntimeStates, setSiteRuntimeStates] = useState<Record<string, SpiderSiteRuntimeState>>({});
   const [loadingConfig, setLoadingConfig] = useState(false);
+  const [sourceLoadError, setSourceLoadError] = useState<string | null>(null);
   const [spiderJarStatus, setSpiderJarStatus] = useState<SpiderJarStatus>("idle");
   const [siteReloadToken, setSiteReloadToken] = useState(0);
   const [networkPolicyGeneration, setNetworkPolicyGeneration] = useState(1);
@@ -144,6 +154,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
   const runtimeSessionKeyRef = useRef("");
   const browseModeRef = useRef<VodBrowseMode>("site");
   const networkPolicyGenerationRef = useRef(1);
+  const runtimeFallbackSiteRef = useRef("");
   const prefetchPromiseRef = useRef<Promise<SpiderPrefetchResult | null> | null>(null);
   const runtimeWarmupPromisesRef = useRef(new Map<string, Promise<SpiderPrefetchResult | null>>());
   const homeCacheRef = useRef(new Map<string, { value: HomeCacheEntry; expiresAt: number }>());
@@ -351,6 +362,10 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
   const activeSiteRuntime = useMemo(() => (activeSiteKey ? siteRuntimeStates[activeSiteKey] ?? null : null), [activeSiteKey, siteRuntimeStates]);
 
   const prioritizedSites = useMemo(() => (config ? sortVodSitesByRanking(config.sites, siteRankings, activeSiteKey) : []), [activeSiteKey, config, siteRankings]);
+  const sitePickerSites = useMemo(
+    () => (config ? sortRuntimeAwareSites(config.sites, siteRuntimeStates, activeSiteKey) : []),
+    [activeSiteKey, config, siteRuntimeStates],
+  );
 
   const aggregateEligibleSites = useMemo(
     () => filterAggregateAutoSearchSites(prioritizedSites, aggregateDispatchBackendStats),
@@ -412,6 +427,51 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       setBrowseMode("site");
     }
   }, [supportsAggregateBrowse]);
+
+  useEffect(() => {
+    if (!config || !activeSiteKey) {
+      runtimeFallbackSiteRef.current = "";
+      return;
+    }
+
+    const activeRuntimeState = siteRuntimeStates[activeSiteKey] ?? null;
+    if (!shouldHideRuntimeSite(activeRuntimeState)) {
+      runtimeFallbackSiteRef.current = "";
+      return;
+    }
+
+    const fallbackSiteKey = pickRuntimeVisibleSiteKey(config.sites, siteRuntimeStates, activeSiteKey);
+    if (!fallbackSiteKey || fallbackSiteKey === activeSiteKey) {
+      return;
+    }
+
+    const fallbackSignature = `${activeSiteKey}->${fallbackSiteKey}`;
+    if (runtimeFallbackSiteRef.current === fallbackSignature) {
+      return;
+    }
+    runtimeFallbackSiteRef.current = fallbackSignature;
+
+    const hiddenSite = config.sites.find((site) => site.key === activeSiteKey) ?? null;
+    const fallbackSite = config.sites.find((site) => site.key === fallbackSiteKey) ?? null;
+
+    invalidateVodRequests();
+    resetVodBrowseState();
+    setActiveSiteKey(fallbackSiteKey);
+    persistSelection({ siteKey: fallbackSiteKey });
+
+    notify({
+      kind: "warning",
+      text: `接口 [${hiddenSite?.name ?? activeSiteKey}] 当前返回空内容，桌面端已暂时隐藏并切换到 [${fallbackSite?.name ?? fallbackSiteKey}]。`,
+    });
+  }, [
+    activeSiteKey,
+    config,
+    invalidateVodRequests,
+    notify,
+    persistSelection,
+    resetVodBrowseState,
+    siteRuntimeStates,
+  ]);
 
   const syncDraft = useCallback(() => {
     setDraft(source);
@@ -640,6 +700,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     setActiveRepoUrl("");
     setActiveSiteKey("");
     setConfig(null);
+    setSourceLoadError(null);
     resetVodRuntimeState();
     resetVodBrowseState();
 
@@ -671,6 +732,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       if (isStaleControllerGeneration(generation)) return;
       console.error(reason);
       const message = reason instanceof Error ? reason.message : String(reason);
+      setSourceLoadError(message);
       notify({
         kind: "error",
         text: message.includes("JSON") || message.includes("empty response")
@@ -697,6 +759,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       setActiveRepoUrl("");
       setConfig(null);
       setActiveSiteKey("");
+      setSourceLoadError(null);
       setBrowseMode("site");
       resetVodRuntimeState();
       resetVodBrowseState();
@@ -777,6 +840,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
       setLoadingVod(true);
       setVodPage(1);
       setHasMore(true);
+      let derivedHomeReport: SpiderExecutionReport | null = null;
 
       try {
         const extInput = site.capability.requiresSpider
@@ -789,20 +853,29 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
           await runtimeWarmup;
           if (isStale()) return;
         }
-        const response = site.capability.requiresSpider
-          ? await invoke<string>("spider_home", {
+        let data;
+        if (site.capability.requiresSpider) {
+          const spiderResponse = await invokeSpiderHomeV2({
             spiderUrl,
             siteKey: site.key,
             apiClass: site.api,
             ext: extInput,
-          })
-          : await withVodInterfaceTimeout(invoke<string>("fetch_vod_home", {
-            apiUrl: site.api,
-          }), `home:${site.key}`);
-
-        const data = parseVodResponse(response);
-        if (site.capability.requiresSpider) {
+          });
+          data = parseVodResponse(spiderResponse.normalizedPayload);
           await syncSpiderExecutionState(site.key);
+          derivedHomeReport = buildDerivedSpiderPayloadReport(
+            spiderResponse.report,
+            spiderResponse.rawPayload,
+            data,
+          );
+          if (derivedHomeReport) {
+            applySpiderExecutionState(site.key, derivedHomeReport);
+            throw new Error(derivedHomeReport.failureMessage ?? "当前接口返回了不可解析的首页数据。");
+          }
+        } else {
+          data = parseVodResponse(await withVodInterfaceTimeout(invoke<string>("fetch_vod_home", {
+            apiUrl: site.api,
+          }), `home:${site.key}`));
         }
         if (isStale()) return;
 
@@ -826,7 +899,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         if (isStale()) return;
         console.error("Failed to fetch VOD home:", reason);
         const fallbackMessage = normalizeVodRequestErrorMessage(reason);
-        const report = site.capability.requiresSpider ? await syncSpiderExecutionState(site.key) : null;
+        const report = derivedHomeReport ?? (site.capability.requiresSpider ? await syncSpiderExecutionState(site.key) : null);
         if (isStale()) return;
         const metadataFallbackTarget = getVodMetadataHomeFallbackTarget(site, presetClasses);
         if (metadataFallbackTarget) {
@@ -859,6 +932,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     activeSearchKeyword,
     activeSiteAutoLoadBlocked,
     activeSiteKey,
+    applySpiderExecutionState,
     config,
     getSpiderRuntimeWarmupPromise,
     notify,
@@ -938,22 +1012,20 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
           await runtimeWarmup;
           if (isStale()) return;
         }
-        const response = site.capability.requiresSpider
-          ? await invoke<string>("spider_category", {
+        const data = site.capability.requiresSpider
+          ? parseVodResponse((await invokeSpiderCategoryV2({
             spiderUrl,
             siteKey: site.key,
             apiClass: site.api,
             ext: extInput,
             tid: activeClassId,
             pg: vodPage,
-          })
-          : await withVodInterfaceTimeout(invoke<string>("fetch_vod_category", {
+          })).normalizedPayload)
+          : parseVodResponse(await withVodInterfaceTimeout(invoke<string>("fetch_vod_category", {
             apiUrl: site.api,
             tid: activeClassId,
             pg: vodPage,
-          }), `category:${site.key}`);
-
-        const data = parseVodResponse(response);
+          }), `category:${site.key}`));
         if (site.capability.requiresSpider) {
           await syncSpiderExecutionState(site.key);
         }
@@ -1252,21 +1324,19 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
         await runtimeWarmup;
         if (isStale()) return;
       }
-      const response = activeVodSite.capability.requiresSpider
-        ? await invoke<string>("spider_search", {
+      const data = activeVodSite.capability.requiresSpider
+        ? parseVodResponse((await invokeSpiderSearchV2({
           spiderUrl,
           siteKey: activeVodSite.key,
           apiClass: activeVodSite.api,
           ext: extInput,
           keyword,
           quick: activeVodSite.quickSearch,
-        })
-        : await withVodInterfaceTimeout(invoke<string>("fetch_vod_search", {
+        })).normalizedPayload)
+        : parseVodResponse(await withVodInterfaceTimeout(invoke<string>("fetch_vod_search", {
           apiUrl: activeVodSite.api,
           keyword,
-        }), `search:${activeVodSite.key}`);
-
-      const data = parseVodResponse(response);
+        }), `search:${activeVodSite.key}`));
       if (activeVodSite.capability.requiresSpider) {
         await syncSpiderExecutionState(activeVodSite.key);
       }
@@ -1386,6 +1456,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     localStorage.setItem(MEDIA_VOD_SOURCE_KEY, normalizedSource);
     setSource(normalizedSource);
     setDraft(normalizedSource);
+    setSourceLoadError(null);
     resetVodRuntimeState();
     notify({
       kind: parsed.warning ? "warning" : "success",
@@ -1404,11 +1475,22 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     setActiveRepoUrl("");
     setConfig(null);
     setActiveSiteKey("");
+    setSourceLoadError(null);
     resetVodRuntimeState();
     resetVodBrowseState();
     clearSelectedVod();
     notify({ kind: "success", text: "点播源已清空。" });
   }, [advanceControllerGeneration, clearSelectedVod, notify, resetVodBrowseState, resetVodRuntimeState]);
+
+  const retrySourceLoad = useCallback(() => {
+    const currentSource = sourceRef.current.trim();
+    if (!currentSource) return;
+    clearVodSourceSelectionSnapshot();
+    clearTvBoxRuntimeCaches(runtimeSessionKeyRef.current);
+    clearBrowseCaches();
+    clearVodImageProxyCache();
+    void loadSourceConfig(currentSource);
+  }, [clearBrowseCaches, loadSourceConfig]);
 
   return {
     source,
@@ -1417,6 +1499,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     repoUrls,
     activeRepoUrl,
     config,
+    sourceLoadError,
     activeSiteKey,
     activeVodSite,
     selectedVodSite,
@@ -1424,6 +1507,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     networkPolicyGeneration,
     activeSiteRuntime,
     siteRuntimeStates,
+    sitePickerSites,
     browseMode: effectiveBrowseMode,
     setBrowseMode,
     supportsAggregateBrowse,
@@ -1449,6 +1533,7 @@ export function useVodSourceController({ notify }: UseVodSourceControllerOptions
     clearSelectedVod,
     syncDraft,
     saveSource,
+    retrySourceLoad,
     clearSource,
     selectRepo,
     handleSiteSelect,
