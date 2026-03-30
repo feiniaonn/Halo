@@ -211,6 +211,7 @@ export function MusicPage() {
     currentPlaying?.position_secs,
     currentPlaying?.playback_status,
     currentPlaying?.duration_secs,
+    currentPlaying?.position_sampled_at_ms,
     playbackTrackKey,
   );
   const lyrics = useMusicLyrics({

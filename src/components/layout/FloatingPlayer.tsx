@@ -34,11 +34,14 @@ export function FloatingPlayer() {
   }, []);
 
   const { state: controlState, runCommand, runningCommand } = useMusicControl();
+  const playbackTrackKey = `${current?.source_app_id ?? ""}::${current?.artist ?? ""}::${current?.title ?? ""}`;
 
   const livePlaybackPositionSecs = usePlaybackClock(
     current?.position_secs,
     current?.playback_status,
     current?.duration_secs,
+    current?.position_sampled_at_ms,
+    playbackTrackKey,
   );
 
   const lyrics = useMusicLyrics({

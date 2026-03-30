@@ -615,7 +615,10 @@ fn preferred_execution_target(
 
 fn profile_matches_app_merge_c_family(profile: &SpiderSiteProfile) -> bool {
     let class_name = profile.class_name.trim().to_ascii_lowercase();
-    let has_full_compat_stack = profile.required_compat_packs.iter().any(|pack| pack == "legacy-core")
+    let has_full_compat_stack = profile
+        .required_compat_packs
+        .iter()
+        .any(|pack| pack == "legacy-core")
         && profile
             .required_compat_packs
             .iter()
@@ -646,12 +649,10 @@ fn artifact_matches_app_merge_c_family(artifact: &SpiderArtifactAnalysis) -> boo
 }
 
 fn artifact_matches_a0_js_heavy_family(artifact: &SpiderArtifactAnalysis) -> bool {
-    artifact.class_inventory.iter().any(|class_name| {
-        class_name
-            .trim()
-            .to_ascii_lowercase()
-            .contains("merge.a0.")
-    })
+    artifact
+        .class_inventory
+        .iter()
+        .any(|class_name| class_name.trim().to_ascii_lowercase().contains("merge.a0."))
 }
 
 fn infer_runtime_family_from_context(
@@ -665,7 +666,9 @@ fn infer_runtime_family_from_context(
         return detected;
     }
 
-    if site_profile.map(profile_matches_app_merge_c_family).unwrap_or(false)
+    if site_profile
+        .map(profile_matches_app_merge_c_family)
+        .unwrap_or(false)
         || artifact
             .map(artifact_matches_app_merge_c_family)
             .unwrap_or(false)

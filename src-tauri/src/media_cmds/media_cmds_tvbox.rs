@@ -157,7 +157,7 @@ fn html_attr_url_regex() -> &'static Regex {
         Regex::new(
             r#"(?i)\b(?:href|src|data-clipboard-text|data-url|data-src)\s*=\s*["']([^"']+)["']"#,
         )
-            .expect("valid html attr url regex")
+        .expect("valid html attr url regex")
     });
     &RE
 }
@@ -1270,8 +1270,12 @@ mod tests {
         </html>
         "#;
         let candidates = extract_html_candidate_urls(html, "http://www.xn--sss604efuw.net/tv");
-        assert!(candidates.iter().any(|u| u.contains("xn--sss604efuw.com/tv")));
-        assert!(candidates.iter().any(|u| u.contains("xn--sss604efuw.net/tv")));
+        assert!(candidates
+            .iter()
+            .any(|u| u.contains("xn--sss604efuw.com/tv")));
+        assert!(candidates
+            .iter()
+            .any(|u| u.contains("xn--sss604efuw.net/tv")));
         assert!(!candidates.iter().any(|u| u.ends_with(".bmp")));
     }
 

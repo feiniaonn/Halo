@@ -624,8 +624,10 @@ mod tests {
 
     #[test]
     fn matches_iyouhun_movie_leaf_url() {
-        assert!(resolve_known_source_fallback("https://9877.kstore.space/AnotherDS/movie.json")
-            .is_some());
+        assert!(
+            resolve_known_source_fallback("https://9877.kstore.space/AnotherDS/movie.json")
+                .is_some()
+        );
     }
 
     #[test]

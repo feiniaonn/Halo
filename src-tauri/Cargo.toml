@@ -1,6 +1,6 @@
 [package]
 name = "halo"
-version = "0.3.117"
+version = "0.3.118"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -45,6 +45,7 @@ window-vibrancy = "0.7.1"
 thiserror = "2.0.18"
 windows = { version = "0.61.3", features = [
     "Media_Control",
+    "Win32_Media_Audio",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Dxgi",
@@ -82,3 +83,7 @@ tauri-plugin-mpv = { git = "https://github.com/nini22P/tauri-plugin-mpv", branch
 tauri-plugin-libmpv = "0.3.2"
 indexmap = "2"
 flate2 = "1"
+
+[[bin]]
+name = "debug_smtc"
+path = "src/bin_debug_smtc.rs"

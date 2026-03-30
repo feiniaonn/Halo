@@ -234,8 +234,8 @@ async fn try_execute_rule_config_fast_path(
                 method,
                 &format!("requesting tid={tid} page={page}"),
             );
-            let list = fetch_rule_category_payload(family_label, &config, tid, page, &filters)
-                .await?;
+            let list =
+                fetch_rule_category_payload(family_label, &config, tid, page, &filters).await?;
             let payload = json!({
                 "page": page,
                 "pagecount": RULE_UNKNOWN_PAGECOUNT,
@@ -451,7 +451,7 @@ fn build_rule_category_url(
             "class_url",
         ],
     )
-        .ok_or_else(|| "rule config missing 閸掑棛琚玼rl".to_string())?;
+    .ok_or_else(|| "rule config missing 閸掑棛琚玼rl".to_string())?;
     let template = template
         .split(";;")
         .next()

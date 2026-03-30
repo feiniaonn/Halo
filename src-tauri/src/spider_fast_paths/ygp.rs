@@ -130,12 +130,14 @@ fn category_path_for_tid(tid: &str) -> &'static str {
 }
 
 async fn fetch_markdown_for_path(path: &str) -> Result<String, String> {
-    fetch_markdown_for_absolute_url(&format!("{YGP_SITE_BASE}{}", normalize_site_path(path)))
-        .await
+    fetch_markdown_for_absolute_url(&format!("{YGP_SITE_BASE}{}", normalize_site_path(path))).await
 }
 
 async fn fetch_markdown_for_absolute_url(url: &str) -> Result<String, String> {
-    let jina_url = format!("https://r.jina.ai/http://{}", url.trim_start_matches("https://"));
+    let jina_url = format!(
+        "https://r.jina.ai/http://{}",
+        url.trim_start_matches("https://")
+    );
     let payload = super::fetch_json_value(&jina_url, Some(jina_headers())).await?;
     let Some(content) = payload
         .get("data")
@@ -371,7 +373,10 @@ fn split_search_title_and_meta(value: &str) -> (String, String) {
     if trimmed.is_empty() {
         return (String::new(), String::new());
     }
-    if let Some(index) = search_meta_start_regex().find(&trimmed).map(|mat| mat.start()) {
+    if let Some(index) = search_meta_start_regex()
+        .find(&trimmed)
+        .map(|mat| mat.start())
+    {
         let title = clean_inline_text(&trimmed[..index]);
         let remarks = clean_search_meta(&trimmed[index..]);
         return (title, remarks);
@@ -413,17 +418,32 @@ fn parse_detail_payload(movie_url: &str, markdown: &str) -> Option<Value> {
     let vod_id = movie_id_from_url(movie_url).unwrap_or_else(|| movie_url.to_string());
     let vod_name = detail_movie_heading_regex()
         .captures_iter(markdown)
-        .filter_map(|captures| captures.name("title").map(|value| clean_inline_text(value.as_str())))
+        .filter_map(|captures| {
+            captures
+                .name("title")
+                .map(|value| clean_inline_text(value.as_str()))
+        })
         .find(|value| !value.is_empty())
-        .or_else(|| main_heading_regex().captures_iter(markdown).filter_map(|captures| {
-            captures.name("title").map(|value| clean_inline_text(value.as_str()))
-        }).find(|value| !value.contains("高清电影预告片")))
+        .or_else(|| {
+            main_heading_regex()
+                .captures_iter(markdown)
+                .filter_map(|captures| {
+                    captures
+                        .name("title")
+                        .map(|value| clean_inline_text(value.as_str()))
+                })
+                .find(|value| !value.contains("高清电影预告片"))
+        })
         .map(|value| normalize_detail_title(&value))
         .unwrap_or_else(|| vod_id.clone());
 
     let vod_pic = detail_poster_regex()
         .captures(markdown)
-        .and_then(|captures| captures.name("pic").map(|value| normalize_asset_url(value.as_str())))
+        .and_then(|captures| {
+            captures
+                .name("pic")
+                .map(|value| normalize_asset_url(value.as_str()))
+        })
         .unwrap_or_default();
     let vod_class = detail_line_value(markdown, "类型：");
     let vod_year = detail_line_value(markdown, "上映：");
@@ -468,14 +488,11 @@ fn parse_detail_payload(movie_url: &str, markdown: &str) -> Option<Value> {
 }
 
 fn detail_line_value(markdown: &str, prefix: &str) -> Option<String> {
-    markdown
-        .lines()
-        .map(str::trim)
-        .find_map(|line| {
-            line.strip_prefix(prefix)
-                .map(clean_inline_text)
-                .filter(|value| !value.is_empty())
-        })
+    markdown.lines().map(str::trim).find_map(|line| {
+        line.strip_prefix(prefix)
+            .map(clean_inline_text)
+            .filter(|value| !value.is_empty())
+    })
 }
 
 fn split_director_actor(value: &Option<String>) -> (Option<String>, Option<String>) {
@@ -535,8 +552,11 @@ fn build_episode_token(show_url: &str, download_url: Option<&str>) -> String {
 async fn resolve_player_payload(raw_id: &str) -> Result<Value, String> {
     let (show_url, download_url) = split_episode_token(raw_id);
     let markdown = fetch_markdown_for_absolute_url(&show_url).await?;
-    let source_url = extract_source_url(&markdown)
-        .or_else(|| download_url.as_deref().and_then(extract_source_url_from_download_url));
+    let source_url = extract_source_url(&markdown).or_else(|| {
+        download_url
+            .as_deref()
+            .and_then(extract_source_url_from_download_url)
+    });
 
     if let Some(source_url) = source_url {
         if is_direct_media_url(&source_url) {
@@ -646,14 +666,14 @@ async fn resolve_maoyan_play_url(source_url: &str) -> Result<Option<String>, Str
         _ => format!("https://m.maoyan.com/asgard/movie/{movie_id}"),
     };
 
-    let mobile_page = super::fetch_text_value(&mobile_page_url, Some(maoyan_mobile_headers())).await?;
+    let mobile_page =
+        super::fetch_text_value(&mobile_page_url, Some(maoyan_mobile_headers())).await?;
     if let Some(play_url) = extract_maoyan_video_url_from_page(&mobile_page, video_id.as_deref()) {
         return Ok(Some(play_url));
     }
 
     let ajax_url = format!("https://m.maoyan.com/ajax/detailmovie?movieId={movie_id}");
-    let ajax_payload =
-        super::fetch_text_value(&ajax_url, Some(maoyan_ajax_headers())).await?;
+    let ajax_payload = super::fetch_text_value(&ajax_url, Some(maoyan_ajax_headers())).await?;
     Ok(extract_maoyan_video_url_from_detail(&ajax_payload))
 }
 
@@ -769,7 +789,11 @@ fn decode_first_detail_id(args: &[(&str, String)]) -> Option<String> {
 fn summarize_player_id(raw_id: &str) -> String {
     let (show_url, download_url) = split_episode_token(raw_id);
     match download_url {
-        Some(download_url) => format!("show={} download={}", summarize_url(&show_url), summarize_url(&download_url)),
+        Some(download_url) => format!(
+            "show={} download={}",
+            summarize_url(&show_url),
+            summarize_url(&download_url)
+        ),
         None => summarize_url(&show_url),
     }
 }
@@ -806,11 +830,7 @@ fn clean_inline_text(value: &str) -> String {
 
 fn clean_search_meta(value: &str) -> String {
     let cleaned = clean_inline_text(value);
-    cleaned
-        .trim()
-        .trim_end_matches(']')
-        .trim()
-        .to_string()
+    cleaned.trim().trim_end_matches(']').trim().to_string()
 }
 
 fn flatten_markdown_text(value: &str) -> String {
@@ -844,7 +864,12 @@ fn normalize_asset_url(raw: &str) -> String {
 
 fn normalize_detail_title(value: &str) -> String {
     let mut title = clean_inline_text(value);
-    for marker in ["高清电影预告片下载", "高清电影预告片", "电影预告片下载", "电影预告片"] {
+    for marker in [
+        "高清电影预告片下载",
+        "高清电影预告片",
+        "电影预告片下载",
+        "电影预告片",
+    ] {
         if let Some((head, _)) = title.split_once(marker) {
             title = clean_inline_text(head);
             break;
@@ -856,13 +881,19 @@ fn normalize_detail_title(value: &str) -> String {
 fn extract_direct_media_url(body: &str) -> Option<String> {
     direct_media_url_regex()
         .captures_iter(&body.replace("\\/", "/"))
-        .filter_map(|captures| captures.name("url").map(|value| normalize_known_site_url(value.as_str())))
+        .filter_map(|captures| {
+            captures
+                .name("url")
+                .map(|value| normalize_known_site_url(value.as_str()))
+        })
         .find(|url| is_direct_media_url(url))
 }
 
 fn maoyan_identifiers(source_url: &str) -> Option<(String, Option<String>)> {
     let parsed = url::Url::parse(source_url).ok()?;
-    let mut segments = parsed.path_segments()?.filter(|segment| !segment.is_empty());
+    let mut segments = parsed
+        .path_segments()?
+        .filter(|segment| !segment.is_empty());
     let first = segments.next()?;
     if first != "films" {
         return None;
@@ -1066,7 +1097,10 @@ mod tests {
 "#;
         let items = parse_catalog_items(markdown);
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0]["vod_pic"], "https://www.6huo.com/files/mpic/202507/p83401.jpg?3248");
+        assert_eq!(
+            items[0]["vod_pic"],
+            "https://www.6huo.com/files/mpic/202507/p83401.jpg?3248"
+        );
         assert_eq!(items[0]["vod_name"], "河狸变身计划");
         assert_eq!(items[1]["vod_name"], "蜂蜜的针");
         assert_eq!(items[1]["vod_remarks"], "2026-03-28");
@@ -1097,7 +1131,10 @@ mod tests {
             .expect("detail payload");
         assert_eq!(detail["vod_id"], "85646");
         assert_eq!(detail["vod_name"], "蜂蜜的针");
-        assert_eq!(detail["vod_pic"], "https://www.6huo.com/files/mpic/202603/p85646.jpg?4905");
+        assert_eq!(
+            detail["vod_pic"],
+            "https://www.6huo.com/files/mpic/202603/p85646.jpg?4905"
+        );
         assert_eq!(detail["vod_play_from"], "预告片");
         assert!(detail["vod_play_url"]
             .as_str()
@@ -1144,7 +1181,10 @@ window.AppData={"videoRelatedInfo":{"videoRelateds":[
 ;</script>
 "#;
         let url = extract_maoyan_video_url_from_page(body, Some("522059"));
-        assert_eq!(url.as_deref(), Some("https://vod.pipi.cn/example-first.mp4"));
+        assert_eq!(
+            url.as_deref(),
+            Some("https://vod.pipi.cn/example-first.mp4")
+        );
     }
 
     #[test]

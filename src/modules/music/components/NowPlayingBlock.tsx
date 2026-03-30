@@ -16,6 +16,7 @@ export function NowPlayingBlock({
     current?.position_secs,
     current?.playback_status,
     current?.duration_secs,
+    current?.position_sampled_at_ms,
     playbackTrackKey,
   );
   const displayPosition = livePositionSecs ?? current?.position_secs ?? 0;

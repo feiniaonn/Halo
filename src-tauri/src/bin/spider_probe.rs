@@ -48,10 +48,7 @@ fn main() {
     let id = take_flag(&mut args, "--id");
     let vip_flags = take_multi_flag(&mut args, "--vip-flag");
 
-    if source_url.trim().is_empty()
-        || site_selector.trim().is_empty()
-        || method.trim().is_empty()
-    {
+    if source_url.trim().is_empty() || site_selector.trim().is_empty() || method.trim().is_empty() {
         print_usage();
         std::process::exit(2);
     }

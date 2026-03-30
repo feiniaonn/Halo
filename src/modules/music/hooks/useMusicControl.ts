@@ -1,6 +1,11 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  EVENT_MUSIC_SETTINGS_CHANGED,
+  EVENT_MUSIC_TIMELINE_UPDATE,
+  EVENT_MUSIC_TRACK_UPDATE,
+} from "@/modules/shared/services/events";
 import {
   getMusicControlSources,
   getMusicControlState,
@@ -15,6 +20,10 @@ import type {
 } from "../types/music.types";
 
 const CONTROL_REFRESH_TIMEOUT_MS = 1800;
+const CONTROL_POLL_MS = 800;
+const CONTROL_FAST_POLL_MS = 160;
+const CONTROL_FAST_POLL_WINDOW_MS = 7000;
+const CONTROL_TARGET_SWITCH_GUARD_MS = 150;
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   let timer: number | null = null;
@@ -40,6 +49,14 @@ export function useMusicControl() {
   const [runningCommand, setRunningCommand] = useState<MusicCommand | null>(null);
   const lastTargetSwitchAt = useRef(0);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
+  const fastRefreshUntilRef = useRef(0);
+
+  const requestFastRefresh = useCallback((windowMs = CONTROL_FAST_POLL_WINDOW_MS) => {
+    fastRefreshUntilRef.current = Math.max(
+      fastRefreshUntilRef.current,
+      Date.now() + windowMs,
+    );
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!isTauri) {
@@ -68,7 +85,7 @@ export function useMusicControl() {
             }
 
             const now = Date.now();
-            if (now - lastTargetSwitchAt.current < 1000) {
+            if (now - lastTargetSwitchAt.current < CONTROL_TARGET_SWITCH_GUARD_MS) {
               return {
                 ...nextState,
                 target: prev.target,
@@ -99,48 +116,82 @@ export function useMusicControl() {
   }, [isTauri]);
 
   useEffect(() => {
+    requestFastRefresh();
     void refresh();
-  }, [refresh]);
+  }, [refresh, requestFastRefresh]);
 
   useEffect(() => {
     if (!isTauri) return;
+
     const timer = window.setInterval(() => {
       void refresh();
-    }, 3000);
+    }, CONTROL_POLL_MS);
+    const fastTimer = window.setInterval(() => {
+      if (Date.now() > fastRefreshUntilRef.current) return;
+      void refresh();
+    }, CONTROL_FAST_POLL_MS);
 
-    const offSettings = listen("music:settings-changed", () => {
+    const onVisibleOrFocus = () => {
+      requestFastRefresh();
+      void refresh();
+    };
+    const offSettings = listen(EVENT_MUSIC_SETTINGS_CHANGED, () => {
+      requestFastRefresh();
+      void refresh();
+    });
+    const offTrack = listen(EVENT_MUSIC_TRACK_UPDATE, () => {
+      requestFastRefresh();
+      void refresh();
+    });
+    const offTimeline = listen(EVENT_MUSIC_TIMELINE_UPDATE, () => {
+      requestFastRefresh();
       void refresh();
     });
 
+    window.addEventListener("focus", onVisibleOrFocus);
+    window.addEventListener("pageshow", onVisibleOrFocus);
+    document.addEventListener("visibilitychange", onVisibleOrFocus);
+
     return () => {
       window.clearInterval(timer);
+      window.clearInterval(fastTimer);
+      window.removeEventListener("focus", onVisibleOrFocus);
+      window.removeEventListener("pageshow", onVisibleOrFocus);
+      document.removeEventListener("visibilitychange", onVisibleOrFocus);
       void offSettings.then((fn) => fn()).catch(() => void 0);
+      void offTrack.then((fn) => fn()).catch(() => void 0);
+      void offTimeline.then((fn) => fn()).catch(() => void 0);
     };
-  }, [isTauri, refresh]);
+  }, [isTauri, refresh, requestFastRefresh]);
 
-  const runCommand = useCallback(async (
-    command: MusicCommand,
-    options?: MusicControlOptions,
-  ): Promise<MusicControlResult> => {
-    if (!isTauri) {
-      return {
-        ok: false,
-        message: "当前环境不支持媒体控制",
-        command,
-        target: null,
-        reason: "当前环境不支持媒体控制",
-        retried: 0,
-      };
-    }
-    setRunningCommand(command);
-    try {
-      const result = await musicControl(command, options);
-      await refresh();
-      return result;
-    } finally {
-      setRunningCommand(null);
-    }
-  }, [isTauri, refresh]);
+  const runCommand = useCallback(
+    async (
+      command: MusicCommand,
+      options?: MusicControlOptions,
+    ): Promise<MusicControlResult> => {
+      if (!isTauri) {
+        return {
+          ok: false,
+          message: "当前环境不支持媒体控制",
+          command,
+          target: null,
+          reason: "当前环境不支持媒体控制",
+          retried: 0,
+        };
+      }
+
+      setRunningCommand(command);
+      requestFastRefresh();
+      try {
+        const result = await musicControl(command, options);
+        await refresh();
+        return result;
+      } finally {
+        setRunningCommand(null);
+      }
+    },
+    [isTauri, refresh, requestFastRefresh],
+  );
 
   return {
     state,

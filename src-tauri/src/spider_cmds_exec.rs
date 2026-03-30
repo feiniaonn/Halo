@@ -1541,12 +1541,7 @@ async fn execute_bridge(
     }
 }
 
-fn bridge_timeout_secs(
-    method: &str,
-    class_hint: &str,
-    ext: &str,
-    compat_jars: &[PathBuf],
-) -> u64 {
+fn bridge_timeout_secs(method: &str, class_hint: &str, ext: &str, compat_jars: &[PathBuf]) -> u64 {
     let compat_content_site = !compat_jars.is_empty() && !site_uses_short_bridge_budget(class_hint);
     let remote_or_bootstrap_ext = is_remote_ext_url(ext) || ext.trim().is_empty();
 
@@ -1638,8 +1633,8 @@ mod tests {
     use super::{
         bridge_timeout_secs, ext_bootstraps_home_before_category, ext_prefers_remote_url,
         looks_like_rule_config_payload, rewrite_local_spider_service_urls,
-        site_prefers_compat_runtime, site_prefers_inline_rule_config, site_requires_anotherds_fallback,
-        validate_semantic_payload,
+        site_prefers_compat_runtime, site_prefers_inline_rule_config,
+        site_requires_anotherds_fallback, validate_semantic_payload,
     };
 
     #[test]
@@ -1706,10 +1701,22 @@ mod tests {
     #[test]
     fn extends_timeout_for_compat_content_sites_only() {
         let compat = vec![std::path::PathBuf::from("compat.jar")];
-        assert_eq!(bridge_timeout_secs("homeContent", "csp_Lkdy", "https://lkvod.com", &compat), 12);
-        assert_eq!(bridge_timeout_secs("searchContent", "csp_Lkdy", "https://lkvod.com", &compat), 10);
-        assert_eq!(bridge_timeout_secs("homeContent", "csp_ConfigCenter", "", &compat), 5);
-        assert_eq!(bridge_timeout_secs("searchContent", "csp_Douban", "", &compat), 5);
+        assert_eq!(
+            bridge_timeout_secs("homeContent", "csp_Lkdy", "https://lkvod.com", &compat),
+            12
+        );
+        assert_eq!(
+            bridge_timeout_secs("searchContent", "csp_Lkdy", "https://lkvod.com", &compat),
+            10
+        );
+        assert_eq!(
+            bridge_timeout_secs("homeContent", "csp_ConfigCenter", "", &compat),
+            5
+        );
+        assert_eq!(
+            bridge_timeout_secs("searchContent", "csp_Douban", "", &compat),
+            5
+        );
     }
 
     #[test]

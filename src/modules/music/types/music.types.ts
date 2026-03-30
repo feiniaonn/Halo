@@ -13,10 +13,30 @@ export type CurrentPlayingInfo = {
   cover_data_url: string | null;
   duration_secs: number | null;
   position_secs: number | null;
+  position_sampled_at_ms: number | null;
+  timeline_updated_at_ms: number | null;
   playback_status: string | null;
   source_app_id: string | null;
   source_platform: string | null;
 };
+
+export type MusicTrackUpdatePayload = {
+  artist: string;
+  title: string;
+  cover_path: string | null;
+  cover_data_url: string | null;
+  source_app_id: string | null;
+  source_platform: string | null;
+} | null;
+
+export type MusicTimelineUpdatePayload = {
+  position_secs: number | null;
+  duration_secs: number | null;
+  last_updated_at_ms: number | null;
+  playback_status: string | null;
+  source_app_id: string | null;
+  source_platform: string | null;
+} | null;
 
 export type MusicCommand = "previous" | "play_pause" | "next" | "refresh";
 

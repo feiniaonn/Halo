@@ -1,10 +1,12 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::db::PlayRecord;
 use crate::CurrentPlayingInfo;
 
 const EVENT_MUSIC_CURRENT_CHANGED: &str = "music:current-changed";
+const EVENT_MUSIC_TRACK_UPDATE: &str = "track-update";
+const EVENT_MUSIC_TIMELINE_UPDATE: &str = "timeline-update";
 
 pub fn aggregated_play_history(limit: i64) -> Result<Vec<PlayRecord>, String> {
     crate::db::query_play_history(limit)
@@ -26,9 +28,13 @@ pub async fn run_gsmtc_listener(
 }
 
 #[cfg(target_os = "windows")]
+use std::cell::Cell;
+#[cfg(target_os = "windows")]
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+use std::sync::OnceLock;
 #[cfg(target_os = "windows")]
 use std::time::Duration;
 
@@ -47,6 +53,8 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionManager as WinSessionManager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as WinPlaybackStatus,
 };
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED};
 
 #[cfg(target_os = "windows")]
 const RECORD_COOLDOWN_MS: i64 = 15_000;
@@ -55,7 +63,7 @@ const CURRENT_INFO_HOLD_MS: i64 = 12_000;
 #[cfg(target_os = "windows")]
 const LISTENER_IDLE_TICK_MS: u64 = 1_200;
 #[cfg(target_os = "windows")]
-const LISTENER_ACTIVE_TICK_MS: u64 = 450;
+const LISTENER_ACTIVE_TICK_MS: u64 = 120;
 #[cfg(target_os = "windows")]
 const WINDOWS_API_RETRY_LIMIT: u8 = 3;
 #[cfg(target_os = "windows")]
@@ -65,9 +73,25 @@ const WINDOWS_API_COOLDOWN_MS: i64 = 45_000;
 #[cfg(target_os = "windows")]
 const PROCESS_PROBE_RETRY_LIMIT: u8 = 3;
 #[cfg(target_os = "windows")]
-const PROCESS_PROBE_RETRY_INTERVAL_MS: i64 = 800;
+const PROCESS_PROBE_RETRY_INTERVAL_MS: i64 = 250;
 #[cfg(target_os = "windows")]
 const PROCESS_PROBE_COOLDOWN_MS: i64 = 90_000;
+#[cfg(target_os = "windows")]
+const MUSIC_ON_DEMAND_QUERY_TIMEOUT_MS: u64 = 420;
+#[cfg(target_os = "windows")]
+const GSMTC_CREATE_TIMEOUT_MS: u64 = 2_500;
+#[cfg(target_os = "windows")]
+const CURRENT_QUERY_WORKER_COOLDOWN_MS: i64 = 1_500;
+#[cfg(target_os = "windows")]
+const CURRENT_QUERY_RESULT_FRESH_MS: i64 = 2_500;
+
+#[cfg(target_os = "windows")]
+thread_local! {
+    static WINDOWS_MEDIA_RUNTIME_READY: Cell<bool> = const { Cell::new(false) };
+}
+#[cfg(target_os = "windows")]
+const RPC_E_CHANGED_MODE_HRESULT: windows::core::HRESULT =
+    windows::core::HRESULT(0x80010106u32 as i32);
 
 #[cfg(target_os = "windows")]
 fn music_debug_enabled() -> bool {
@@ -98,6 +122,26 @@ fn music_debug_enabled() -> bool {
 }
 
 #[cfg(target_os = "windows")]
+fn ensure_windows_media_runtime() {
+    WINDOWS_MEDIA_RUNTIME_READY.with(|ready| {
+        if ready.get() {
+            return;
+        }
+
+        if music_debug_enabled() {
+            eprintln!("[music-debug] initializing windows media runtime on current thread");
+        }
+
+        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        if hr.is_err() && hr != RPC_E_CHANGED_MODE_HRESULT && music_debug_enabled() {
+            eprintln!("[music-debug] windows media runtime init failed: {:?}", hr);
+        }
+
+        ready.set(true);
+    });
+}
+
+#[cfg(target_os = "windows")]
 #[derive(Debug, Clone, Default)]
 struct SessionSnapshot {
     source: String,
@@ -121,10 +165,32 @@ struct ListenerState {
     last_nonempty_current: Option<CurrentPlayingInfo>,
     last_nonempty_current_at_ms: i64,
     netease_meta_cache: HashMap<String, Option<NeteaseTrackMeta>>,
-    netease_virtual_position: Option<NeteaseVirtualPosition>,
-    netease_track_first_seen_ms: HashMap<String, i64>,
+    virtual_position_clock: Option<VirtualPositionClock>,
+    virtual_track_first_seen_ms: HashMap<String, i64>,
     last_diag_line: String,
     last_diag_at_ms: i64,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Default, serde::Serialize)]
+struct MusicTrackUpdatePayload {
+    artist: String,
+    title: String,
+    cover_path: Option<String>,
+    cover_data_url: Option<String>,
+    source_app_id: Option<String>,
+    source_platform: Option<String>,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Default, serde::Serialize)]
+struct MusicTimelineUpdatePayload {
+    position_secs: Option<f64>,
+    duration_secs: Option<f64>,
+    last_updated_at_ms: Option<f64>,
+    playback_status: Option<String>,
+    source_app_id: Option<String>,
+    source_platform: Option<String>,
 }
 
 #[cfg(target_os = "windows")]
@@ -136,7 +202,7 @@ struct NeteaseTrackMeta {
 
 #[cfg(target_os = "windows")]
 #[derive(Debug, Clone, Default)]
-struct NeteaseVirtualPosition {
+struct VirtualPositionClock {
     track_key: String,
     anchor_at_ms: i64,
     anchor_pos_secs: u64,
@@ -347,8 +413,22 @@ fn detect_source_platform(source_id: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn is_browser_like_music_source(source_id: &str) -> bool {
+fn is_halo_music_source(source_id: &str) -> bool {
     let lower = source_id.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+
+    lower == "com.tauri-app.halo"
+        || lower.contains("tauri-app.halo")
+        || lower.ends_with("\\halo.exe")
+        || lower.ends_with("/halo.exe")
+        || lower.ends_with("halo.exe")
+}
+
+#[cfg(target_os = "windows")]
+fn is_browser_like_source_token(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
     if lower.is_empty() {
         return false;
     }
@@ -369,26 +449,23 @@ fn is_browser_like_music_source(source_id: &str) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn is_halo_music_source(source_id: &str) -> bool {
-    let lower = source_id.trim().to_ascii_lowercase();
-    if lower.is_empty() {
-        return false;
+fn is_generic_source_platform(platform: Option<&str>) -> bool {
+    match platform {
+        None => true,
+        Some(value) => {
+            let trimmed = value.trim();
+            trimmed.is_empty()
+                || trimmed.eq_ignore_ascii_case("windows-gsmtc")
+                || trimmed.eq_ignore_ascii_case("browser")
+                || trimmed.eq_ignore_ascii_case("webview")
+                || is_browser_like_source_token(trimmed)
+        }
     }
-
-    lower == "com.tauri-app.halo"
-        || lower.contains("tauri-app.halo")
-        || lower.ends_with("\\halo.exe")
-        || lower.ends_with("/halo.exe")
-        || lower.ends_with("halo.exe")
 }
 
 #[cfg(target_os = "windows")]
 fn should_ignore_music_source(source_id: &str, platform: Option<&str>) -> bool {
-    if is_browser_like_music_source(source_id) || is_halo_music_source(source_id) {
-        return true;
-    }
-
-    matches!(platform, Some("browser") | Some("webview") | Some("halo"))
+    is_halo_music_source(source_id) || matches!(platform, Some("halo"))
 }
 
 #[cfg(target_os = "windows")]
@@ -827,6 +904,8 @@ fn model_to_current(
         cover_data_url: None,
         duration_secs,
         position_secs,
+        position_sampled_at_ms: Some(now_ms()),
+        timeline_updated_at_ms: timeline.map(|value| value.last_updated_at_ms),
         playback_status: playback.map(|p| map_playback_status(&p.status)),
         source_app_id: Some(source.to_string()),
         source_platform: Some(detect_source_platform(source)),
@@ -835,6 +914,7 @@ fn model_to_current(
 
 #[cfg(target_os = "windows")]
 fn query_current_via_windows_api() -> Option<CurrentPlayingInfo> {
+    ensure_windows_media_runtime();
     let manager = match WinSessionManager::RequestAsync() {
         Ok(v) => match v.get() {
             Ok(m) => m,
@@ -934,7 +1014,8 @@ fn query_current_via_windows_api() -> Option<CurrentPlayingInfo> {
         let playback_status = playback_status_raw.map(map_playback_status_win);
         let is_playing = matches!(playback_status_raw, Some(WinPlaybackStatus::Playing));
 
-        let (duration_secs, position_secs) = if let Ok(timeline) = session.GetTimelineProperties() {
+        let (duration_secs, position_secs, timeline_updated_at_ms) =
+            if let Ok(timeline) = session.GetTimelineProperties() {
             let start = timeline.StartTime().ok().map(|v| v.Duration).unwrap_or(0);
             let end = timeline.EndTime().ok().map(|v| v.Duration).unwrap_or(0);
             let pos = timeline.Position().ok().map(|v| v.Duration).unwrap_or(0);
@@ -942,9 +1023,11 @@ fn query_current_via_windows_api() -> Option<CurrentPlayingInfo> {
                 .LastUpdatedTime()
                 .ok()
                 .map(|v| filetime_to_unix_ms(v.UniversalTime));
-            timeline_to_duration_position_secs(start, end, pos, is_playing, last_updated_at_ms)
+            let (duration_secs, position_secs) =
+                timeline_to_duration_position_secs(start, end, pos, is_playing, last_updated_at_ms);
+            (duration_secs, position_secs, last_updated_at_ms)
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         let has_text = !artist.is_empty() || !title.is_empty();
@@ -1007,6 +1090,8 @@ fn query_current_via_windows_api() -> Option<CurrentPlayingInfo> {
             cover_data_url: None,
             duration_secs,
             position_secs,
+            position_sampled_at_ms: Some(now_ms()),
+            timeline_updated_at_ms,
             playback_status,
             source_app_id: Some(source),
             source_platform: Some(platform),
@@ -1042,6 +1127,12 @@ fn query_current_via_windows_api() -> Option<CurrentPlayingInfo> {
 
 #[cfg(target_os = "windows")]
 fn query_current_via_process_probe() -> Option<CurrentPlayingInfo> {
+    if let Some(current) =
+        crate::music_process_probe::query_current_via_qqmusic_process_probe(music_debug_enabled())
+    {
+        return Some(current);
+    }
+
     let netease_enabled = std::env::var("HALO_ENABLE_NETEASE_DETECTION")
         .ok()
         .map(|v| {
@@ -1285,6 +1376,8 @@ if ($null -eq $pick) { '' } else {
         cover_data_url: icon_cover_data_url,
         duration_secs: None,
         position_secs: None,
+        position_sampled_at_ms: Some(now_ms()),
+        timeline_updated_at_ms: Some(now_ms()),
         playback_status: Some("Playing".to_string()),
         source_app_id: Some(process_name),
         source_platform: Some("netease".to_string()),
@@ -1292,8 +1385,263 @@ if ($null -eq $pick) { '' } else {
 }
 
 #[cfg(target_os = "windows")]
+fn enrich_current_from_local_cache(current: &mut CurrentPlayingInfo) {
+    if current.source_platform.as_deref() == Some("qqmusic") {
+        if current.duration_secs.is_none() {
+            current.duration_secs = crate::music_qqmusic_cache::find_duration_secs(
+                current.artist.as_str(),
+                current.title.as_str(),
+                None,
+            );
+        }
+
+        if current.cover_data_url.is_none() && current.cover_path.is_none() {
+            current.cover_data_url = crate::music_qqmusic_cache::find_cover_data_url(
+                current.artist.as_str(),
+                current.title.as_str(),
+                current.duration_secs,
+            )
+            .or_else(crate::music_qqmusic_cache::find_recent_cover_data_url);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn query_current_once_sync() -> Option<CurrentPlayingInfo> {
+    let mut current = query_current_via_windows_api().or_else(query_current_via_process_probe);
+    if let Some(snapshot) = current.as_mut() {
+        enrich_current_from_local_cache(snapshot);
+    }
+    current
+}
+
+#[cfg(target_os = "windows")]
+pub async fn query_current_on_demand() -> Option<CurrentPlayingInfo> {
+    type CurrentQueryReply = std::sync::mpsc::Sender<Option<CurrentPlayingInfo>>;
+    static QUERY_WORKER: OnceLock<std::sync::mpsc::Sender<CurrentQueryReply>> = OnceLock::new();
+    static WORKER_BLOCK_UNTIL_MS: AtomicI64 = AtomicI64::new(0);
+    static LAST_WORKER_RESULT: OnceLock<
+        Arc<Mutex<Option<(i64, Option<CurrentPlayingInfo>)>>>,
+    > = OnceLock::new();
+
+    let last_worker_result = LAST_WORKER_RESULT
+        .get_or_init(|| Arc::new(Mutex::new(None)))
+        .clone();
+
+    let now = now_ms();
+    let worker_blocked_until_ms = WORKER_BLOCK_UNTIL_MS.load(Ordering::Relaxed);
+    if now < worker_blocked_until_ms {
+        if let Some(current) = last_worker_result
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .and_then(|(updated_at_ms, current)| {
+                if now.saturating_sub(updated_at_ms) <= CURRENT_QUERY_RESULT_FRESH_MS {
+                    current
+                } else {
+                    None
+                }
+            })
+        {
+            return Some(current);
+        }
+        return query_current_via_process_probe();
+    }
+
+    let worker_tx = QUERY_WORKER.get_or_init(|| {
+        let (request_tx, request_rx) = std::sync::mpsc::channel::<CurrentQueryReply>();
+        let last_worker_result = last_worker_result.clone();
+        std::thread::spawn(move || {
+            let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+            if hr.is_err() && hr != RPC_E_CHANGED_MODE_HRESULT && music_debug_enabled() {
+                eprintln!(
+                    "[music-debug] current query worker COM init failed: {:?}",
+                    hr
+                );
+            }
+
+            for reply_tx in request_rx {
+                let current = query_current_once_sync();
+                if let Ok(mut guard) = last_worker_result.lock() {
+                    *guard = Some((now_ms(), current.clone()));
+                }
+                let _ = reply_tx.send(current);
+            }
+        });
+        request_tx
+    });
+
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    if worker_tx.send(reply_tx).is_err() {
+        if music_debug_enabled() {
+            eprintln!("[music-debug] current query worker send failed");
+        }
+        WORKER_BLOCK_UNTIL_MS.store(
+            now_ms().saturating_add(CURRENT_QUERY_WORKER_COOLDOWN_MS),
+            Ordering::Relaxed,
+        );
+        return query_current_via_process_probe();
+    }
+
+    let wait_task = tauri::async_runtime::spawn_blocking(move || {
+        reply_rx
+            .recv_timeout(Duration::from_millis(MUSIC_ON_DEMAND_QUERY_TIMEOUT_MS))
+            .ok()
+    });
+
+    match wait_task.await {
+        Ok(Some(current)) => {
+            WORKER_BLOCK_UNTIL_MS.store(0, Ordering::Relaxed);
+            current
+        }
+        Ok(None) => {
+            WORKER_BLOCK_UNTIL_MS.store(
+                now_ms().saturating_add(CURRENT_QUERY_WORKER_COOLDOWN_MS),
+                Ordering::Relaxed,
+            );
+            if music_debug_enabled() {
+                eprintln!(
+                    "[music-debug] on-demand query timed out after {}ms; cooling down worker for {}ms",
+                    MUSIC_ON_DEMAND_QUERY_TIMEOUT_MS,
+                    CURRENT_QUERY_WORKER_COOLDOWN_MS
+                );
+            }
+            if let Some(current) = last_worker_result
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone())
+                .and_then(|(updated_at_ms, current)| {
+                    if now_ms().saturating_sub(updated_at_ms) <= CURRENT_QUERY_RESULT_FRESH_MS {
+                        current
+                    } else {
+                        None
+                    }
+                })
+            {
+                return Some(current);
+            }
+            query_current_via_process_probe()
+        }
+        Err(error) => {
+            WORKER_BLOCK_UNTIL_MS.store(
+                now_ms().saturating_add(CURRENT_QUERY_WORKER_COOLDOWN_MS),
+                Ordering::Relaxed,
+            );
+            if music_debug_enabled() {
+                eprintln!("[music-debug] on-demand query join failed: {error}");
+            }
+            if let Some(current) = last_worker_result
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone())
+                .and_then(|(updated_at_ms, current)| {
+                    if now_ms().saturating_sub(updated_at_ms) <= CURRENT_QUERY_RESULT_FRESH_MS {
+                        current
+                    } else {
+                        None
+                    }
+                })
+            {
+                return Some(current);
+            }
+            query_current_via_process_probe()
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn has_track_text(current: &CurrentPlayingInfo) -> bool {
     !current.title.trim().is_empty() || !current.artist.trim().is_empty()
+}
+
+#[cfg(target_os = "windows")]
+fn same_track_identity(lhs: &CurrentPlayingInfo, rhs: &CurrentPlayingInfo) -> bool {
+    lhs.source_platform.as_deref() == rhs.source_platform.as_deref()
+        && lhs.source_app_id.as_deref() == rhs.source_app_id.as_deref()
+        && lhs.artist.trim().eq_ignore_ascii_case(rhs.artist.trim())
+        && lhs.title.trim().eq_ignore_ascii_case(rhs.title.trim())
+}
+
+#[cfg(target_os = "windows")]
+fn should_hold_last_snapshot(current: Option<&CurrentPlayingInfo>) -> bool {
+    current
+        .and_then(|snapshot| snapshot.source_platform.as_deref())
+        .map(|platform| platform != "qqmusic")
+        .unwrap_or(true)
+}
+
+#[cfg(target_os = "windows")]
+fn stabilize_qqmusic_from_previous(
+    state: &ListenerState,
+    current: &mut CurrentPlayingInfo,
+) {
+    if current.source_platform.as_deref() != Some("qqmusic") {
+        return;
+    }
+
+    let Some(previous) = state.last_nonempty_current.as_ref() else {
+        return;
+    };
+    if previous.source_platform.as_deref() != Some("qqmusic") || !same_track_identity(previous, current) {
+        return;
+    }
+
+    let previous_is_paused = previous
+        .playback_status
+        .as_deref()
+        .map(|value| value.eq_ignore_ascii_case("paused"))
+        .unwrap_or(false);
+
+    if current.playback_status.is_none() && previous_is_paused {
+        current.playback_status = previous.playback_status.clone();
+    }
+
+    let is_playing = current
+        .playback_status
+        .as_deref()
+        .map(|value| value.eq_ignore_ascii_case("playing"))
+        .unwrap_or(false);
+    if !is_playing {
+        current.position_secs = previous.position_secs;
+        current.position_sampled_at_ms = Some(now_ms());
+        current.timeline_updated_at_ms = current.position_sampled_at_ms;
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn snap_qqmusic_new_track_to_zero(state: &ListenerState, current: &mut CurrentPlayingInfo) {
+    if current.source_platform.as_deref() != Some("qqmusic") {
+        return;
+    }
+
+    let is_playing = current
+        .playback_status
+        .as_deref()
+        .map(|value| value.eq_ignore_ascii_case("playing"))
+        .unwrap_or(false);
+    if !is_playing {
+        return;
+    }
+
+    let estimated_position = current.position_secs.unwrap_or(0);
+    let Some(previous) = state.last_nonempty_current.as_ref() else {
+        if estimated_position <= 4 {
+            current.position_secs = Some(0);
+            current.position_sampled_at_ms = Some(now_ms());
+            current.timeline_updated_at_ms = current.position_sampled_at_ms;
+        }
+        return;
+    };
+
+    if previous.source_platform.as_deref() != Some("qqmusic") {
+        return;
+    }
+
+    if !same_track_identity(previous, current) && estimated_position <= 6 {
+        current.position_secs = Some(0);
+        current.position_sampled_at_ms = Some(now_ms());
+        current.timeline_updated_at_ms = current.position_sampled_at_ms;
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1311,18 +1659,35 @@ fn merge_process_probe_into_current(base: &mut CurrentPlayingInfo, probe: &Curre
     if base.cover_path.is_none() && base.cover_data_url.is_none() {
         base.cover_data_url = probe.cover_data_url.clone();
     }
+    if base.duration_secs.is_none() {
+        base.duration_secs = probe.duration_secs;
+    }
+    if base.position_secs.is_none() {
+        base.position_secs = probe.position_secs;
+    }
+    if base.position_sampled_at_ms.is_none() {
+        base.position_sampled_at_ms = probe.position_sampled_at_ms;
+    }
+    if base.timeline_updated_at_ms.is_none() {
+        base.timeline_updated_at_ms = probe.timeline_updated_at_ms;
+    }
     if base.playback_status.is_none() {
         base.playback_status = probe.playback_status.clone();
     }
-    if base.source_platform.as_deref() != Some("netease")
-        && probe.source_platform.as_deref() == Some("netease")
+    if probe
+        .source_platform
+        .as_deref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        && (base.source_platform.as_deref() != probe.source_platform.as_deref()
+            && is_generic_source_platform(base.source_platform.as_deref()))
     {
-        base.source_platform = Some("netease".to_string());
+        base.source_platform = probe.source_platform.clone();
     }
     if base
         .source_app_id
         .as_deref()
-        .map(|v| v.trim().is_empty())
+        .map(|value| value.trim().is_empty() || is_browser_like_source_token(value))
         .unwrap_or(true)
     {
         base.source_app_id = probe.source_app_id.clone();
@@ -1342,8 +1707,8 @@ fn merge_process_probe_into_current(base: &mut CurrentPlayingInfo, probe: &Curre
 }
 
 #[cfg(target_os = "windows")]
-fn netease_track_runtime_key(current: &CurrentPlayingInfo) -> Option<String> {
-    if current.source_platform.as_deref() != Some("netease") {
+fn fallback_track_runtime_key(current: &CurrentPlayingInfo) -> Option<String> {
+    if current.source_platform.as_deref() != Some("netease") && current.source_platform.as_deref() != Some("qqmusic") {
         return None;
     }
     let artist = normalize_track_token(&current.artist);
@@ -1360,14 +1725,14 @@ fn netease_track_runtime_key(current: &CurrentPlayingInfo) -> Option<String> {
 }
 
 #[cfg(target_os = "windows")]
-fn apply_netease_virtual_position(state: &mut ListenerState, current: &mut CurrentPlayingInfo) {
-    let Some(track_key) = netease_track_runtime_key(current) else {
+fn apply_virtual_position_clock(state: &mut ListenerState, current: &mut CurrentPlayingInfo) {
+    let Some(track_key) = fallback_track_runtime_key(current) else {
         return;
     };
     let now = now_ms();
     let first_seen_ms = {
         let entry = state
-            .netease_track_first_seen_ms
+            .virtual_track_first_seen_ms
             .entry(track_key.clone())
             .or_insert(now);
         *entry
@@ -1381,7 +1746,7 @@ fn apply_netease_virtual_position(state: &mut ListenerState, current: &mut Curre
             .unwrap_or(real_pos);
         if music_debug_enabled() {
             let was_different_track = state
-                .netease_virtual_position
+                .virtual_position_clock
                 .as_ref()
                 .map(|v| v.track_key != track_key)
                 .unwrap_or(true);
@@ -1394,12 +1759,14 @@ fn apply_netease_virtual_position(state: &mut ListenerState, current: &mut Curre
                 );
             }
         }
-        state.netease_virtual_position = Some(NeteaseVirtualPosition {
+        state.virtual_position_clock = Some(VirtualPositionClock {
             track_key,
             anchor_at_ms: now,
             anchor_pos_secs: anchored_pos,
         });
         current.position_secs = Some(anchored_pos);
+        current.position_sampled_at_ms = Some(now);
+        current.timeline_updated_at_ms = Some(now);
         return;
     }
 
@@ -1409,7 +1776,7 @@ fn apply_netease_virtual_position(state: &mut ListenerState, current: &mut Curre
         .map(|v| v.eq_ignore_ascii_case("playing"))
         .unwrap_or(true);
 
-    if let Some(clock) = state.netease_virtual_position.as_mut() {
+    if let Some(clock) = state.virtual_position_clock.as_mut() {
         if clock.track_key == track_key {
             let elapsed_secs = if is_playing {
                 now.saturating_sub(clock.anchor_at_ms).max(0) / 1000
@@ -1421,6 +1788,8 @@ fn apply_netease_virtual_position(state: &mut ListenerState, current: &mut Curre
                 next_pos = next_pos.min(dur);
             }
             current.position_secs = Some(next_pos);
+            current.position_sampled_at_ms = Some(now);
+            current.timeline_updated_at_ms = Some(now);
             clock.anchor_at_ms = now;
             clock.anchor_pos_secs = next_pos;
             return;
@@ -1435,12 +1804,14 @@ fn apply_netease_virtual_position(state: &mut ListenerState, current: &mut Curre
     if let Some(dur) = duration_secs {
         start_pos = start_pos.min(dur);
     }
-    state.netease_virtual_position = Some(NeteaseVirtualPosition {
+    state.virtual_position_clock = Some(VirtualPositionClock {
         track_key,
         anchor_at_ms: now,
         anchor_pos_secs: start_pos,
     });
     current.position_secs = Some(start_pos);
+    current.position_sampled_at_ms = Some(now);
+    current.timeline_updated_at_ms = Some(now);
     if music_debug_enabled() {
         eprintln!(
             "[music-debug] netease virtual timeline started at {}s (seen_for={}s)",
@@ -1451,6 +1822,11 @@ fn apply_netease_virtual_position(state: &mut ListenerState, current: &mut Curre
 
 #[cfg(target_os = "windows")]
 fn same_current(a: &Option<CurrentPlayingInfo>, b: &Option<CurrentPlayingInfo>) -> bool {
+    same_track_snapshot(a, b) && same_timeline_snapshot(a, b)
+}
+
+#[cfg(target_os = "windows")]
+fn same_track_snapshot(a: &Option<CurrentPlayingInfo>, b: &Option<CurrentPlayingInfo>) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(lhs), Some(rhs)) => {
@@ -1458,13 +1834,54 @@ fn same_current(a: &Option<CurrentPlayingInfo>, b: &Option<CurrentPlayingInfo>) 
                 && lhs.title == rhs.title
                 && lhs.cover_path == rhs.cover_path
                 && lhs.cover_data_url == rhs.cover_data_url
-                && lhs.duration_secs == rhs.duration_secs
+                && lhs.source_app_id == rhs.source_app_id
+                && lhs.source_platform == rhs.source_platform
+        }
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn same_timeline_snapshot(a: &Option<CurrentPlayingInfo>, b: &Option<CurrentPlayingInfo>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(lhs), Some(rhs)) => {
+            lhs.duration_secs == rhs.duration_secs
                 && lhs.position_secs == rhs.position_secs
+                && lhs.position_sampled_at_ms == rhs.position_sampled_at_ms
+                && lhs.timeline_updated_at_ms == rhs.timeline_updated_at_ms
                 && lhs.playback_status == rhs.playback_status
                 && lhs.source_app_id == rhs.source_app_id
                 && lhs.source_platform == rhs.source_platform
         }
         _ => false,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn track_payload_from_current(current: &CurrentPlayingInfo) -> MusicTrackUpdatePayload {
+    MusicTrackUpdatePayload {
+        artist: current.artist.clone(),
+        title: current.title.clone(),
+        cover_path: current.cover_path.clone(),
+        cover_data_url: current.cover_data_url.clone(),
+        source_app_id: current.source_app_id.clone(),
+        source_platform: current.source_platform.clone(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn timeline_payload_from_current(current: &CurrentPlayingInfo) -> MusicTimelineUpdatePayload {
+    MusicTimelineUpdatePayload {
+        position_secs: current.position_secs.map(|value| value as f64),
+        duration_secs: current.duration_secs.map(|value| value as f64),
+        last_updated_at_ms: current
+            .timeline_updated_at_ms
+            .or(current.position_sampled_at_ms)
+            .map(|value| value as f64),
+        playback_status: current.playback_status.clone(),
+        source_app_id: current.source_app_id.clone(),
+        source_platform: current.source_platform.clone(),
     }
 }
 
@@ -1553,17 +1970,61 @@ fn update_current_and_emit(
     current_state: &Arc<Mutex<Option<CurrentPlayingInfo>>>,
     next: Option<CurrentPlayingInfo>,
 ) {
-    let mut changed = true;
+    let previous = current_state.lock().ok().and_then(|guard| guard.clone());
+    let track_changed = !same_track_snapshot(&previous, &next);
+    let timeline_changed = !same_timeline_snapshot(&previous, &next);
+    let changed = !same_current(&previous, &next);
     if let Ok(mut guard) = current_state.lock() {
-        if same_current(&guard, &next) {
-            changed = false;
-        } else {
-            *guard = next;
+        if changed {
+            *guard = next.clone();
         }
+    }
+    if track_changed {
+        let _ = app.emit(
+            EVENT_MUSIC_TRACK_UPDATE,
+            next.as_ref().map(track_payload_from_current),
+        );
+    }
+    if timeline_changed {
+        let _ = app.emit(
+            EVENT_MUSIC_TIMELINE_UPDATE,
+            next.as_ref().map(timeline_payload_from_current),
+        );
     }
     if changed {
         let _ = app.emit(EVENT_MUSIC_CURRENT_CHANGED, ());
     }
+}
+
+#[cfg(target_os = "windows")]
+async fn run_polling_music_listener(
+    app: tauri::AppHandle,
+    stop: Arc<AtomicBool>,
+    current_state: Arc<Mutex<Option<CurrentPlayingInfo>>>,
+) {
+    while !stop.load(Ordering::Relaxed) {
+        let next_current = query_current_on_demand().await;
+        let loop_tick_ms = next_current
+            .as_ref()
+            .map(|current| {
+                if has_track_text(current)
+                    && current
+                        .playback_status
+                        .as_deref()
+                        .map(|value| value.eq_ignore_ascii_case("playing"))
+                        .unwrap_or(false)
+                {
+                    LISTENER_ACTIVE_TICK_MS
+                } else {
+                    LISTENER_IDLE_TICK_MS
+                }
+            })
+            .unwrap_or(LISTENER_IDLE_TICK_MS);
+        update_current_and_emit(&app, &current_state, next_current);
+        tokio::time::sleep(Duration::from_millis(loop_tick_ms)).await;
+    }
+
+    update_current_and_emit(&app, &current_state, None);
 }
 
 #[cfg(target_os = "windows")]
@@ -1572,10 +2033,28 @@ pub async fn run_gsmtc_listener(
     stop: Arc<AtomicBool>,
     current_state: Arc<Mutex<Option<CurrentPlayingInfo>>>,
 ) {
-    let mut manager_rx = match gsmtc::SessionManager::create().await {
-        Ok(rx) => rx,
-        Err(e) => {
+    ensure_windows_media_runtime();
+    if music_debug_enabled() {
+        eprintln!("[music-debug] creating GSMTC session manager");
+    }
+    let mut manager_rx = match tokio::time::timeout(
+        Duration::from_millis(GSMTC_CREATE_TIMEOUT_MS),
+        gsmtc::SessionManager::create(),
+    )
+    .await
+    {
+        Ok(Ok(rx)) => rx,
+        Ok(Err(e)) => {
             eprintln!("[music] failed to create GSMTC session manager: {e}");
+            run_polling_music_listener(app, stop, current_state).await;
+            return;
+        }
+        Err(_) => {
+            eprintln!(
+                "[music] creating GSMTC session manager timed out after {}ms; falling back to polling mode",
+                GSMTC_CREATE_TIMEOUT_MS
+            );
+            run_polling_music_listener(app, stop, current_state).await;
             return;
         }
     };
@@ -1584,6 +2063,14 @@ pub async fn run_gsmtc_listener(
         tokio::sync::mpsc::unbounded_channel::<(usize, SessionUpdateEvent)>();
     let mut state = ListenerState::default();
     let _ = crate::db::prune_expired_lyrics_cache(now_ms());
+    let initial_current = query_current_once_sync();
+    if let Some(current) = initial_current.as_ref() {
+        if has_track_text(current) {
+            state.last_nonempty_current = Some(current.clone());
+            state.last_nonempty_current_at_ms = now_ms();
+        }
+    }
+    update_current_and_emit(&app, &current_state, initial_current);
 
     while !stop.load(Ordering::Relaxed) {
         let loop_tick_ms = if state.sessions.is_empty() {
@@ -1666,8 +2153,8 @@ pub async fn run_gsmtc_listener(
             next_current = None;
             state.last_nonempty_current = None;
             state.last_nonempty_current_at_ms = 0;
-            state.netease_virtual_position = None;
-            state.netease_track_first_seen_ms.clear();
+            state.virtual_position_clock = None;
+            state.virtual_track_first_seen_ms.clear();
         }
 
         let should_fallback = next_current
@@ -1682,7 +2169,13 @@ pub async fn run_gsmtc_listener(
                 >= WINDOWS_API_RETRY_INTERVAL_MS;
             if !windows_api_blocked && windows_api_ready {
                 state.last_windows_api_probe_at_ms = now;
-                if let Some(fallback) = query_current_via_windows_api() {
+                if let Some(mut fallback) = query_current_via_windows_api() {
+                    if let Some(old) = next_current.as_ref() {
+                        if old.title == fallback.title && old.artist == fallback.artist {
+                            fallback.cover_path = old.cover_path.clone();
+                            fallback.cover_data_url = old.cover_data_url.clone();
+                        }
+                    }
                     if music_debug_enabled() {
                         eprintln!(
                             "[music-debug] fallback applied source='{}' platform='{}' title='{}' artist='{}'",
@@ -1715,10 +2208,15 @@ pub async fn run_gsmtc_listener(
                 }
             }
 
+            let is_qqmusic = next_current
+                .as_ref()
+                .and_then(|v| v.source_platform.as_deref())
+                == Some("qqmusic");
+
             let need_process_probe = next_current
                 .as_ref()
                 .map(|v| !has_track_text(v))
-                .unwrap_or(true);
+                .unwrap_or(true) || is_qqmusic;
             if need_process_probe {
                 let now = now_ms();
                 let process_probe_blocked = now < state.process_probe_block_until_ms;
@@ -1782,8 +2280,8 @@ pub async fn run_gsmtc_listener(
             next_current = None;
             state.last_nonempty_current = None;
             state.last_nonempty_current_at_ms = 0;
-            state.netease_virtual_position = None;
-            state.netease_track_first_seen_ms.clear();
+            state.virtual_position_clock = None;
+            state.virtual_track_first_seen_ms.clear();
         }
 
         if let Some(current) = next_current.as_mut() {
@@ -1815,14 +2313,18 @@ pub async fn run_gsmtc_listener(
                     current.artist.as_str(),
                     current.title.as_str(),
                     current.duration_secs,
-                );
+                )
+                .or_else(crate::music_qqmusic_cache::find_recent_cover_data_url);
             }
 
-            if current.source_platform.as_deref() == Some("netease") {
-                apply_netease_virtual_position(&mut state, current);
+            stabilize_qqmusic_from_previous(&state, current);
+            snap_qqmusic_new_track_to_zero(&state, current);
+
+            if current.source_platform.as_deref() == Some("netease") || current.source_platform.as_deref() == Some("qqmusic") {
+                apply_virtual_position_clock(&mut state, current);
             } else {
-                state.netease_virtual_position = None;
-                state.netease_track_first_seen_ms.clear();
+                state.virtual_position_clock = None;
+                state.virtual_track_first_seen_ms.clear();
             }
 
             if let Err(e) = maybe_record_play_event(&mut state, current) {
@@ -1836,7 +2338,8 @@ pub async fn run_gsmtc_listener(
                 state.last_nonempty_current = Some(current.clone());
                 state.last_nonempty_current_at_ms = now;
             }
-        } else if state.last_nonempty_current_at_ms > 0
+        } else if should_hold_last_snapshot(state.last_nonempty_current.as_ref())
+            && state.last_nonempty_current_at_ms > 0
             && now.saturating_sub(state.last_nonempty_current_at_ms) <= CURRENT_INFO_HOLD_MS
         {
             next_current = state.last_nonempty_current.clone();
@@ -1870,4 +2373,71 @@ pub async fn run_gsmtc_listener(
     }
 
     update_current_and_emit(&app, &current_state, None);
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::{stabilize_qqmusic_from_previous, ListenerState};
+    use crate::CurrentPlayingInfo;
+
+    fn build_current(
+        title: &str,
+        status: Option<&str>,
+        position_secs: Option<u64>,
+    ) -> CurrentPlayingInfo {
+        CurrentPlayingInfo {
+            artist: "Max Oazo".to_string(),
+            title: title.to_string(),
+            cover_path: None,
+            cover_data_url: None,
+            duration_secs: Some(211),
+            position_secs,
+            position_sampled_at_ms: Some(1),
+            timeline_updated_at_ms: Some(1),
+            playback_status: status.map(str::to_string),
+            source_app_id: Some("QQMusic".to_string()),
+            source_platform: Some("qqmusic".to_string()),
+        }
+    }
+
+    #[test]
+    fn stabilize_qqmusic_keeps_previous_paused_position() {
+        let mut state = ListenerState::default();
+        state.last_nonempty_current = Some(build_current("Close to Me", Some("Paused"), Some(123)));
+
+        let mut current = build_current("Close to Me", Some("Paused"), None);
+        stabilize_qqmusic_from_previous(&state, &mut current);
+
+        assert_eq!(current.playback_status.as_deref(), Some("Paused"));
+        assert_eq!(current.position_secs, Some(123));
+    }
+
+    #[test]
+    fn stabilize_qqmusic_inherits_missing_status_from_previous() {
+        let mut state = ListenerState::default();
+        state.last_nonempty_current = Some(build_current("Close to Me", Some("Paused"), Some(88)));
+
+        let mut current = build_current("Close to Me", None, None);
+        stabilize_qqmusic_from_previous(&state, &mut current);
+
+        assert_eq!(current.playback_status.as_deref(), Some("Paused"));
+        assert_eq!(current.position_secs, Some(88));
+    }
+
+    #[test]
+    fn qqmusic_new_track_snaps_small_estimate_to_zero() {
+        let mut state = ListenerState::default();
+        state.last_nonempty_current = Some(build_current("Older Song", Some("Playing"), Some(188)));
+
+        let mut current = build_current("New Song", Some("Playing"), Some(3));
+        super::snap_qqmusic_new_track_to_zero(&state, &mut current);
+
+        assert_eq!(current.position_secs, Some(0));
+    }
+
+    #[test]
+    fn qqmusic_snapshot_is_not_held_when_probe_goes_empty() {
+        let previous = build_current("Close to Me", Some("Playing"), Some(12));
+        assert!(!super::should_hold_last_snapshot(Some(&previous)));
+    }
 }

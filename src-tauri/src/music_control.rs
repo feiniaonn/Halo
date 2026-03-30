@@ -1,8 +1,14 @@
 use crate::db::PlayRecord;
 #[cfg(target_os = "windows")]
+use crate::music_media_key::{send_media_key_command, supports_media_key_fallback};
+#[cfg(target_os = "windows")]
+use std::cell::Cell;
+#[cfg(target_os = "windows")]
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "windows")]
 use tauri::Manager;
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct MusicControlSource {
@@ -55,6 +61,9 @@ struct MusicControlOptions {
     retry_count: Option<u8>,
 }
 
+#[cfg(target_os = "windows")]
+const CONTROL_QUERY_TIMEOUT_MS: u64 = 120;
+
 #[cfg(not(target_os = "windows"))]
 #[tauri::command]
 pub fn music_get_control_state() -> MusicControlState {
@@ -104,6 +113,30 @@ struct SessionSnapshot {
 }
 
 #[cfg(target_os = "windows")]
+thread_local! {
+    static WINDOWS_MEDIA_RUNTIME_READY: Cell<bool> = const { Cell::new(false) };
+}
+#[cfg(target_os = "windows")]
+const RPC_E_CHANGED_MODE_HRESULT: windows::core::HRESULT =
+    windows::core::HRESULT(0x80010106u32 as i32);
+
+#[cfg(target_os = "windows")]
+fn ensure_windows_media_runtime() {
+    WINDOWS_MEDIA_RUNTIME_READY.with(|ready| {
+        if ready.get() {
+            return;
+        }
+
+        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        if hr.is_err() && hr != RPC_E_CHANGED_MODE_HRESULT {
+            eprintln!("[music] windows media runtime init failed: {:?}", hr);
+        }
+
+        ready.set(true);
+    });
+}
+
+#[cfg(target_os = "windows")]
 fn source_kind_from_id(source_id: &str) -> String {
     let lower = source_id.to_ascii_lowercase();
     if lower.contains("chrome")
@@ -119,29 +152,7 @@ fn source_kind_from_id(source_id: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn is_browser_like_source_id(source_id: &str) -> bool {
-    let lower = source_id.trim().to_ascii_lowercase();
-    if lower.is_empty() {
-        return false;
-    }
-
-    [
-        "chrome",
-        "msedge",
-        "msedgewebview",
-        "webview",
-        "firefox",
-        "opera",
-        "brave",
-        "iexplore",
-        "browser",
-    ]
-    .iter()
-    .any(|token| lower.contains(token))
-}
-
-#[cfg(target_os = "windows")]
-fn is_halo_source_id(source_id: &str) -> bool {
+fn should_ignore_music_control_source(source_id: &str) -> bool {
     let lower = source_id.trim().to_ascii_lowercase();
     if lower.is_empty() {
         return false;
@@ -155,8 +166,21 @@ fn is_halo_source_id(source_id: &str) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn should_ignore_music_control_source(source_id: &str) -> bool {
-    is_browser_like_source_id(source_id) || is_halo_source_id(source_id)
+fn target_supports_media_keys(target: &MusicControlTarget) -> bool {
+    supports_media_key_fallback(
+        Some(target.source_id.as_str()),
+        Some(target.source_kind.as_str()),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn with_media_key_capabilities(mut target: MusicControlTarget) -> MusicControlTarget {
+    if target_supports_media_keys(&target) {
+        target.supports_previous = Some(true);
+        target.supports_play_pause = Some(true);
+        target.supports_next = Some(true);
+    }
+    target
 }
 
 #[cfg(target_os = "windows")]
@@ -220,16 +244,18 @@ fn fallback_target_from_current(
 
     let source_id = normalize_source_id(source_seed);
     let source_kind = source_kind_from_id(source_seed);
+    let supports_media_keys =
+        supports_media_key_fallback(Some(source_seed), snapshot.source_platform.as_deref());
 
-    Some(MusicControlTarget {
+    Some(with_media_key_capabilities(MusicControlTarget {
         source_id,
         source_name,
         source_kind,
         playback_status: snapshot.playback_status,
-        supports_previous: Some(false),
-        supports_play_pause: Some(false),
-        supports_next: Some(false),
-    })
+        supports_previous: Some(supports_media_keys),
+        supports_play_pause: Some(supports_media_keys),
+        supports_next: Some(supports_media_keys),
+    }))
 }
 
 #[cfg(target_os = "windows")]
@@ -253,6 +279,7 @@ fn map_status(value: GlobalSystemMediaTransportControlsSessionPlaybackStatus) ->
 
 #[cfg(target_os = "windows")]
 fn query_sessions_sync() -> Result<(Vec<SessionSnapshot>, Option<String>), String> {
+    ensure_windows_media_runtime();
     let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
         .map_err(|e| e.to_string())?
         .get()
@@ -293,7 +320,7 @@ fn query_sessions_sync() -> Result<(Vec<SessionSnapshot>, Option<String>), Strin
         out.push(SessionSnapshot {
             session,
             source_norm: source_norm.clone(),
-            target: MusicControlTarget {
+            target: with_media_key_capabilities(MusicControlTarget {
                 source_id: source_norm,
                 source_name,
                 source_kind,
@@ -301,7 +328,7 @@ fn query_sessions_sync() -> Result<(Vec<SessionSnapshot>, Option<String>), Strin
                 supports_previous: Some(can_prev),
                 supports_play_pause: Some(can_play_pause),
                 supports_next: Some(can_next),
-            },
+            }),
             can_prev,
             can_play_pause,
             can_next,
@@ -461,23 +488,62 @@ fn build_state_sync(fallback_target: Option<MusicControlTarget>) -> MusicControl
 }
 
 #[cfg(target_os = "windows")]
+fn fallback_sources_from_target(
+    fallback_target: Option<MusicControlTarget>,
+) -> Vec<MusicControlSource> {
+    fallback_target
+        .map(|target| MusicControlSource {
+            source_id: target.source_id,
+            source_name: target.source_name,
+            source_kind: target.source_kind,
+            can_prev: target.supports_previous.unwrap_or(false),
+            can_play_pause: target.supports_play_pause.unwrap_or(false),
+            can_next: target.supports_next.unwrap_or(false),
+        })
+        .into_iter()
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn fallback_reason_for_target(fallback_target: Option<&MusicControlTarget>) -> Option<String> {
+    if fallback_target.map(target_supports_media_keys).unwrap_or(false) {
+        None
+    } else {
+        Some("query_timeout".to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
 #[tauri::command]
-pub async fn music_get_control_state(
-    app: tauri::AppHandle,
-) -> Result<MusicControlState, String> {
+pub async fn music_get_control_state(app: tauri::AppHandle) -> Result<MusicControlState, String> {
     let fallback_target = {
         let current = app.state::<Arc<Mutex<Option<crate::CurrentPlayingInfo>>>>();
         fallback_target_from_current(current.inner())
     };
-    Ok(
-        tauri::async_runtime::spawn_blocking(move || build_state_sync(fallback_target))
-            .await
-            .unwrap_or_else(|_| MusicControlState {
-                target: None,
-                sources_count: 0,
-                reason: Some("music_control_state_join_failed".to_string()),
-            }),
+    let fallback_count = usize::from(fallback_target.is_some());
+    let task = tauri::async_runtime::spawn_blocking({
+        let fallback_target = fallback_target.clone();
+        move || build_state_sync(fallback_target)
+    });
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(CONTROL_QUERY_TIMEOUT_MS),
+        task,
     )
+    .await
+    {
+        Ok(Ok(state)) => Ok(state),
+        Ok(Err(_)) => Ok(MusicControlState {
+            target: fallback_target.clone(),
+            sources_count: fallback_count,
+            reason: fallback_reason_for_target(fallback_target.as_ref())
+                .or_else(|| Some("music_control_state_join_failed".to_string())),
+        }),
+        Err(_) => Ok(MusicControlState {
+            target: fallback_target.clone(),
+            sources_count: fallback_count,
+            reason: fallback_reason_for_target(fallback_target.as_ref()),
+        }),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -489,21 +555,12 @@ pub async fn music_get_control_sources(
         let current = app.state::<Arc<Mutex<Option<crate::CurrentPlayingInfo>>>>();
         fallback_target_from_current(current.inner())
     };
-    Ok(
-        tauri::async_runtime::spawn_blocking(move || {
+    let task = tauri::async_runtime::spawn_blocking({
+        let fallback_target = fallback_target.clone();
+        move || {
             let result = query_sessions_sync();
             let Ok((sessions, _)) = result else {
-                return fallback_target
-                    .map(|target| MusicControlSource {
-                        source_id: target.source_id,
-                        source_name: target.source_name,
-                        source_kind: target.source_kind,
-                        can_prev: false,
-                        can_play_pause: false,
-                        can_next: false,
-                    })
-                    .into_iter()
-                    .collect::<Vec<_>>();
+                return fallback_sources_from_target(fallback_target);
             };
 
             let mut out = sessions
@@ -512,30 +569,28 @@ pub async fn music_get_control_sources(
                     source_id: v.target.source_id,
                     source_name: v.target.source_name,
                     source_kind: v.target.source_kind,
-                    can_prev: v.can_prev,
-                    can_play_pause: v.can_play_pause,
-                    can_next: v.can_next,
+                    can_prev: v.target.supports_previous.unwrap_or(v.can_prev),
+                    can_play_pause: v.target.supports_play_pause.unwrap_or(v.can_play_pause),
+                    can_next: v.target.supports_next.unwrap_or(v.can_next),
                 })
                 .collect::<Vec<_>>();
 
             if out.is_empty() {
-                if let Some(target) = fallback_target {
-                    out.push(MusicControlSource {
-                        source_id: target.source_id,
-                        source_name: target.source_name,
-                        source_kind: target.source_kind,
-                        can_prev: false,
-                        can_play_pause: false,
-                        can_next: false,
-                    });
-                }
+                out = fallback_sources_from_target(fallback_target);
             }
 
             out
-        })
-        .await
-        .unwrap_or_default(),
+        }
+    });
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(CONTROL_QUERY_TIMEOUT_MS),
+        task,
     )
+    .await
+    {
+        Ok(Ok(sources)) => Ok(sources),
+        Ok(Err(_)) | Err(_) => Ok(fallback_sources_from_target(fallback_target)),
+    }
 }
 
 #[tauri::command]
@@ -549,24 +604,12 @@ pub fn music_get_daily_summary() -> MusicDailySummary {
 }
 
 #[cfg(target_os = "windows")]
-#[tauri::command]
-pub fn music_control(
+fn music_control_sync(
     command: String,
-    options: Option<serde_json::Value>,
-    current: tauri::State<'_, Arc<Mutex<Option<crate::CurrentPlayingInfo>>>>,
+    parsed_options: MusicControlOptions,
+    fallback_target: Option<MusicControlTarget>,
 ) -> Result<MusicControlResult, String> {
     let command_norm = command.trim().to_ascii_lowercase();
-    if command_norm == "refresh" {
-        let state = build_state_sync(fallback_target_from_current(current.inner()));
-        return Ok(MusicControlResult {
-            ok: true,
-            message: "refresh_ok".to_string(),
-            command,
-            target: state.target,
-            reason: state.reason,
-            retried: 0,
-        });
-    }
     if !matches!(command_norm.as_str(), "previous" | "play_pause" | "next") {
         return Ok(MusicControlResult {
             ok: false,
@@ -578,11 +621,55 @@ pub fn music_control(
         });
     }
 
-    let parsed_options = parse_options(options);
     let (sessions, current_source) = query_sessions_sync()?;
-    let fallback_target = fallback_target_from_current(current.inner());
     let (target, reason) = select_target(&sessions, current_source.as_deref(), &parsed_options);
+    let fallback_media_keys = fallback_target
+        .as_ref()
+        .map(target_supports_media_keys)
+        .unwrap_or(false);
+        
+    if let Some(t) = target.as_ref() {
+        let sid = t.target.source_id.to_lowercase();
+        if sid.contains("qqmusic.exe") || sid.contains("cloudmusic.exe") {
+            if send_media_key_command(&command_norm).unwrap_or(false) {
+                return Ok(MusicControlResult {
+                    ok: true,
+                    message: "command sent via media key forcibly for buggy platform".to_string(),
+                    command,
+                    target: Some(t.target.clone()),
+                    reason: Some("forced_media_key".to_string()),
+                    retried: 0,
+                });
+            }
+        }
+    }
+        
+    if let Some(t) = target.as_ref() {
+        let sid = t.target.source_id.to_lowercase();
+        if sid.contains("qqmusic.exe") || sid.contains("cloudmusic.exe") {
+            if send_media_key_command(&command_norm).unwrap_or(false) {
+                return Ok(MusicControlResult {
+                    ok: true,
+                    message: "command sent via media key forcibly for buggy platform".to_string(),
+                    command,
+                    target: Some(t.target.clone()),
+                    reason: Some("forced_media_key".to_string()),
+                    retried: 0,
+                });
+            }
+        }
+    }
     let Some(target) = target else {
+        if fallback_media_keys && send_media_key_command(&command_norm)? {
+            return Ok(MusicControlResult {
+                ok: true,
+                message: "command sent via media key".to_string(),
+                command,
+                target: fallback_target,
+                reason: Some("media_key_fallback".to_string()),
+                retried: 0,
+            });
+        }
         return Ok(MusicControlResult {
             ok: false,
             message: "no target session".to_string(),
@@ -600,6 +687,16 @@ pub fn music_control(
         _ => false,
     };
     if !supported {
+        if fallback_media_keys && send_media_key_command(&command_norm)? {
+            return Ok(MusicControlResult {
+                ok: true,
+                message: "command sent via media key".to_string(),
+                command,
+                target: fallback_target.or_else(|| Some(target.target.clone())),
+                reason: Some("media_key_fallback".to_string()),
+                retried: 0,
+            });
+        }
         return Ok(MusicControlResult {
             ok: false,
             message: "command not supported by selected session".to_string(),
@@ -646,12 +743,171 @@ pub fn music_control(
         }
     }
 
+    let selected_target = target.target.clone();
+    if fallback_media_keys && send_media_key_command(&command_norm)? {
+        return Ok(MusicControlResult {
+            ok: true,
+            message: "command sent via media key".to_string(),
+            command,
+            target: fallback_target.or_else(|| Some(selected_target)),
+            reason: Some("media_key_fallback".to_string()),
+            retried,
+        });
+    }
+
     Ok(MusicControlResult {
         ok: false,
         message: "command failed".to_string(),
         command,
-        target: Some(target.target),
+        target: Some(selected_target),
         reason: last_err.or_else(|| Some("unknown_error".to_string())),
         retried,
     })
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub async fn music_control(
+    command: String,
+    options: Option<serde_json::Value>,
+    current: tauri::State<'_, Arc<Mutex<Option<crate::CurrentPlayingInfo>>>>,
+) -> Result<MusicControlResult, String> {
+    let command_norm = command.trim().to_ascii_lowercase();
+    let parsed_options = parse_options(options);
+    let fallback_target = fallback_target_from_current(current.inner());
+    let fallback_media_keys = fallback_target
+        .as_ref()
+        .map(target_supports_media_keys)
+        .unwrap_or(false);
+
+    if command_norm == "refresh" {
+        let fallback_count = usize::from(fallback_target.is_some());
+        let task = tauri::async_runtime::spawn_blocking({
+            let fallback_target = fallback_target.clone();
+            move || build_state_sync(fallback_target)
+        });
+        let state = match tokio::time::timeout(
+            std::time::Duration::from_millis(CONTROL_QUERY_TIMEOUT_MS),
+            task,
+        )
+        .await
+        {
+            Ok(Ok(state)) => state,
+            Ok(Err(_)) => MusicControlState {
+                target: fallback_target.clone(),
+                sources_count: fallback_count,
+                reason: Some("music_control_state_join_failed".to_string()),
+            },
+            Err(_) => MusicControlState {
+                target: fallback_target.clone(),
+                sources_count: fallback_count,
+                reason: Some("query_timeout".to_string()),
+            },
+        };
+        return Ok(MusicControlResult {
+            ok: true,
+            message: "refresh_ok".to_string(),
+            command,
+            target: state.target,
+            reason: state.reason,
+            retried: 0,
+        });
+    }
+
+    if !matches!(command_norm.as_str(), "previous" | "play_pause" | "next") {
+        return Ok(MusicControlResult {
+            ok: false,
+            message: "unsupported command".to_string(),
+            command,
+            target: None,
+            reason: Some("unsupported_command".to_string()),
+            retried: 0,
+        });
+    }
+
+    if fallback_media_keys && parsed_options.target_source_id.as_deref().is_none() {
+        let sent = tauri::async_runtime::spawn_blocking({
+            let command_norm = command_norm.clone();
+            move || send_media_key_command(&command_norm)
+        })
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(false);
+
+        if sent {
+            return Ok(MusicControlResult {
+                ok: true,
+                message: "command sent via media key".to_string(),
+                command,
+                target: fallback_target,
+                reason: None,
+                retried: 0,
+            });
+        }
+    }
+
+    let task = tauri::async_runtime::spawn_blocking({
+        let command = command.clone();
+        let parsed_options = parsed_options.clone();
+        let fallback_target = fallback_target.clone();
+        move || music_control_sync(command, parsed_options, fallback_target)
+    });
+
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(CONTROL_QUERY_TIMEOUT_MS),
+        task,
+    )
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) | Err(_) => {
+            if fallback_media_keys && send_media_key_command(&command_norm)? {
+                Ok(MusicControlResult {
+                    ok: true,
+                    message: "command sent via media key".to_string(),
+                    command,
+                    target: fallback_target,
+                    reason: Some("media_key_fallback".to_string()),
+                    retried: 0,
+                })
+            } else {
+                Ok(MusicControlResult {
+                    ok: false,
+                    message: "command timed out".to_string(),
+                    command,
+                    target: fallback_target,
+                    reason: Some("query_timeout".to_string()),
+                    retried: 0,
+                })
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fallback_reason_for_target, MusicControlTarget};
+
+    #[test]
+    fn hides_timeout_reason_for_media_key_fallback_targets() {
+        let target = MusicControlTarget {
+            source_id: "qqmusic.exe".to_string(),
+            source_name: "QQMusic".to_string(),
+            source_kind: "native".to_string(),
+            playback_status: Some("Playing".to_string()),
+            supports_previous: Some(true),
+            supports_play_pause: Some(true),
+            supports_next: Some(true),
+        };
+        assert_eq!(fallback_reason_for_target(Some(&target)), None);
+    }
+
+    #[test]
+    fn keeps_timeout_reason_when_no_fallback_target_exists() {
+        assert_eq!(
+            fallback_reason_for_target(None),
+            Some("query_timeout".to_string())
+        );
+    }
 }

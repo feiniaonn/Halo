@@ -286,8 +286,8 @@ pub async fn probe_stream_kind(
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_hls_blocked_page_reason, detect_hls_manifest_anomaly,
-        detect_kind_from_content_type, is_audio_only_content_type,
+        detect_hls_blocked_page_reason, detect_hls_manifest_anomaly, detect_kind_from_content_type,
+        is_audio_only_content_type,
     };
 
     #[test]

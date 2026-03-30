@@ -424,10 +424,7 @@ pub fn build_compat_plan(
     helper_ports: &[u16],
 ) -> CompatPlan {
     let mut packs = BTreeSet::new();
-    let fallback_tokens = vec![
-        site_key.trim().to_string(),
-        api_class.trim().to_string(),
-    ];
+    let fallback_tokens = vec![site_key.trim().to_string(), api_class.trim().to_string()];
 
     if let Some(profile) = site_profile {
         if profile.needs_context_shim {
@@ -548,8 +545,8 @@ pub fn augment_site_profile(
 #[cfg(test)]
 mod tests {
     use super::{
-        artifact_needs_bridge_foundation, class_name_matches_amns_family, detect_helper_ports,
-        derive_fallback_pack_ids_from_tokens,
+        artifact_needs_bridge_foundation, class_name_matches_amns_family,
+        derive_fallback_pack_ids_from_tokens, detect_helper_ports,
     };
     use crate::spider_cmds_runtime::{
         SpiderArtifactAnalysis, SpiderArtifactKind, SpiderExecutionTarget,

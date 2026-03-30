@@ -10,6 +10,13 @@ use std::{
 const QQMUSIC_COVER_RETRY_COOLDOWN_MS: i64 = 10_000;
 const QQMUSIC_COVER_MATCH_WINDOW_MS: i128 = 20_000;
 const QQMUSIC_COVER_CACHE_MAX: usize = 48;
+const QQMUSIC_RECENT_PICTURE_WINDOW_MS: i128 = 15 * 60 * 1000;
+
+#[derive(Clone)]
+struct MatchedLyricCache {
+    modified_at: SystemTime,
+    duration_secs: Option<u64>,
+}
 
 pub fn find_cover_data_url(
     artist: &str,
@@ -60,17 +67,44 @@ fn find_cover_data_url_uncached(
     expected_duration_secs: Option<u64>,
 ) -> Option<String> {
     let anchor_modified =
-        find_best_matching_lyric_modified_at(artist, title, expected_duration_secs)?;
+        find_best_matching_lyric_cache(artist, title, expected_duration_secs)?.modified_at;
     let picture = find_nearest_picture(anchor_modified)?;
     image_file_to_data_url(&picture)
 }
 
-fn find_best_matching_lyric_modified_at(
+pub fn find_duration_secs(
     artist: &str,
     title: &str,
     expected_duration_secs: Option<u64>,
-) -> Option<SystemTime> {
-    let mut best: Option<(f64, SystemTime)> = None;
+) -> Option<u64> {
+    find_best_matching_lyric_cache(artist, title, expected_duration_secs)?.duration_secs
+}
+
+pub fn find_track_anchor_ms(
+    artist: &str,
+    title: &str,
+    expected_duration_secs: Option<u64>,
+) -> Option<i64> {
+    let matched = find_best_matching_lyric_cache(artist, title, expected_duration_secs)?;
+    Some(system_time_to_unix_ms(matched.modified_at))
+}
+
+pub fn find_recent_cover_data_url() -> Option<String> {
+    let (_, picture) = find_latest_picture(QQMUSIC_RECENT_PICTURE_WINDOW_MS)?;
+    image_file_to_data_url(&picture)
+}
+
+pub fn find_recent_picture_anchor_ms() -> Option<i64> {
+    let (modified_at, _) = find_latest_picture(QQMUSIC_RECENT_PICTURE_WINDOW_MS)?;
+    Some(system_time_to_unix_ms(modified_at))
+}
+
+fn find_best_matching_lyric_cache(
+    artist: &str,
+    title: &str,
+    expected_duration_secs: Option<u64>,
+) -> Option<MatchedLyricCache> {
+    let mut best: Option<(f64, MatchedLyricCache)> = None;
 
     for directory in qqmusic_lyric_cache_dirs() {
         let Ok(entries) = fs::read_dir(directory) else {
@@ -112,20 +146,25 @@ fn find_best_matching_lyric_modified_at(
                 &cache_title,
                 duration_secs.map(|value| value.saturating_mul(1000)),
             );
+            let matched = MatchedLyricCache {
+                modified_at,
+                duration_secs,
+            };
 
             match &best {
-                Some((best_score, best_modified)) => {
-                    if score > *best_score || (score == *best_score && modified_at > *best_modified)
+                Some((best_score, best_match)) => {
+                    if score > *best_score
+                        || (score == *best_score && modified_at > best_match.modified_at)
                     {
-                        best = Some((score, modified_at));
+                        best = Some((score, matched));
                     }
                 }
-                None => best = Some((score, modified_at)),
+                None => best = Some((score, matched)),
             }
         }
     }
 
-    best.map(|(_, modified_at)| modified_at)
+    best.map(|(_, matched)| matched)
 }
 
 fn find_nearest_picture(anchor_modified: SystemTime) -> Option<PathBuf> {
@@ -171,6 +210,40 @@ fn find_nearest_picture(anchor_modified: SystemTime) -> Option<PathBuf> {
     }
 
     best.map(|(_, _, path)| path)
+}
+
+fn find_latest_picture(max_age_ms: i128) -> Option<(SystemTime, PathBuf)> {
+    let now = SystemTime::now();
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+
+    for directory in qqmusic_picture_cache_dirs() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !is_supported_image(&path) {
+                continue;
+            }
+
+            let modified_at = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let age_ms = system_time_delta_ms(now, modified_at);
+            if age_ms > max_age_ms {
+                continue;
+            }
+
+            match &best {
+                Some((best_modified_at, _)) if *best_modified_at >= modified_at => {}
+                _ => best = Some((modified_at, path)),
+            }
+        }
+    }
+
+    best
 }
 
 fn image_file_to_data_url(path: &Path) -> Option<String> {
@@ -313,6 +386,13 @@ fn system_time_delta_ms(lhs: SystemTime, rhs: SystemTime) -> i128 {
     (lhs_ms - rhs_ms).abs()
 }
 
+fn system_time_to_unix_ms(value: SystemTime) -> i64 {
+    value
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
 fn positive_cover_cache() -> &'static Mutex<HashMap<String, String>> {
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -325,7 +405,7 @@ fn negative_probe_cache() -> &'static Mutex<HashMap<String, i64>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_key, parse_primary_lyric_cache_file_name};
+    use super::{cache_key, find_duration_secs, parse_primary_lyric_cache_file_name};
     use std::path::Path;
 
     #[test]
@@ -344,5 +424,14 @@ mod tests {
     fn builds_cover_cache_key() {
         let key = cache_key("一只白羊", "我不怕", Some(179)).expect("should build cache key");
         assert_eq!(key, "一只白羊::我不怕::179");
+    }
+    #[test]
+    fn finds_duration_from_existing_local_cache_when_available() {
+        let duration = find_duration_secs("Mariette", "A Million Years", None);
+        if duration.is_none() {
+            return;
+        }
+
+        assert_eq!(duration, Some(185));
     }
 }
