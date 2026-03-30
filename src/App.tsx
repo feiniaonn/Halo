@@ -1,9 +1,9 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { motion, useReducedMotion } from "framer-motion";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { useIslandSizes } from "@/hooks/useIslandSizes";
-import { applyCurrentWindowRect } from "@/lib/windowGeometry";
 import { resolveMiniIslandLayout, resolveMiniWindowLogicalSize } from "@/modules/island/layout";
 import { HomePage as HomePageStatic } from "@/pages/HomePage";
 import { MediaPage as MediaPageStatic } from "@/pages/MediaPage";
@@ -12,7 +12,7 @@ import { MusicPage as MusicPageStatic } from "@/pages/MusicPage";
 import { SettingsPage as SettingsPageStatic } from "@/pages/SettingsPage";
 import { IslandPage as IslandPageStatic } from "@/pages/IslandPage";
 import { listen } from "@tauri-apps/api/event";
-import { convertFileSrc, isTauri as isTauriRuntime } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke, isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { message } from "@tauri-apps/plugin-dialog";
 import { EVENT_SETTINGS_BG_VIDEO_OPTIMIZED, EVENT_WINDOW_FORCE_MINI_MODE } from "@/modules/shared/services/events";
@@ -98,6 +98,18 @@ type WindowRect = {
   y: number;
 };
 
+type LogicalWindowRect = {
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+};
+
+type MiniWindowTarget = {
+  physical: WindowRect;
+  logical: LogicalWindowRect;
+};
+
 type ToggleAnchorRect = {
   left: number;
   top: number;
@@ -113,6 +125,19 @@ type ConnectedAnimationPayload = {
   durationMs: number;
   easing: string;
 };
+
+type RestoreHandshakeState =
+  | { phase: "idle" }
+  | { phase: "waiting-main-stage" | "waiting-mini-stage"; token: number; logicalRect: LogicalWindowRect };
+
+function toLogicalWindowRect(rect: WindowRect, scaleFactor: number): LogicalWindowRect {
+  return {
+    width: rect.width / scaleFactor,
+    height: rect.height / scaleFactor,
+    x: rect.x / scaleFactor,
+    y: rect.y / scaleFactor,
+  };
+}
 
 function App() {
   const prefersReducedMotion = useReducedMotion();
@@ -144,6 +169,13 @@ function App() {
   const { sizes: islandSizes } = useIslandSizes();
   const isMiniModeRef = useRef(isMiniMode);
   const restoreStateRef = useRef(restoreState);
+  const [restoreHandshake, setRestoreHandshake] = useState<RestoreHandshakeState>({ phase: "idle" });
+  const restoreHandshakeRef = useRef<RestoreHandshakeState>({ phase: "idle" });
+  const restoreFallbackTimerRef = useRef<number | null>(null);
+  const restoreHandshakeTokenRef = useRef(0);
+  const restoreCompletionTokenRef = useRef<number | null>(null);
+  const mainStageRef = useRef<HTMLDivElement | null>(null);
+  const miniStageRef = useRef<HTMLDivElement | null>(null);
   const miniToggleLockRef = useRef(false);
   const miniModeWidthRef = useRef(miniModeWidth);
   const miniModeHeightRef = useRef(miniModeHeight);
@@ -239,6 +271,126 @@ function App() {
   useEffect(() => {
     restoreStateRef.current = restoreState;
   }, [restoreState]);
+
+  useEffect(() => {
+    restoreHandshakeRef.current = restoreHandshake;
+  }, [restoreHandshake]);
+
+  const clearRestoreFallbackTimer = useCallback(() => {
+    if (restoreFallbackTimerRef.current !== null) {
+      window.clearTimeout(restoreFallbackTimerRef.current);
+      restoreFallbackTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => clearRestoreFallbackTimer, [clearRestoreFallbackTimer]);
+
+  const finalizeRestoreHandshake = useCallback(async (
+    token: number,
+    mode: "finish" | "timeout",
+  ) => {
+    if (restoreCompletionTokenRef.current === token) {
+      return;
+    }
+
+    const handshake = restoreHandshakeRef.current;
+    if (
+      (handshake.phase !== "waiting-main-stage" && handshake.phase !== "waiting-mini-stage")
+      || handshake.token !== token
+    ) {
+      return;
+    }
+
+    restoreCompletionTokenRef.current = token;
+    clearRestoreFallbackTimer();
+
+    const finishCommand =
+      handshake.phase === "waiting-main-stage"
+        ? "finish_restore_from_mini"
+        : "finish_enter_mini";
+    const abortCommand =
+      handshake.phase === "waiting-main-stage"
+        ? "abort_restore_from_mini"
+        : "abort_enter_mini";
+
+    try {
+      if (mode === "finish") {
+        try {
+          await invoke(finishCommand, { rect: handshake.logicalRect });
+        } catch (error) {
+          console.warn(`${finishCommand} failed, falling back to ${abortCommand}`, error);
+          await invoke(abortCommand, { rect: handshake.logicalRect });
+        }
+      } else {
+        await invoke(abortCommand, { rect: handshake.logicalRect });
+      }
+    } catch (error) {
+      console.error("Restore handshake recovery failed:", error);
+    } finally {
+      setRestoreHandshake({ phase: "idle" });
+      setMiniTransitioning(false);
+      setMiniAnimDirection(null);
+      miniToggleLockRef.current = false;
+    }
+  }, [clearRestoreFallbackTimer]);
+
+  useEffect(() => {
+    if (restoreHandshake.phase === "idle") {
+      clearRestoreFallbackTimer();
+      return;
+    }
+
+    clearRestoreFallbackTimer();
+    restoreFallbackTimerRef.current = window.setTimeout(() => {
+      void finalizeRestoreHandshake(restoreHandshake.token, "timeout");
+    }, prefersReducedMotion ? 800 : 1000);
+
+    return clearRestoreFallbackTimer;
+  }, [clearRestoreFallbackTimer, finalizeRestoreHandshake, prefersReducedMotion, restoreHandshake]);
+
+  useEffect(() => {
+    if (restoreHandshake.phase === "idle") {
+      restoreCompletionTokenRef.current = null;
+    }
+  }, [restoreHandshake]);
+
+  useLayoutEffect(() => {
+    if (restoreHandshake.phase !== "waiting-main-stage" || isMiniMode) {
+      return;
+    }
+
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (cancelled || !mainStageRef.current) {
+        return;
+      }
+      void finalizeRestoreHandshake(restoreHandshake.token, "finish");
+    }, prefersReducedMotion ? 40 : 60);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [finalizeRestoreHandshake, isMiniMode, prefersReducedMotion, restoreHandshake]);
+
+  useLayoutEffect(() => {
+    if (restoreHandshake.phase !== "waiting-mini-stage" || !isMiniMode) {
+      return;
+    }
+
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (cancelled || !miniStageRef.current) {
+        return;
+      }
+      void finalizeRestoreHandshake(restoreHandshake.token, "finish");
+    }, prefersReducedMotion ? 40 : 60);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [finalizeRestoreHandshake, isMiniMode, prefersReducedMotion, restoreHandshake]);
 
   useEffect(() => {
     if (!updateCheckHint) return;
@@ -385,17 +537,19 @@ function App() {
   ) => {
     if (!isTauri) return;
     void _anchorRect;
-    if (miniToggleLockRef.current) return;
+    if (miniTransitioning || miniToggleLockRef.current) return;
     const previousMode = isMiniModeRef.current;
     if (enable === previousMode && !(enable && forceCalibrate)) return;
     miniToggleLockRef.current = true;
+    let deferUnlockToRestore = false;
+    let pendingHandshake:
+      | { kind: "enter"; rect: LogicalWindowRect }
+      | { kind: "restore"; rect: LogicalWindowRect }
+      | null = null;
 
     try {
       const win = getCurrentWindow();
       const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
-      const nextFrame = () => new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
-      const PREPARE_MS = prefersReducedMotion ? 0 : 8;
-      const FINISH_MS = prefersReducedMotion ? 0 : 12;
       const readRect = async (): Promise<WindowRect> => {
         const size = await win.innerSize();
         const pos = await win.innerPosition();
@@ -426,7 +580,7 @@ function App() {
           : (pos?.y ?? 70);
         return { width, height, x, y };
       };
-      const buildMiniTarget = async (from: WindowRect): Promise<WindowRect> => {
+      const buildMiniTarget = async (from: WindowRect): Promise<MiniWindowTarget> => {
         const monitor = await currentMonitor();
         const mSize = monitor?.size;
         const mPos = monitor?.position;
@@ -442,27 +596,26 @@ function App() {
         );
         const logicalWidth = logicalSize.width;
         const logicalHeight = logicalSize.height;
+        const logicalMonitorWidth = mSize ? mSize.width / scaleFactor : from.width / scaleFactor;
+        const logicalMonitorHeight = mSize ? mSize.height / scaleFactor : from.height / scaleFactor;
+        const logicalMonitorX = mPos ? mPos.x / scaleFactor : from.x / scaleFactor;
+        const logicalMonitorY = mPos ? mPos.y / scaleFactor : from.y / scaleFactor;
+        const logicalX = logicalMonitorX + Math.round((logicalMonitorWidth - logicalWidth) / 2);
+        const logicalY = logicalMonitorY + Math.round(Math.max(8, logicalMonitorHeight * 0.012));
         const width = Math.max(1, Math.round(logicalWidth * scaleFactor));
         const height = Math.max(1, Math.round(logicalHeight * scaleFactor));
-        const x = mSize
-          ? (mPos?.x ?? 0) + Math.round((mSize.width - width) / 2)
-          : from.x;
-        const y = mSize
-          ? (mPos?.y ?? 0) + Math.round(Math.max(8, mSize.height * 0.012))
-          : Math.max(8, from.y);
-        return { width, height, x, y };
+        const x = Math.round(logicalX * scaleFactor);
+        const y = Math.round(logicalY * scaleFactor);
+        return {
+          physical: { width, height, x, y },
+          logical: {
+            width: logicalWidth,
+            height: logicalHeight,
+            x: logicalX,
+            y: logicalY,
+          },
+        };
       };
-      const applyWindowRect = async (rect: WindowRect, stage: "enter-mini" | "exit-mini") => {
-        try {
-          await applyCurrentWindowRect(rect);
-        } catch (error) {
-          const wrappedError = new Error(`${stage}: set window bounds failed`);
-          (wrappedError as Error & { cause?: unknown }).cause =
-            error instanceof Error ? error : new Error(String(error));
-          throw wrappedError;
-        }
-      };
-
       setMiniAnimDirection(enable ? "enter" : "exit");
       setMiniTransitioning(true);
 
@@ -479,79 +632,86 @@ function App() {
         const target = await buildMiniTarget(current);
         const hasValidRestore =
           !!restoreStateRef.current &&
-          !isMiniRect(restoreStateRef.current, target);
+          !isMiniRect(restoreStateRef.current, target.physical);
         if (!hasValidRestore || !previousMode) {
-          const nextRestore = isMiniRect(current, target)
+          const nextRestore = isMiniRect(current, target.physical)
             ? await buildFallbackRestore({ x: current.x, y: current.y })
             : current;
           setRestoreState(nextRestore);
           restoreStateRef.current = nextRestore;
         }
-        await win.setDecorations(false);
-        await win.setAlwaysOnTop(true);
-        await win.setResizable(true);
-        try {
-          await win.setShadow(false);
-        } catch {
-          void 0;
-        }
-        setConnectedAnimation(null);
-        setIsMiniMode(true);
-        isMiniModeRef.current = true;
-        await nextFrame();
-        await sleep(PREPARE_MS);
-        await applyWindowRect(target, "enter-mini");
-        await win.setResizable(false);
-        try {
-          await win.setSkipTaskbar(true);
-        } catch {
-          void 0;
-        }
-        await sleep(FINISH_MS);
-        setMiniTransitioning(false);
-        setMiniAnimDirection(null);
+        pendingHandshake = {
+          kind: "enter",
+          rect: target.logical,
+        };
+        const nextHandshakeToken = restoreHandshakeTokenRef.current + 1;
+        restoreHandshakeTokenRef.current = nextHandshakeToken;
+        restoreCompletionTokenRef.current = null;
+        clearRestoreFallbackTimer();
+
+        await invoke("begin_enter_mini");
+        flushSync(() => {
+          setConnectedAnimation(null);
+          setIsMiniMode(true);
+          isMiniModeRef.current = true;
+          setRestoreHandshake({
+            phase: "waiting-mini-stage",
+            token: nextHandshakeToken,
+            logicalRect: pendingHandshake!.rect,
+          });
+        });
+        deferUnlockToRestore = true;
         return;
       }
 
       let restore = restoreStateRef.current;
       const current = await readRect();
       const miniTarget = await buildMiniTarget(current);
-      if (!restore || isMiniRect(restore, miniTarget)) {
+      if (!restore || isMiniRect(restore, miniTarget.physical)) {
         restore = await buildFallbackRestore();
         setRestoreState(restore);
         restoreStateRef.current = restore;
       }
 
-      try {
-        await win.unminimize();
-      } catch {
-        void 0;
-      }
-      try {
-        await win.show();
-      } catch {
-        void 0;
-      }
-      await win.setDecorations(false);
-      await win.setResizable(true);
-      try {
-        await win.setSkipTaskbar(false);
-      } catch {
-        void 0;
-      }
-      await sleep(PREPARE_MS);
-      await applyWindowRect(restore, "exit-mini");
-      await win.setAlwaysOnTop(false);
-      setConnectedAnimation(null);
-      setIsMiniMode(false);
-      isMiniModeRef.current = false;
-      await sleep(FINISH_MS);
-      setMiniTransitioning(false);
-      setMiniAnimDirection(null);
+      const scaleFactor = await win.scaleFactor();
+      pendingHandshake = {
+        kind: "restore",
+        rect: toLogicalWindowRect(restore, scaleFactor),
+      };
+      const nextHandshakeToken = restoreHandshakeTokenRef.current + 1;
+      restoreHandshakeTokenRef.current = nextHandshakeToken;
+      restoreCompletionTokenRef.current = null;
+      clearRestoreFallbackTimer();
+
+      await invoke("begin_restore_from_mini");
+      flushSync(() => {
+        setConnectedAnimation(null);
+        setIsMiniMode(false);
+        isMiniModeRef.current = false;
+        setRestoreHandshake({
+          phase: "waiting-main-stage",
+          token: nextHandshakeToken,
+          logicalRect: pendingHandshake!.rect,
+        });
+      });
+      deferUnlockToRestore = true;
+      return;
     } catch (e) {
+      if (pendingHandshake) {
+        try {
+          await invoke(
+            pendingHandshake.kind === "enter" ? "abort_enter_mini" : "abort_restore_from_mini",
+            { rect: pendingHandshake.rect },
+          );
+        } catch {
+          void 0;
+        }
+      }
       setIsMiniMode(previousMode);
       isMiniModeRef.current = previousMode;
       setConnectedAnimation(null);
+      setRestoreHandshake({ phase: "idle" });
+      clearRestoreFallbackTimer();
       setMiniTransitioning(false);
       setMiniAnimDirection(null);
       console.error("Mini mode toggle failed:", e);
@@ -561,9 +721,11 @@ function App() {
         void 0;
       }
     } finally {
-      miniToggleLockRef.current = false;
+      if (!deferUnlockToRestore) {
+        miniToggleLockRef.current = false;
+      }
     }
-  }, [isTauri, miniIslandLayout, prefersReducedMotion]);
+  }, [clearRestoreFallbackTimer, isTauri, miniIslandLayout, miniTransitioning, prefersReducedMotion]);
 
   const toggleMiniMode = useCallback((anchorRect?: ToggleAnchorRect) => {
     void setMiniMode(!isMiniModeRef.current, false, anchorRect);
@@ -693,17 +855,26 @@ function App() {
       >
         <Suspense fallback={<PageLoadingFallback />}>
           {isMiniMode ? (
-            <MiniPlayerPage
-              onToggleMini={toggleMiniMode}
-              isTransitioning={miniTransitioning}
-
-              bgType={bgType}
-              bgPath={bgSrcWithRev}
-              bgBlur={bgBlur}
-            />
+            <div
+              ref={miniStageRef}
+              className="relative h-full w-full halo-mini-stage"
+              data-restoring={restoreHandshake.phase === "waiting-mini-stage" ? "true" : "false"}
+            >
+              <MiniPlayerPage
+                onToggleMini={toggleMiniMode}
+                isTransitioning={miniTransitioning}
+                bgType={bgType}
+                bgPath={bgSrcWithRev}
+                bgBlur={bgBlur}
+              />
+            </div>
           ) : (
             startupReady ? (
-              <div className="relative h-full w-full halo-page-stage">
+              <div
+                ref={mainStageRef}
+                className="relative h-full w-full halo-page-stage"
+                data-restoring={restoreHandshake.phase === "waiting-main-stage" ? "true" : "false"}
+              >
               <motion.div
                 initial={false}
                 animate={page === "dashboard" ? "active" : "inactive"}

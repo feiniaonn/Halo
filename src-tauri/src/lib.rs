@@ -47,6 +47,7 @@ use settings::{
     set_launch_at_login, set_mini_mode_size, set_mini_restore_mode, set_storage_root,
     start_migrate_legacy_data, MigrationController,
 };
+use std::io::Write;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -333,14 +334,14 @@ pub(crate) fn append_mpv_test_log_line(message: &str) -> Result<(), String> {
     Ok(())
 }
 #[cfg(target_os = "windows")]
-fn tune_windows_chrome<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+fn tune_windows_chrome<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, rounded: bool) {
     use windows::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
-        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
     };
 
     if let Ok(hwnd) = window.hwnd() {
-        let corner_pref = DWMWCP_DONOTROUND;
+        let corner_pref = if rounded { DWMWCP_ROUND } else { DWMWCP_DONOTROUND };
         unsafe {
             let _ = DwmSetWindowAttribute(
                 hwnd,
@@ -390,7 +391,7 @@ fn show_main_window(app: &AppHandle) {
             }
         }
         #[cfg(target_os = "windows")]
-        tune_windows_chrome(&w);
+        tune_windows_chrome(&w, true);
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
@@ -551,6 +552,342 @@ fn clear_current_window_hit_region(window: tauri::WebviewWindow) -> Result<(), S
     }
 }
 
+#[cfg(target_os = "windows")]
+fn clear_window_hit_test_region_for_hwnd(
+    hwnd: windows::Win32::Foundation::HWND,
+) -> Result<(), String> {
+    let window_key = hwnd.0 as isize;
+    let mut regions = window_hit_test_regions()
+        .lock()
+        .map_err(|_| "window hit test region lock poisoned".to_string())?;
+    regions.remove(&window_key);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn apply_logical_window_rect_windows<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    rect: LogicalWindowRectPayload,
+    topmost: bool,
+) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
+    };
+
+    let scale_factor = window.scale_factor().map_err(|e| e.to_string())?;
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let x = (rect.x * scale_factor).round() as i32;
+    let y = (rect.y * scale_factor).round() as i32;
+    let width = ((rect.width * scale_factor).round() as i32).max(1);
+    let height = ((rect.height * scale_factor).round() as i32).max(1);
+    let insert_after = if topmost { HWND_TOPMOST } else { HWND_NOTOPMOST };
+
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(insert_after),
+            x,
+            y,
+            width,
+            height,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn set_window_opacity_windows<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    opacity: f32,
+) -> Result<(), String> {
+    use windows::Win32::Foundation::COLORREF;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE,
+        LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+        WS_EX_LAYERED,
+    };
+
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let next_alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let existing_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let layered_style = existing_style | WS_EX_LAYERED.0 as isize;
+
+    unsafe {
+        let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, layered_style);
+        SetLayeredWindowAttributes(hwnd, COLORREF(0), next_alpha, LWA_ALPHA)
+            .map_err(|e| e.to_string())?;
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+        );
+    }
+
+    Ok(())
+}
+
+fn append_window_probe_log(message: &str) {
+    eprintln!("{message}");
+
+    let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let log_dir = base_dir.join("tests").join("manual").join("window_restore_debug");
+    if std::fs::create_dir_all(&log_dir).is_err() {
+        return;
+    }
+
+    let log_path = log_dir.join("mini_window_probe.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(file, "{message}");
+    }
+}
+
+fn probe_window_state<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, stage: &str) {
+    let pos = window.outer_position();
+    let size = window.outer_size();
+
+    match (pos, size) {
+        (Ok(real_pos), Ok(real_size)) => {
+            append_window_probe_log(&format!(
+                "[mini-window-probe] {stage} pos=({}, {}) size=({} x {})",
+                real_pos.x, real_pos.y, real_size.width, real_size.height
+            ));
+        }
+        (pos_result, size_result) => {
+            append_window_probe_log(&format!(
+                "[mini-window-probe] {stage} pos_err={:?} size_err={:?}",
+                pos_result.err(),
+                size_result.err()
+            ));
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_logical_window_rect_fallback<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    rect: LogicalWindowRectPayload,
+) -> Result<(), String> {
+    window
+        .set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+            rect.x, rect.y,
+        )))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_size(Size::Logical(LogicalSize::new(
+            rect.width.max(1.0),
+            rect.height.max(1.0),
+        )))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn begin_restore_from_mini(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+        clear_window_hit_test_region_for_hwnd(hwnd)?;
+        tune_windows_chrome(&window, true);
+    }
+
+    let _ = window.unminimize();
+    let _ = window.set_skip_taskbar(false);
+    let _ = window.set_resizable(true);
+    let _ = window.set_always_on_top(false);
+    let _ = window.set_decorations(false);
+    #[cfg(target_os = "windows")]
+    {
+        set_window_opacity_windows(&window, 0.0)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn finish_restore_from_mini(
+    window: tauri::WebviewWindow,
+    rect: LogicalWindowRectPayload,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        apply_logical_window_rect_windows(&window, rect, false)?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        apply_logical_window_rect_fallback(&window, rect)?;
+    }
+
+    let _ = window.show();
+    #[cfg(target_os = "windows")]
+    {
+        tune_windows_chrome(&window, true);
+    }
+    let _ = window.set_decorations(false);
+    let _ = window.set_skip_taskbar(false);
+    let _ = window.set_resizable(true);
+    let _ = window.set_always_on_top(false);
+    let _ = window.set_min_size(Some(Size::Logical(LogicalSize::new(800.0, 600.0))));
+    #[cfg(target_os = "windows")]
+    {
+        set_window_opacity_windows(&window, 1.0)?;
+    }
+    window.set_focus().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn abort_restore_from_mini(
+    window: tauri::WebviewWindow,
+    rect: LogicalWindowRectPayload,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        apply_logical_window_rect_windows(&window, rect, false)?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        apply_logical_window_rect_fallback(&window, rect)?;
+    }
+
+    let _ = window.show();
+    #[cfg(target_os = "windows")]
+    {
+        tune_windows_chrome(&window, true);
+    }
+    let _ = window.set_skip_taskbar(false);
+    let _ = window.set_resizable(true);
+    let _ = window.set_always_on_top(false);
+    let _ = window.set_min_size(Some(Size::Logical(LogicalSize::new(800.0, 600.0))));
+    #[cfg(target_os = "windows")]
+    {
+        set_window_opacity_windows(&window, 1.0)?;
+    }
+    window.set_focus().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn begin_enter_mini(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        tune_windows_chrome(&window, false);
+        set_window_opacity_windows(&window, 1.0)?;
+    }
+
+    let _ = window.unminimize();
+    let _ = window.set_decorations(false);
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_resizable(true);
+    let _ = window.set_min_size(Some(Size::Logical(LogicalSize::new(1.0, 1.0))));
+    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+        -10000.0,
+        -10000.0,
+    )));
+    append_window_probe_log("[mini-window-probe] begin_enter_mini");
+    probe_window_state(&window, "begin_enter_mini.after_offscreen_move");
+    Ok(())
+}
+
+#[tauri::command]
+fn finish_enter_mini(
+    window: tauri::WebviewWindow,
+    rect: LogicalWindowRectPayload,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        tune_windows_chrome(&window, false);
+    }
+
+    let _ = window.set_size(Size::Logical(LogicalSize::new(
+        rect.width.max(1.0),
+        rect.height.max(1.0),
+    )));
+    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+        rect.x, rect.y,
+    )));
+    let _ = window.set_decorations(false);
+    let _ = window.set_skip_taskbar(true);
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_resizable(false);
+    #[cfg(target_os = "windows")]
+    {
+        set_window_opacity_windows(&window, 1.0)?;
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    append_window_probe_log(&format!(
+        "[mini-window-probe] finish_enter_mini target logical pos=({}, {}) size=({} x {})",
+        rect.x, rect.y, rect.width, rect.height
+    ));
+    probe_window_state(&window, "finish_enter_mini.after_apply");
+    match (window.outer_position(), window.outer_size()) {
+        (Ok(real_pos), Ok(real_size)) => {
+            append_window_probe_log(&format!(
+                "【探针】目标逻辑坐标: X:{}, Y:{} | 目标逻辑尺寸: W:{}, H:{}",
+                rect.x, rect.y, rect.width, rect.height
+            ));
+            append_window_probe_log(&format!(
+                "【探针】实际物理坐标: X:{}, Y:{} | 实际物理尺寸: W:{}, H:{}",
+                real_pos.x, real_pos.y, real_size.width, real_size.height
+            ));
+        }
+        (pos_result, size_result) => {
+            append_window_probe_log(&format!(
+                "【探针】目标逻辑坐标: X:{}, Y:{} | 目标逻辑尺寸: W:{}, H:{}",
+                rect.x, rect.y, rect.width, rect.height
+            ));
+            append_window_probe_log(&format!(
+                "【探针】读取实际窗口状态失败: pos={:?}, size={:?}",
+                pos_result.err(),
+                size_result.err()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn abort_enter_mini(
+    window: tauri::WebviewWindow,
+    rect: LogicalWindowRectPayload,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        tune_windows_chrome(&window, false);
+    }
+
+    let _ = window.set_size(Size::Logical(LogicalSize::new(
+        rect.width.max(1.0),
+        rect.height.max(1.0),
+    )));
+    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+        rect.x, rect.y,
+    )));
+    let _ = window.set_decorations(false);
+    let _ = window.set_skip_taskbar(true);
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_resizable(false);
+    #[cfg(target_os = "windows")]
+    {
+        set_window_opacity_windows(&window, 1.0)?;
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+    append_window_probe_log(&format!(
+        "[mini-window-probe] abort_enter_mini target logical pos=({}, {}) size=({} x {})",
+        rect.x, rect.y, rect.width, rect.height
+    ));
+    probe_window_state(&window, "abort_enter_mini.after_apply");
+    Ok(())
+}
+
 #[tauri::command]
 fn get_mpv_test_log_path() -> String {
     mpv_test_log_path().to_string_lossy().to_string()
@@ -703,6 +1040,14 @@ pub struct CurrentPlayingInfo {
     pub playback_status: Option<String>,
     pub source_app_id: Option<String>,
     pub source_platform: Option<String>,
+}
+
+#[derive(Clone, Copy, serde::Deserialize)]
+struct LogicalWindowRectPayload {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
 }
 
 #[tauri::command]
@@ -905,6 +1250,12 @@ pub fn run() {
             set_current_window_bounds_atomic,
             set_current_window_hit_region_rounded,
             clear_current_window_hit_region,
+            begin_enter_mini,
+            finish_enter_mini,
+            abort_enter_mini,
+            begin_restore_from_mini,
+            finish_restore_from_mini,
+            abort_restore_from_mini,
             get_mpv_test_log_path,
             rust_log,
         ])
@@ -917,7 +1268,7 @@ pub fn run() {
                 eprintln!("[startup][rust] setup main window found");
                 let _ = w.set_decorations(false);
                 #[cfg(target_os = "windows")]
-                tune_windows_chrome(&w);
+                tune_windows_chrome(&w, true);
 
                 let close_handle = handle.clone();
                 w.on_window_event(move |event| {
