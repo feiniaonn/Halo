@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { CoverImage } from "@/modules/music/components/CoverImage";
@@ -119,6 +120,30 @@ export function PlaybackOrb({
 }) {
   const shellSize = size + 10;
   const normalizedProgress = clampProgress(progress);
+  const previousProgressRef = useRef(normalizedProgress);
+  const [skipProgressTransition, setSkipProgressTransition] = useState(false);
+
+  useLayoutEffect(() => {
+    const previous = previousProgressRef.current;
+    previousProgressRef.current = normalizedProgress;
+
+    const wrappedToStart = previous > 0.94 && normalizedProgress < 0.12;
+    const hardRewind = previous - normalizedProgress > 0.22;
+    if (!wrappedToStart && !hardRewind) {
+      if (skipProgressTransition) {
+        setSkipProgressTransition(false);
+      }
+      return;
+    }
+
+    setSkipProgressTransition(true);
+    const rafId = window.requestAnimationFrame(() => {
+      setSkipProgressTransition(false);
+    });
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [normalizedProgress, skipProgressTransition]);
 
   return (
     <motion.div
@@ -140,7 +165,7 @@ export function PlaybackOrb({
           strokeDashoffset={263.89 * (1 - normalizedProgress)}
           strokeLinecap="round"
           className={cn(
-            "transition-[stroke-dashoffset] duration-300 ease-out",
+            !skipProgressTransition && "transition-[stroke-dashoffset] duration-300 ease-out",
             isPlaying ? "text-primary/78" : "text-white/28",
           )}
         />

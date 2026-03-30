@@ -1,8 +1,7 @@
  
  
-import { useEffect, useRef, useState } from "react";
+ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-const PLAYBACK_REPORT_LATENCY_SECS = 0.14;
 const TRACK_END_RESET_WINDOW_SECS = 0.35;
 const PLAYBACK_REWIND_SNAP_SECS = 0.75;
 const PLAYBACK_REWIND_IGNORE_WINDOW_SECS = 1.5;
@@ -10,40 +9,35 @@ const SEEK_REWIND_SNAP_SECS = 2.25;
 
 function normalizeAnchoredPosition(
   positionSecs: number,
-  playbackStatus: string | null | undefined,
   durationSecs: number | null | undefined,
 ) {
-  const compensated =
-    playbackStatus === "Playing"
-      ? positionSecs + PLAYBACK_REPORT_LATENCY_SECS
-      : positionSecs;
-
   if (durationSecs == null || Number.isNaN(durationSecs)) {
-    return Math.max(0, compensated);
+    return Math.max(0, positionSecs);
   }
 
-  return Math.min(Math.max(0, compensated), Math.max(0, durationSecs));
+  return Math.min(Math.max(0, positionSecs), Math.max(0, durationSecs));
 }
 
 export function usePlaybackClock(
   positionSecs: number | null | undefined,
   playbackStatus: string | null | undefined,
   durationSecs: number | null | undefined,
+  sampledAtMs?: number | null,
   trackKey?: string | null,
 ): number | null {
   const [livePosition, setLivePosition] = useState<number | null>(
     positionSecs == null || Number.isNaN(positionSecs) ? null : Math.max(0, positionSecs),
   );
   const anchorRef = useRef<{
-    position: number;
-    atMs: number;
+      position: number;
+      atMs: number;
     status: string;
     duration: number | null;
     hasFreshPosition: boolean;
   } | null>(null);
   const trackRef = useRef<string>((trackKey ?? "").trim());
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const normalizedTrackKey = (trackKey ?? "").trim();
     if (trackRef.current === normalizedTrackKey) {
       return;
@@ -57,22 +51,18 @@ setLivePosition(null);
       return;
     }
 
-    const newPos = normalizeAnchoredPosition(
-      positionSecs,
-      playbackStatus,
-      durationSecs,
-    );
+    const newPos = normalizeAnchoredPosition(positionSecs, durationSecs);
     anchorRef.current = {
       position: newPos,
-      atMs: Date.now(),
+      atMs: sampledAtMs ?? Date.now(),
       status: playbackStatus ?? "",
       duration: durationSecs ?? null,
       hasFreshPosition: true,
     };
     setLivePosition(newPos);
-  }, [durationSecs, playbackStatus, positionSecs, trackKey]);
+  }, [durationSecs, playbackStatus, positionSecs, sampledAtMs, trackKey]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const now = Date.now();
     const status = playbackStatus ?? "";
 
@@ -89,11 +79,7 @@ setLivePosition(null);
       return;
     }
 
-    const newPos = normalizeAnchoredPosition(
-      positionSecs,
-      status,
-      durationSecs,
-    );
+    const newPos = normalizeAnchoredPosition(positionSecs, durationSecs);
     const previousAnchor = anchorRef.current;
     const previousPosition = previousAnchor?.position ?? null;
     const previousDuration = previousAnchor?.duration ?? durationSecs ?? null;
@@ -117,7 +103,7 @@ setLivePosition(null);
     if (hardResetToStart || snappedRewind) {
       anchorRef.current = {
         position: newPos,
-        atMs: now,
+        atMs: sampledAtMs ?? now,
         status,
         duration: durationSecs ?? null,
         hasFreshPosition: true,
@@ -148,13 +134,13 @@ setLivePosition(null);
 
     anchorRef.current = {
       position: newPos,
-      atMs: now,
+      atMs: sampledAtMs ?? now,
       status,
       duration: durationSecs ?? null,
       hasFreshPosition: true,
     };
     setLivePosition(newPos);
-  }, [durationSecs, playbackStatus, positionSecs, trackKey]);
+  }, [durationSecs, playbackStatus, positionSecs, sampledAtMs, trackKey]);
 
   useEffect(() => {
     const anchor = anchorRef.current;

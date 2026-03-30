@@ -17,6 +17,10 @@ export type PhysicalRoundedWindowRegion = {
   radius: number;
 };
 
+let lastRoundedRegionKey: string | null = null;
+let pendingRoundedRegion: PhysicalRoundedWindowRegion | null = null;
+let roundedRegionFlushPromise: Promise<void> | null = null;
+
 export async function applyCurrentWindowRect(rect: PhysicalWindowRect) {
   if (!isTauriRuntime()) return;
 
@@ -39,17 +43,47 @@ export async function applyCurrentWindowRect(rect: PhysicalWindowRect) {
 
 export async function setCurrentWindowRoundedRegion(region: PhysicalRoundedWindowRegion) {
   if (!isTauriRuntime()) return;
-
-  await invoke("set_current_window_hit_region_rounded", {
+  const normalizedRegion = {
     x: Math.round(region.x),
     y: Math.round(region.y),
     width: Math.max(1, Math.round(region.width)),
     height: Math.max(1, Math.round(region.height)),
     radius: Math.max(0, Math.round(region.radius)),
-  });
+  };
+  const nextKey = JSON.stringify(normalizedRegion);
+  if (nextKey === lastRoundedRegionKey && pendingRoundedRegion == null && roundedRegionFlushPromise == null) {
+    return;
+  }
+
+  pendingRoundedRegion = normalizedRegion;
+  if (roundedRegionFlushPromise) {
+    return roundedRegionFlushPromise;
+  }
+
+  roundedRegionFlushPromise = (async () => {
+    try {
+      while (pendingRoundedRegion) {
+        const nextRegion = pendingRoundedRegion;
+        pendingRoundedRegion = null;
+        const nextRegionKey = JSON.stringify(nextRegion);
+        if (nextRegionKey === lastRoundedRegionKey) {
+          continue;
+        }
+        await invoke("set_current_window_hit_region_rounded", nextRegion);
+        lastRoundedRegionKey = nextRegionKey;
+      }
+    } finally {
+      roundedRegionFlushPromise = null;
+    }
+  })();
+
+  return roundedRegionFlushPromise;
 }
 
 export async function clearCurrentWindowRegion() {
   if (!isTauriRuntime()) return;
+  pendingRoundedRegion = null;
+  roundedRegionFlushPromise = null;
+  lastRoundedRegionKey = null;
   await invoke("clear_current_window_hit_region");
 }

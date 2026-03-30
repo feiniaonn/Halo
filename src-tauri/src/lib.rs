@@ -7,12 +7,13 @@ pub mod media_cmds;
 mod music;
 mod music_control;
 mod music_lyrics;
+mod music_media_key;
+mod music_process_probe;
 mod music_qqmusic_cache;
 mod music_settings;
 mod native_player;
 mod settings;
 mod shortcut_launcher;
-pub mod spider_probe;
 mod spider_artifact_download;
 mod spider_bridge_payload;
 mod spider_cmds;
@@ -26,6 +27,7 @@ pub mod spider_diag;
 mod spider_fast_paths;
 mod spider_local_runtime_android;
 mod spider_local_service;
+pub mod spider_probe;
 mod spider_proxy_bridge;
 mod spider_response_contract;
 mod spider_runtime_contract;
@@ -501,8 +503,6 @@ fn set_current_window_hit_region_rounded(
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
-
         ensure_window_hit_test_subclass(&window)?;
         let hwnd = window.hwnd().map_err(|e| e.to_string())?;
         let window_key = hwnd.0 as isize;
@@ -520,28 +520,6 @@ fn set_current_window_hit_region_rounded(
         regions.insert(window_key, normalized_region);
         drop(regions);
 
-        let diameter = (normalized_region.radius.max(0) * 2).max(1);
-        let region = unsafe {
-            CreateRoundRectRgn(
-                normalized_region.x,
-                normalized_region.y,
-                normalized_region.x + normalized_region.width + 1,
-                normalized_region.y + normalized_region.height + 1,
-                diameter,
-                diameter,
-            )
-        };
-
-        if region.0.is_null() {
-            return Err("CreateRoundRectRgn failed".to_string());
-        }
-
-        let result = unsafe { SetWindowRgn(hwnd, Some(region), true) };
-        if result == 0 {
-            let _ = unsafe { DeleteObject(region.into()) };
-            return Err("SetWindowRgn failed".to_string());
-        }
-
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
@@ -555,8 +533,6 @@ fn set_current_window_hit_region_rounded(
 fn clear_current_window_hit_region(window: tauri::WebviewWindow) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::Graphics::Gdi::SetWindowRgn;
-
         let hwnd = window.hwnd().map_err(|e| e.to_string())?;
         let window_key = hwnd.0 as isize;
 
@@ -566,7 +542,6 @@ fn clear_current_window_hit_region(window: tauri::WebviewWindow) -> Result<(), S
         regions.remove(&window_key);
         drop(regions);
 
-        let _ = unsafe { SetWindowRgn(hwnd, None, true) };
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
@@ -723,6 +698,8 @@ pub struct CurrentPlayingInfo {
     pub cover_data_url: Option<String>,
     pub duration_secs: Option<u64>,
     pub position_secs: Option<u64>,
+    pub position_sampled_at_ms: Option<i64>,
+    pub timeline_updated_at_ms: Option<i64>,
     pub playback_status: Option<String>,
     pub source_app_id: Option<String>,
     pub source_platform: Option<String>,
@@ -739,10 +716,22 @@ fn music_get_top10() -> Result<Vec<PlayRecord>, String> {
 }
 
 #[tauri::command]
-fn music_get_current(
+async fn music_get_current(
     current: tauri::State<'_, Arc<Mutex<Option<CurrentPlayingInfo>>>>,
-) -> Option<CurrentPlayingInfo> {
-    current.lock().ok().and_then(|g| g.clone())
+) -> Result<Option<CurrentPlayingInfo>, String> {
+    if let Some(snapshot) = current.lock().ok().and_then(|g| g.clone()) {
+        if !snapshot.artist.trim().is_empty() || !snapshot.title.trim().is_empty() {
+            return Ok(Some(snapshot));
+        }
+    }
+
+    let next = music::query_current_on_demand().await;
+    if let Some(snapshot) = next.as_ref() {
+        if let Ok(mut guard) = current.lock() {
+            *guard = Some(snapshot.clone());
+        }
+    }
+    Ok(next)
 }
 
 /// Read a local cover image file and return a data URL for the frontend.

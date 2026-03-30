@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { motion } from "framer-motion";
@@ -153,7 +153,8 @@ export function MiniPlayerPage({
   const [clockNow, setClockNow] = useState(() => Date.now());
   const bgVideoRef = useRef<HTMLVideoElement | null>(null);
   const islandRef = useRef<HTMLDivElement | null>(null);
-  const scheduleHitRegionSyncRef = useRef<(() => void) | null>(null);
+  const islandShellRef = useRef<HTMLDivElement | null>(null);
+  const scheduleHitRegionSyncRef = useRef<((rafDepth?: number) => void) | null>(null);
   const { sizes } = useIslandSizes();
   const { data: current } = useCurrentPlaying();
 
@@ -162,6 +163,7 @@ export function MiniPlayerPage({
     current?.position_secs,
     current?.playback_status,
     current?.duration_secs,
+    current?.position_sampled_at_ms,
     playbackTrackKey,
   );
 
@@ -304,6 +306,7 @@ export function MiniPlayerPage({
   const activeModule = useMemo(() => resolveIslandModule(capsuleContext), [capsuleContext]);
   const canExpand = activeModule.canExpand?.(capsuleContext) ?? Boolean(activeModule.renderExpanded);
   const displayState: IslandFrameState = canExpand && wantsExpanded ? "expanded" : "capsule";
+  const isCapsuleState = displayState === "capsule";
   const islandWidth = displayState === "expanded" ? layoutSizes.expandedWidth : layoutSizes.capsuleWidth;
   const islandHeight = displayState === "expanded" ? layoutSizes.expandedHeight : layoutSizes.capsuleHeight;
   const frameDensity = useMemo(() => pickDensity(islandWidth, islandHeight), [islandHeight, islandWidth]);
@@ -382,7 +385,7 @@ export function MiniPlayerPage({
     }
   }, [bgType, bgPath]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isTauriRuntime()) return;
 
     let rafId = 0;
@@ -391,7 +394,7 @@ export function MiniPlayerPage({
 
     const syncRegion = () => {
       if (disposed) return;
-      const element = islandRef.current;
+      const element = islandShellRef.current ?? islandRef.current;
       if (!element) return;
 
       const rect = element.getBoundingClientRect();
@@ -403,26 +406,49 @@ export function MiniPlayerPage({
       const computedStyle = window.getComputedStyle(element);
       const radiusPx =
         Number.parseFloat(computedStyle.borderTopLeftRadius) || Math.min(rect.height / 2, 999);
+      const regionBleedX = 1;
+      const regionBleedBottom = 1;
+      const physicalLeft = Math.round(rect.left * scale);
+      const physicalTop = Math.round(rect.top * scale);
+      const physicalWidth = Math.round(rect.width * scale);
+      const physicalHeight = Math.round(rect.height * scale);
 
-      const x = Math.max(0, Math.floor(rect.left * scale));
-      const y = Math.max(0, Math.floor(rect.top * scale));
-      const width = Math.max(1, Math.min(viewportWidth - x, Math.ceil(rect.width * scale)));
-      const height = Math.max(1, Math.min(viewportHeight - y, Math.ceil(rect.height * scale)));
-      const radius = Math.max(0, Math.round(radiusPx * scale));
+      const x = Math.max(0, physicalLeft - regionBleedX);
+      const y = Math.max(0, physicalTop);
+      const width = Math.max(
+        1,
+        Math.min(viewportWidth - x, physicalWidth + regionBleedX * 2),
+      );
+      const height = Math.max(
+        1,
+        Math.min(viewportHeight - y, physicalHeight + regionBleedBottom),
+      );
+      const radius = Math.max(0, Math.round(radiusPx * scale) + 1);
 
       void setCurrentWindowRoundedRegion({ x, y, width, height, radius }).catch(() => void 0);
     };
 
-    const scheduleRegionSync = () => {
+    const scheduleRegionSync = (rafDepth = 1) => {
       if (disposed || rafId) return;
-      rafId = window.requestAnimationFrame(() => {
+      let remainingFrames = Math.max(1, rafDepth);
+      const tick = () => {
+        if (disposed) {
+          rafId = 0;
+          return;
+        }
+        remainingFrames -= 1;
+        if (remainingFrames > 0) {
+          rafId = window.requestAnimationFrame(tick);
+          return;
+        }
         rafId = 0;
         syncRegion();
-      });
+      };
+      rafId = window.requestAnimationFrame(tick);
     };
 
     scheduleHitRegionSyncRef.current = scheduleRegionSync;
-    scheduleRegionSync();
+    scheduleRegionSync(2);
 
     if (typeof ResizeObserver !== "undefined") {
       resizeObserver = new ResizeObserver(() => {
@@ -431,9 +457,15 @@ export function MiniPlayerPage({
       if (islandRef.current) {
         resizeObserver.observe(islandRef.current);
       }
+      if (islandShellRef.current) {
+        resizeObserver.observe(islandShellRef.current);
+      }
     }
 
-    window.addEventListener("resize", scheduleRegionSync);
+    const handleWindowResize = () => {
+      scheduleRegionSync();
+    };
+    window.addEventListener("resize", handleWindowResize);
 
     return () => {
       disposed = true;
@@ -442,13 +474,13 @@ export function MiniPlayerPage({
         window.cancelAnimationFrame(rafId);
       }
       resizeObserver?.disconnect();
-      window.removeEventListener("resize", scheduleRegionSync);
+      window.removeEventListener("resize", handleWindowResize);
       void clearCurrentWindowRegion().catch(() => void 0);
     };
   }, []);
 
-  useEffect(() => {
-    scheduleHitRegionSyncRef.current?.();
+  useLayoutEffect(() => {
+    scheduleHitRegionSyncRef.current?.(2);
   }, [borderRadius, displayState, islandHeight, islandWidth]);
 
   const handleIslandClick = useCallback(() => {
@@ -494,6 +526,9 @@ export function MiniPlayerPage({
         initial={false}
         data-tauri-drag-region
         animate={{ width: shellWidth, height: shellHeight, borderRadius: shellRadius }}
+        onAnimationComplete={() => {
+          scheduleHitRegionSyncRef.current?.(2);
+        }}
         onClick={handleIslandClick}
         className={cn(
           "halo-mini-standalone pointer-events-auto relative isolate overflow-hidden bg-transparent text-white transform-gpu",
@@ -505,13 +540,28 @@ export function MiniPlayerPage({
         transition={MINI_LAYOUT_TRANSITION}
       >
         <motion.div
+          ref={islandShellRef}
           layout
           className={cn(
-            "absolute inset-y-0 overflow-hidden border border-white/8 bg-black/[0.96] text-white",
-            "shadow-[0_22px_56px_-30px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(255,255,255,0.08)]",
+            "absolute inset-y-0 overflow-hidden bg-black/[0.96] text-white",
+            isCapsuleState
+              ? "border border-transparent shadow-[0_18px_40px_-28px_rgba(0,0,0,0.96),inset_0_0_0_1px_rgba(255,255,255,0.02)]"
+              : "border border-white/8 shadow-[0_22px_56px_-30px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(255,255,255,0.08)]",
             hasCustomBg && "bg-black/88 backdrop-blur-[22px]",
           )}
-          style={{ left: MINI_WINDOW_SIDE_BUFFER, right: MINI_WINDOW_SIDE_BUFFER, borderRadius }}
+          style={{
+            top: 0,
+            bottom: 0,
+            left: MINI_WINDOW_SIDE_BUFFER,
+            right: MINI_WINDOW_SIDE_BUFFER,
+            borderRadius,
+            backfaceVisibility: "hidden",
+            transform: "translateZ(0)",
+            willChange: "transform, width, height, border-radius",
+          }}
+          onLayoutAnimationComplete={() => {
+            scheduleHitRegionSyncRef.current?.(2);
+          }}
           transition={MINI_LAYOUT_TRANSITION}
         >
           {hasCustomBg && (
@@ -549,7 +599,14 @@ export function MiniPlayerPage({
             </motion.div>
           )}
 
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_-15%,rgba(255,255,255,0.18),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.05),transparent_40%,rgba(0,0,0,0.18))]" />
+          <div
+            className={cn(
+              "pointer-events-none absolute inset-0",
+              isCapsuleState
+                ? "bg-[linear-gradient(180deg,rgba(255,255,255,0.008),transparent_18%,rgba(0,0,0,0.16))]"
+                : "bg-[radial-gradient(circle_at_50%_-15%,rgba(255,255,255,0.18),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.05),transparent_40%,rgba(0,0,0,0.18))]",
+            )}
+          />
 
           <motion.div layout className="relative z-10 h-full w-full" transition={MINI_LAYOUT_TRANSITION}>
             {moduleContent}
