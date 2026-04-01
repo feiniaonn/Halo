@@ -62,6 +62,8 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED, COIN
 #[cfg(target_os = "windows")]
 const CURRENT_INFO_HOLD_MS: i64 = 12_000;
 #[cfg(target_os = "windows")]
+const QQMUSIC_CURRENT_INFO_HOLD_MS: i64 = 4_000;
+#[cfg(target_os = "windows")]
 const LISTENER_IDLE_TICK_MS: u64 = 1_200;
 #[cfg(target_os = "windows")]
 const LISTENER_ACTIVE_TICK_MS: u64 = 250;
@@ -71,6 +73,10 @@ const WINDOWS_API_RETRY_LIMIT: u8 = 3;
 const WINDOWS_API_RETRY_INTERVAL_MS: i64 = 1_800;
 #[cfg(target_os = "windows")]
 const WINDOWS_API_COOLDOWN_MS: i64 = 45_000;
+#[cfg(target_os = "windows")]
+const STARTUP_GRACE_PERIOD_MS: i64 = 30_000;
+#[cfg(target_os = "windows")]
+const STARTUP_RETRY_COOLDOWN_MS: i64 = 3_000;
 #[cfg(target_os = "windows")]
 const PROCESS_PROBE_RETRY_LIMIT: u8 = 3;
 #[cfg(target_os = "windows")]
@@ -169,6 +175,7 @@ struct ListenerState {
     virtual_track_first_seen_ms: HashMap<String, i64>,
     last_diag_line: String,
     last_diag_at_ms: i64,
+    listener_started_at_ms: i64,
 }
 
 #[cfg(target_os = "windows")]
@@ -1466,7 +1473,14 @@ fn enrich_current_from_local_cache(current: &mut CurrentPlayingInfo) {
 
 #[cfg(target_os = "windows")]
 fn query_current_once_sync() -> Option<CurrentPlayingInfo> {
-    let mut current = query_current_via_windows_api().or_else(query_current_via_process_probe);
+    let mut current = query_current_via_windows_api();
+    if let Some(proc_fallback) = query_current_via_process_probe() {
+        if let Some(snapshot) = current.as_mut() {
+            merge_process_probe_into_current(snapshot, &proc_fallback);
+        } else {
+            current = Some(proc_fallback);
+        }
+    }
     if let Some(snapshot) = current.as_mut() {
         enrich_current_from_local_cache(snapshot);
     }
@@ -1621,11 +1635,32 @@ fn same_track_identity(lhs: &CurrentPlayingInfo, rhs: &CurrentPlayingInfo) -> bo
 }
 
 #[cfg(target_os = "windows")]
-fn should_hold_last_snapshot(current: Option<&CurrentPlayingInfo>) -> bool {
+fn snapshot_hold_ms(current: Option<&CurrentPlayingInfo>) -> i64 {
     current
         .and_then(|snapshot| snapshot.source_platform.as_deref())
-        .map(|platform| platform != "qqmusic")
-        .unwrap_or(true)
+        .map(|platform| {
+            if platform == "qqmusic" {
+                QQMUSIC_CURRENT_INFO_HOLD_MS
+            } else {
+                CURRENT_INFO_HOLD_MS
+            }
+        })
+        .unwrap_or(CURRENT_INFO_HOLD_MS)
+}
+
+#[cfg(target_os = "windows")]
+fn is_listener_startup_grace(state: &ListenerState) -> bool {
+    state.listener_started_at_ms > 0
+        && now_ms().saturating_sub(state.listener_started_at_ms) <= STARTUP_GRACE_PERIOD_MS
+}
+
+#[cfg(target_os = "windows")]
+fn fallback_cooldown_ms(state: &ListenerState, normal_cooldown_ms: i64) -> i64 {
+    if is_listener_startup_grace(state) {
+        STARTUP_RETRY_COOLDOWN_MS
+    } else {
+        normal_cooldown_ms
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2085,6 +2120,7 @@ pub async fn run_gsmtc_listener(
     let (session_evt_tx, mut session_evt_rx) =
         tokio::sync::mpsc::unbounded_channel::<(usize, SessionUpdateEvent)>();
     let mut state = ListenerState::default();
+    state.listener_started_at_ms = now_ms();
     let _ = crate::db::prune_expired_lyrics_cache(now_ms());
     let initial_current = query_current_once_sync();
     if let Some(current) = initial_current.as_ref() {
@@ -2214,13 +2250,13 @@ pub async fn run_gsmtc_listener(
                     state.windows_api_fail_streak = state.windows_api_fail_streak.saturating_add(1);
                     if state.windows_api_fail_streak >= WINDOWS_API_RETRY_LIMIT {
                         state.windows_api_fail_streak = 0;
-                        state.windows_api_block_until_ms =
-                            now.saturating_add(WINDOWS_API_COOLDOWN_MS);
+                        let cooldown_ms = fallback_cooldown_ms(&state, WINDOWS_API_COOLDOWN_MS);
+                        state.windows_api_block_until_ms = now.saturating_add(cooldown_ms);
                         maybe_emit_diag(
                             &mut state,
                             format!(
                                 "windows_api fallback cooldown {}ms after {} failed attempts",
-                                WINDOWS_API_COOLDOWN_MS, WINDOWS_API_RETRY_LIMIT
+                                cooldown_ms, WINDOWS_API_RETRY_LIMIT
                             ),
                         );
                     } else if music_debug_enabled() {
@@ -2268,13 +2304,14 @@ pub async fn run_gsmtc_listener(
                             state.process_probe_fail_streak.saturating_add(1);
                         if state.process_probe_fail_streak >= PROCESS_PROBE_RETRY_LIMIT {
                             state.process_probe_fail_streak = 0;
-                            state.process_probe_block_until_ms =
-                                now.saturating_add(PROCESS_PROBE_COOLDOWN_MS);
+                            let cooldown_ms =
+                                fallback_cooldown_ms(&state, PROCESS_PROBE_COOLDOWN_MS);
+                            state.process_probe_block_until_ms = now.saturating_add(cooldown_ms);
                             maybe_emit_diag(
                                 &mut state,
                                 format!(
                                     "process_probe cooldown {}ms after {} failed attempts",
-                                    PROCESS_PROBE_COOLDOWN_MS, PROCESS_PROBE_RETRY_LIMIT
+                                    cooldown_ms, PROCESS_PROBE_RETRY_LIMIT
                                 ),
                             );
                         } else if music_debug_enabled() {
@@ -2367,9 +2404,9 @@ pub async fn run_gsmtc_listener(
                 state.last_nonempty_current = Some(current.clone());
                 state.last_nonempty_current_at_ms = now;
             }
-        } else if should_hold_last_snapshot(state.last_nonempty_current.as_ref())
-            && state.last_nonempty_current_at_ms > 0
-            && now.saturating_sub(state.last_nonempty_current_at_ms) <= CURRENT_INFO_HOLD_MS
+        } else if state.last_nonempty_current_at_ms > 0
+            && now.saturating_sub(state.last_nonempty_current_at_ms)
+                <= snapshot_hold_ms(state.last_nonempty_current.as_ref())
         {
             next_current = state.last_nonempty_current.clone();
         } else {
@@ -2407,7 +2444,7 @@ pub async fn run_gsmtc_listener(
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::{
-        stabilize_qqmusic_from_previous, timeline_to_duration_position_secs,
+        snapshot_hold_ms, stabilize_qqmusic_from_previous, timeline_to_duration_position_secs,
         timeline_to_duration_position_secs_for_platform, ListenerState,
     };
     use crate::CurrentPlayingInfo;
@@ -2470,7 +2507,7 @@ mod tests {
     #[test]
     fn qqmusic_snapshot_is_not_held_when_probe_goes_empty() {
         let previous = build_current("Close to Me", Some("Playing"), Some(12));
-        assert!(!super::should_hold_last_snapshot(Some(&previous)));
+        assert_eq!(snapshot_hold_ms(Some(&previous)), super::QQMUSIC_CURRENT_INFO_HOLD_MS);
     }
 
     #[test]

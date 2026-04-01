@@ -102,16 +102,17 @@ pub(crate) fn query_current_via_qqmusic_process_probe(
         .or_else(crate::music_qqmusic_cache::find_recent_cover_data_url)
         .or_else(|| process_path.as_deref().and_then(exe_icon_data_url_from_path));
 
-    if duration_secs.is_none() && cover_data_url.is_none() {
-        if debug_enabled {
-            eprintln!("[music-debug] qqmusic process probe found no matching local cache title='{}' artist='{}'", title, artist);
-        }
-        return None;
-    }
-
     if debug_enabled {
-        eprintln!("[music-debug] qqmusic process probe parsed title='{}' artist='{}' pid={:?} playback_active={:?} duration_secs={:?} position_secs={:?} anchor_ms={:?} has_cover={}",
-            title, artist, process_id, playback_active, duration_secs, estimated_position_secs, track_anchor_ms, cover_data_url.is_some()
+        eprintln!("[music-debug] qqmusic process probe parsed title='{}' artist='{}' pid={:?} playback_active={:?} duration_secs={:?} position_secs={:?} anchor_ms={:?} has_cover={} metadata_only={}",
+            title,
+            artist,
+            process_id,
+            playback_active,
+            duration_secs,
+            estimated_position_secs,
+            track_anchor_ms,
+            cover_data_url.is_some(),
+            duration_secs.is_none() && cover_data_url.is_none()
         );
     }
 
