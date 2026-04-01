@@ -11,6 +11,7 @@ import { MiniPlayerPage as MiniPlayerPageStatic } from "@/pages/MiniPlayerPage";
 import { MusicPage as MusicPageStatic } from "@/pages/MusicPage";
 import { SettingsPage as SettingsPageStatic } from "@/pages/SettingsPage";
 import { IslandPage as IslandPageStatic } from "@/pages/IslandPage";
+import { AiManagementPage as AiManagementPageStatic } from "@/pages/AiManagementPage";
 import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc, invoke, isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
@@ -58,7 +59,14 @@ const IslandPage = import.meta.env.DEV
     return { default: mod.IslandPage };
   });
 
-type Page = "dashboard" | "media" | "music" | "island" | "settings";
+const AiManagementPage = import.meta.env.DEV
+  ? AiManagementPageStatic
+  : lazy(async () => {
+    const mod = await import("@/pages/AiManagementPage");
+    return { default: mod.AiManagementPage };
+  });
+
+type Page = "dashboard" | "media" | "music" | "island" | "ai" | "settings";
 type BackgroundVideoOptimizedPayload = {
   original_path: string;
   optimized_path: string;
@@ -144,6 +152,7 @@ function App() {
   const [page, setPage] = useState<Page>("dashboard");
   const [activatedPages, setActivatedPages] = useState<Page[]>(["dashboard"]);
   const [hasUpdate, setHasUpdate] = useState(false);
+  const [developerMode, setDeveloperMode] = useState(false);
   const isTauri = useMemo(() => isTauriRuntime(), []);
   const [isMiniMode, setIsMiniMode] = useState(false);
   const [restoreState, setRestoreState] = useState<{
@@ -267,6 +276,12 @@ function App() {
   useEffect(() => {
     setActivatedPages((current) => (current.includes(page) ? current : [...current, page]));
   }, [page]);
+
+  useEffect(() => {
+    if (!developerMode && page === "ai") {
+      setPage("settings");
+    }
+  }, [developerMode, page]);
 
   useEffect(() => {
     restoreStateRef.current = restoreState;
@@ -452,6 +467,7 @@ function App() {
         setBgFsPath(p);
         setBgBlur(cfgBlur);
         setBgRev((prev) => prev + 1);
+        setDeveloperMode(cfg.developer_mode ?? false);
         setMiniModeWidth(cfg.mini_mode_width ?? 700);
         setMiniModeHeight(cfg.mini_mode_height ?? 50);
 
@@ -471,6 +487,7 @@ function App() {
         setBgFsPath(legacyPath);
         setBgBlur(legacyBlur);
         setBgRev((prev) => prev + 1);
+        setDeveloperMode(false);
       }
     })();
   }, [isTauri, nonCriticalReady]);
@@ -580,22 +597,14 @@ function App() {
           : (pos?.y ?? 70);
         return { width, height, x, y };
       };
-      const buildMiniTarget = async (from: WindowRect): Promise<MiniWindowTarget> => {
-        const monitor = await currentMonitor();
-        const mSize = monitor?.size;
-        const mPos = monitor?.position;
-        const scaleFactor = monitor?.scaleFactor ?? await win.scaleFactor();
-        const logicalSize = resolveMiniWindowLogicalSize(
-          miniIslandLayout,
-          typeof miniModeWidthRef.current === "number" && miniModeWidthRef.current > 0
-            ? miniModeWidthRef.current
-            : 700,
-          typeof miniModeHeightRef.current === "number" && miniModeHeightRef.current > 0
-            ? miniModeHeightRef.current
-            : 50,
-        );
-        const logicalWidth = logicalSize.width;
-        const logicalHeight = logicalSize.height;
+        const buildMiniTarget = async (from: WindowRect): Promise<MiniWindowTarget> => {
+          const monitor = await currentMonitor();
+          const mSize = monitor?.size;
+          const mPos = monitor?.position;
+          const scaleFactor = monitor?.scaleFactor ?? await win.scaleFactor();
+          const logicalSize = resolveMiniWindowLogicalSize(miniIslandLayout, "capsule");
+          const logicalWidth = logicalSize.width;
+          const logicalHeight = logicalSize.height;
         const logicalMonitorWidth = mSize ? mSize.width / scaleFactor : from.width / scaleFactor;
         const logicalMonitorHeight = mSize ? mSize.height / scaleFactor : from.height / scaleFactor;
         const logicalMonitorX = mPos ? mPos.x / scaleFactor : from.x / scaleFactor;
@@ -734,6 +743,7 @@ function App() {
   useEffect(() => {
     if (!nonCriticalReady || !isTauri) return;
     let unlisten: (() => void) | undefined;
+    let unlistenRestore: (() => void) | undefined;
 
     void listen(EVENT_WINDOW_FORCE_MINI_MODE, () => {
       void setMiniMode(true, true, undefined);
@@ -743,8 +753,17 @@ function App() {
       void 0;
     });
 
+    void listen("mini-player:restore-home", () => {
+      void setMiniMode(false, false, undefined);
+    }).then((off) => {
+      unlistenRestore = off;
+    }).catch(() => {
+      void 0;
+    });
+
     return () => {
       unlisten?.();
+      unlistenRestore?.();
     };
   }, [isTauri, setMiniMode, nonCriticalReady]);
 
@@ -842,6 +861,7 @@ function App() {
         currentPage={page}
         onNavigate={setPage}
         hasUpdate={hasUpdate}
+        developerModeEnabled={developerMode}
         globalHint={updateCheckHint}
         bgType={bgType}
         bgPath={bgSrcWithRev}
@@ -902,25 +922,36 @@ function App() {
               >
                 {activatedPages.includes("music") ? <MusicPage /> : null}
               </motion.div>
-                              <motion.div
+              <motion.div
+                initial={false}
+                animate={page === "island" ? "active" : "inactive"}
+                variants={pageVariants}
+                transition={pageTransition}
+                className="absolute inset-0 flex flex-col overflow-hidden will-change-transform"
+              >
+                {activatedPages.includes("island") ? (
+                  <IslandPage
+                    onSaveMiniModeSize={async (w, h) => {
+                      try {
+                        const { setMiniModeSize } = await import("@/modules/settings/services/settingsService");
+                        await setMiniModeSize(w, h);
+                      } catch (e) {
+                        console.error(e);
+                      }
+                    }}
+                  />
+                ) : null}
+              </motion.div>
+                <motion.div
                   initial={false}
-                  animate={page === "island" ? "active" : "inactive"}
+                  animate={page === "ai" ? "active" : "inactive"}
                   variants={pageVariants}
                   transition={pageTransition}
-                  className="absolute inset-0 flex flex-col overflow-hidden will-change-transform"
+                  className="absolute inset-0 flex flex-col overflow-y-auto overflow-x-hidden will-change-transform"
                 >
-                  {activatedPages.includes("island") ? (
-                    <IslandPage
-                      onSaveMiniModeSize={async (w, h) => {
-                        try {
-                          const { setMiniModeSize } = await import("@/modules/settings/services/settingsService");
-                          await setMiniModeSize(w, h);
-                        } catch (e) { console.error(e); }
-                      }}
-                    />
-                  ) : null}
+                  {developerMode && activatedPages.includes("ai") ? <AiManagementPage /> : null}
                 </motion.div>
-                <motion.div
+              <motion.div
                 initial={false}
                 animate={page === "settings" ? "active" : "inactive"}
                 variants={pageVariants}
@@ -932,8 +963,10 @@ function App() {
                     bgType={bgType}
                     bgFsPath={bgFsPath}
                     bgBlur={bgBlur}
+                    developerMode={developerMode}
                     onBgChange={updateBackground}
                     onBgBlurChange={updateBackgroundBlur}
+                    onDeveloperModeChange={setDeveloperMode}
                   />
                 ) : null}
               </motion.div>

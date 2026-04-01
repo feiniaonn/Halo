@@ -22,6 +22,8 @@ export interface IslandMusicRenderContext {
   playbackProgress: number;
   titleLabel: string;
   playbackStateLabel: string;
+  recommendationSong: string | null;
+  recommendationMood: string | null;
 }
 
 export interface IslandClockRenderContext {

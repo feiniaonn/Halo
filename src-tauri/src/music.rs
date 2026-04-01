@@ -2,18 +2,20 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::db::PlayRecord;
+use crate::music_play_stats::PlayEventRecorder;
 use crate::CurrentPlayingInfo;
 
 const EVENT_MUSIC_CURRENT_CHANGED: &str = "music:current-changed";
 const EVENT_MUSIC_TRACK_UPDATE: &str = "track-update";
 const EVENT_MUSIC_TIMELINE_UPDATE: &str = "timeline-update";
+const EVENT_MUSIC_PLAY_RECORDED: &str = "music:play-recorded";
 
 pub fn aggregated_play_history(limit: i64) -> Result<Vec<PlayRecord>, String> {
     crate::db::query_play_history(limit)
 }
 
 pub fn aggregated_top10() -> Result<Vec<PlayRecord>, String> {
-    crate::db::query_top10()
+    crate::db::query_today_top10(chrono::Local::now().timestamp_millis())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -57,23 +59,22 @@ use windows::Media::Control::{
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED};
 
 #[cfg(target_os = "windows")]
-const RECORD_COOLDOWN_MS: i64 = 15_000;
 #[cfg(target_os = "windows")]
 const CURRENT_INFO_HOLD_MS: i64 = 12_000;
 #[cfg(target_os = "windows")]
 const LISTENER_IDLE_TICK_MS: u64 = 1_200;
 #[cfg(target_os = "windows")]
-const LISTENER_ACTIVE_TICK_MS: u64 = 120;
+const LISTENER_ACTIVE_TICK_MS: u64 = 250;
 #[cfg(target_os = "windows")]
 const WINDOWS_API_RETRY_LIMIT: u8 = 3;
 #[cfg(target_os = "windows")]
-const WINDOWS_API_RETRY_INTERVAL_MS: i64 = 1_200;
+const WINDOWS_API_RETRY_INTERVAL_MS: i64 = 1_800;
 #[cfg(target_os = "windows")]
 const WINDOWS_API_COOLDOWN_MS: i64 = 45_000;
 #[cfg(target_os = "windows")]
 const PROCESS_PROBE_RETRY_LIMIT: u8 = 3;
 #[cfg(target_os = "windows")]
-const PROCESS_PROBE_RETRY_INTERVAL_MS: i64 = 250;
+const PROCESS_PROBE_RETRY_INTERVAL_MS: i64 = 1_500;
 #[cfg(target_os = "windows")]
 const PROCESS_PROBE_COOLDOWN_MS: i64 = 90_000;
 #[cfg(target_os = "windows")]
@@ -154,8 +155,7 @@ struct SessionSnapshot {
 struct ListenerState {
     current_session_id: Option<usize>,
     sessions: HashMap<usize, SessionSnapshot>,
-    last_record_key: String,
-    last_record_at_ms: i64,
+    play_event_recorder: PlayEventRecorder,
     last_windows_api_probe_at_ms: i64,
     windows_api_fail_streak: u8,
     windows_api_block_until_ms: i64,
@@ -302,6 +302,55 @@ fn timeline_to_duration_position_secs(
         } else {
             // Fallback: use a small increment for real-time feel when last_updated_at_ms is unavailable
             position_ticks = position_ticks.saturating_add(500 * 10_000);
+        }
+    }
+
+    let clamped_position_ticks = position_ticks.clamp(0, duration_ticks);
+    (
+        ticks_100ns_to_secs(duration_ticks),
+        ticks_100ns_to_secs(clamped_position_ticks),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn timeline_to_duration_position_secs_for_platform(
+    platform: &str,
+    start_ticks: i64,
+    end_ticks: i64,
+    raw_position_ticks: i64,
+    is_playing: bool,
+    last_updated_at_ms: Option<i64>,
+) -> (Option<u64>, Option<u64>) {
+    if platform != "qqmusic" {
+        return timeline_to_duration_position_secs(
+            start_ticks,
+            end_ticks,
+            raw_position_ticks,
+            is_playing,
+            last_updated_at_ms,
+        );
+    }
+
+    let duration_ticks = end_ticks.saturating_sub(start_ticks).max(0);
+    let relative_position_ticks = raw_position_ticks.saturating_sub(start_ticks).max(0);
+    let mut position_ticks = if start_ticks > 0
+        && raw_position_ticks > 0
+        && raw_position_ticks <= duration_ticks
+    {
+        raw_position_ticks
+    } else {
+        relative_position_ticks
+    };
+
+    if is_playing {
+        if let Some(updated_ms) = last_updated_at_ms {
+            if updated_ms > 0 {
+                let elapsed_ms = now_ms().saturating_sub(updated_ms);
+                if (0..=(12 * 60 * 60 * 1000)).contains(&elapsed_ms) {
+                    position_ticks =
+                        position_ticks.saturating_add(elapsed_ms.saturating_mul(10_000));
+                }
+            }
         }
     }
 
@@ -869,6 +918,7 @@ fn model_to_current(
     model: &SessionModel,
     cover_path: Option<String>,
 ) -> CurrentPlayingInfo {
+    let platform = detect_source_platform(source);
     let media = model.media.as_ref();
     let playback = model.playback.as_ref();
     let timeline = model.timeline.as_ref();
@@ -887,7 +937,8 @@ fn model_to_current(
         .unwrap_or(false);
     let (duration_secs, position_secs) = timeline
         .map(|t| {
-            timeline_to_duration_position_secs(
+            timeline_to_duration_position_secs_for_platform(
+                platform.as_str(),
                 t.start,
                 t.end,
                 t.position,
@@ -908,7 +959,7 @@ fn model_to_current(
         timeline_updated_at_ms: timeline.map(|value| value.last_updated_at_ms),
         playback_status: playback.map(|p| map_playback_status(&p.status)),
         source_app_id: Some(source.to_string()),
-        source_platform: Some(detect_source_platform(source)),
+        source_platform: Some(platform),
     }
 }
 
@@ -1024,7 +1075,14 @@ fn query_current_via_windows_api() -> Option<CurrentPlayingInfo> {
                 .ok()
                 .map(|v| filetime_to_unix_ms(v.UniversalTime));
             let (duration_secs, position_secs) =
-                timeline_to_duration_position_secs(start, end, pos, is_playing, last_updated_at_ms);
+                timeline_to_duration_position_secs_for_platform(
+                    platform.as_str(),
+                    start,
+                    end,
+                    pos,
+                    is_playing,
+                    last_updated_at_ms,
+                );
             (duration_secs, position_secs, last_updated_at_ms)
         } else {
             (None, None, None)
@@ -1848,8 +1906,6 @@ fn same_timeline_snapshot(a: &Option<CurrentPlayingInfo>, b: &Option<CurrentPlay
         (Some(lhs), Some(rhs)) => {
             lhs.duration_secs == rhs.duration_secs
                 && lhs.position_secs == rhs.position_secs
-                && lhs.position_sampled_at_ms == rhs.position_sampled_at_ms
-                && lhs.timeline_updated_at_ms == rhs.timeline_updated_at_ms
                 && lhs.playback_status == rhs.playback_status
                 && lhs.source_app_id == rhs.source_app_id
                 && lhs.source_platform == rhs.source_platform
@@ -1927,41 +1983,8 @@ fn choose_current_snapshot<'a>(state: &'a ListenerState) -> Option<(usize, &'a S
 fn maybe_record_play_event(
     state: &mut ListenerState,
     current: &CurrentPlayingInfo,
-) -> Result<(), String> {
-    let is_playing = current
-        .playback_status
-        .as_deref()
-        .map(|v| v.eq_ignore_ascii_case("playing"))
-        .unwrap_or(false);
-    if !is_playing || current.artist.trim().is_empty() || current.title.trim().is_empty() {
-        return Ok(());
-    }
-
-    let key = format!(
-        "{}|{}|{}",
-        current.source_app_id.as_deref().unwrap_or(""),
-        current.artist.trim().to_ascii_lowercase(),
-        current.title.trim().to_ascii_lowercase()
-    );
-    let now = now_ms();
-    if state.last_record_key == key
-        && now.saturating_sub(state.last_record_at_ms) < RECORD_COOLDOWN_MS
-    {
-        return Ok(());
-    }
-
-    crate::db::record_play_event(
-        &current.artist,
-        &current.title,
-        current.cover_path.as_deref(),
-        current.source_app_id.as_deref(),
-        current.source_platform.as_deref(),
-        now,
-        0,
-    )?;
-    state.last_record_key = key;
-    state.last_record_at_ms = now;
-    Ok(())
+) -> Result<bool, String> {
+    state.play_event_recorder.observe(current, now_ms())
 }
 
 #[cfg(target_os = "windows")]
@@ -2327,8 +2350,14 @@ pub async fn run_gsmtc_listener(
                 state.virtual_track_first_seen_ms.clear();
             }
 
-            if let Err(e) = maybe_record_play_event(&mut state, current) {
-                eprintln!("[music] record play event failed: {e}");
+            match maybe_record_play_event(&mut state, current) {
+                Ok(true) => {
+                    let _ = app.emit(EVENT_MUSIC_PLAY_RECORDED, ());
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    eprintln!("[music] record play event failed: {e}");
+                }
             }
         }
 
@@ -2377,7 +2406,10 @@ pub async fn run_gsmtc_listener(
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::{stabilize_qqmusic_from_previous, ListenerState};
+    use super::{
+        stabilize_qqmusic_from_previous, timeline_to_duration_position_secs,
+        timeline_to_duration_position_secs_for_platform, ListenerState,
+    };
     use crate::CurrentPlayingInfo;
 
     fn build_current(
@@ -2439,5 +2471,36 @@ mod tests {
     fn qqmusic_snapshot_is_not_held_when_probe_goes_empty() {
         let previous = build_current("Close to Me", Some("Playing"), Some(12));
         assert!(!super::should_hold_last_snapshot(Some(&previous)));
+    }
+
+    #[test]
+    fn qqmusic_timeline_prefers_raw_position_when_relative_value_underreports() {
+        let secs = |value: u64| (value as i64) * 10_000_000;
+        let (duration_secs, position_secs) = timeline_to_duration_position_secs_for_platform(
+            "qqmusic",
+            secs(43),
+            secs(254),
+            secs(53),
+            false,
+            None,
+        );
+
+        assert_eq!(duration_secs, Some(211));
+        assert_eq!(position_secs, Some(53));
+    }
+
+    #[test]
+    fn generic_timeline_keeps_relative_position_math() {
+        let secs = |value: u64| (value as i64) * 10_000_000;
+        let (duration_secs, position_secs) = timeline_to_duration_position_secs(
+            secs(43),
+            secs(254),
+            secs(53),
+            false,
+            None,
+        );
+
+        assert_eq!(duration_secs, Some(211));
+        assert_eq!(position_secs, Some(10));
     }
 }

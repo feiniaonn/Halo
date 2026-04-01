@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { motion } from "framer-motion";
 import { useIslandSizes } from "@/hooks/useIslandSizes";
-import { clearCurrentWindowRegion, setCurrentWindowRoundedRegion } from "@/lib/windowGeometry";
+import {
+  applyCurrentWindowRect,
+  clearCurrentWindowRegion,
+  setCurrentWindowRoundedRegion,
+} from "@/lib/windowGeometry";
 import { cn } from "@/lib/utils";
 import { MINI_ISLAND_TOP_OFFSET, resolveMiniIslandLayout } from "@/modules/island/layout";
 import { resolveIslandModule } from "@/modules/island/registry";
 import type { IslandDensity, IslandFrameState, IslandModuleRenderContext } from "@/modules/island/types";
+import { useMusicAiRecommendation } from "@/modules/ai/hooks/useMusicAiRecommendation";
 import { useCurrentPlaying } from "@/modules/music/hooks/useCurrentPlaying";
 import { useMusicLyrics } from "@/modules/music/hooks/useMusicLyrics";
 import { usePlaybackClock } from "@/modules/music/hooks/usePlaybackClock";
@@ -42,7 +48,7 @@ const DEFAULT_MINI_SETTINGS: MiniSettingsState = {
   restoreHomeHotkey: "Control+Shift+H",
 };
 
-const MINI_WINDOW_SIDE_BUFFER = 2;
+const MINI_WINDOW_SIDE_BUFFER = 0;
 
 function normalizeShortcut(input: string | null | undefined): string | null {
   if (!input) return null;
@@ -155,8 +161,11 @@ export function MiniPlayerPage({
   const islandRef = useRef<HTMLDivElement | null>(null);
   const islandShellRef = useRef<HTMLDivElement | null>(null);
   const scheduleHitRegionSyncRef = useRef<((rafDepth?: number) => void) | null>(null);
+  const nativeWindowModeRef = useRef<"capsule" | "expanded">("capsule");
+  const nativeWindowSyncRef = useRef<Promise<void> | null>(null);
   const { sizes } = useIslandSizes();
   const { data: current } = useCurrentPlaying();
+  const musicRecommendation = useMusicAiRecommendation();
 
   const playbackTrackKey = `${current?.source_app_id ?? ""}::${current?.artist ?? ""}::${current?.title ?? ""}`;
   const livePlaybackPositionSecs = usePlaybackClock(
@@ -282,6 +291,8 @@ export function MiniPlayerPage({
         playbackProgress,
         titleLabel,
         playbackStateLabel,
+        recommendationSong: musicRecommendation.data?.song_name ?? null,
+        recommendationMood: musicRecommendation.data?.mood ?? null,
       },
       clock: {
         timeLabel,
@@ -298,6 +309,8 @@ export function MiniPlayerPage({
       lyricPlaybackMs,
       playbackProgress,
       playbackStateLabel,
+      musicRecommendation.data?.mood,
+      musicRecommendation.data?.song_name,
       timeLabel,
       titleLabel,
     ],
@@ -339,6 +352,40 @@ export function MiniPlayerPage({
       clock: capsuleContext.clock,
     }),
     [capsuleContext.clock, capsuleContext.music, displayState, frameDensity, islandHeight, islandWidth],
+  );
+
+  const syncNativeMiniWindow = useCallback(
+    async (mode: "capsule" | "expanded") => {
+      if (!isTauriRuntime()) return;
+
+      const nextLogicalSize = resolveMiniIslandLayout(sizes.capsuleWidth, sizes.capsuleHeight);
+      const target = mode === "expanded"
+        ? { width: nextLogicalSize.expandedWidth, height: nextLogicalSize.expandedHeight }
+        : { width: nextLogicalSize.capsuleWidth, height: nextLogicalSize.capsuleHeight };
+
+      const win = getCurrentWindow();
+      const scaleFactor = await win.scaleFactor();
+      const currentSize = await win.innerSize();
+      const currentPos = await win.innerPosition();
+      const nextWidth = Math.max(1, Math.round(target.width * scaleFactor));
+      const nextHeight = Math.max(1, Math.round(target.height * scaleFactor));
+      const widthDelta = nextWidth - currentSize.width;
+      const heightDelta = nextHeight - currentSize.height;
+
+      if (Math.abs(widthDelta) <= 1 && Math.abs(heightDelta) <= 1) {
+        nativeWindowModeRef.current = mode;
+        return;
+      }
+
+      await applyCurrentWindowRect({
+        x: Math.round(currentPos.x - widthDelta / 2),
+        y: currentPos.y,
+        width: nextWidth,
+        height: nextHeight,
+      });
+      nativeWindowModeRef.current = mode;
+    },
+    [sizes.capsuleHeight, sizes.capsuleWidth],
   );
 
   useEffect(() => {
@@ -388,13 +435,13 @@ export function MiniPlayerPage({
   useLayoutEffect(() => {
     if (!isTauriRuntime()) return;
 
-    let rafId = 0;
+    let regionRafId = 0;
     let disposed = false;
     let resizeObserver: ResizeObserver | null = null;
 
     const syncRegion = () => {
       if (disposed) return;
-      const element = islandShellRef.current ?? islandRef.current;
+      const element = islandShellRef.current;
       if (!element) return;
 
       const rect = element.getBoundingClientRect();
@@ -429,22 +476,22 @@ export function MiniPlayerPage({
     };
 
     const scheduleRegionSync = (rafDepth = 1) => {
-      if (disposed || rafId) return;
+      if (disposed || regionRafId) return;
       let remainingFrames = Math.max(1, rafDepth);
       const tick = () => {
         if (disposed) {
-          rafId = 0;
+          regionRafId = 0;
           return;
         }
         remainingFrames -= 1;
         if (remainingFrames > 0) {
-          rafId = window.requestAnimationFrame(tick);
+          regionRafId = window.requestAnimationFrame(tick);
           return;
         }
-        rafId = 0;
+        regionRafId = 0;
         syncRegion();
       };
-      rafId = window.requestAnimationFrame(tick);
+      regionRafId = window.requestAnimationFrame(tick);
     };
 
     scheduleHitRegionSyncRef.current = scheduleRegionSync;
@@ -470,8 +517,8 @@ export function MiniPlayerPage({
     return () => {
       disposed = true;
       scheduleHitRegionSyncRef.current = null;
-      if (rafId) {
-        window.cancelAnimationFrame(rafId);
+      if (regionRafId) {
+        window.cancelAnimationFrame(regionRafId);
       }
       resizeObserver?.disconnect();
       window.removeEventListener("resize", handleWindowResize);
@@ -483,15 +530,46 @@ export function MiniPlayerPage({
     scheduleHitRegionSyncRef.current?.(2);
   }, [borderRadius, displayState, islandHeight, islandWidth]);
 
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    if (nativeWindowSyncRef.current) return;
+
+    nativeWindowSyncRef.current = syncNativeMiniWindow(nativeWindowModeRef.current)
+      .catch(() => void 0)
+      .finally(() => {
+        nativeWindowSyncRef.current = null;
+      });
+  }, [sizes.capsuleHeight, sizes.capsuleWidth, syncNativeMiniWindow]);
+
   const handleIslandClick = useCallback(() => {
     if (!canExpand) return;
-    setWantsExpanded((prev) => !prev);
-  }, [canExpand]);
+    if (nativeWindowSyncRef.current) return;
+
+    if (!wantsExpanded) {
+      nativeWindowSyncRef.current = syncNativeMiniWindow("expanded")
+        .catch(() => void 0)
+        .finally(() => {
+          nativeWindowSyncRef.current = null;
+          setWantsExpanded(true);
+        });
+      return;
+    }
+
+    setWantsExpanded(false);
+  }, [canExpand, syncNativeMiniWindow, wantsExpanded]);
 
   const requestReturnHome = useCallback(() => {
     if (isTransitioning) return;
     onToggleMini?.();
   }, [isTransitioning, onToggleMini]);
+
+  const handleIslandDoubleClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      requestReturnHome();
+    },
+    [requestReturnHome]
+  );
 
   const moduleContent =
     displayState === "expanded" && canExpand && activeModule.renderExpanded
@@ -528,8 +606,19 @@ export function MiniPlayerPage({
         animate={{ width: shellWidth, height: shellHeight, borderRadius: shellRadius }}
         onAnimationComplete={() => {
           scheduleHitRegionSyncRef.current?.(2);
+          if (!wantsExpanded) {
+            nativeWindowSyncRef.current = syncNativeMiniWindow("capsule")
+              .catch(() => void 0)
+              .finally(() => {
+                nativeWindowSyncRef.current = null;
+              });
+          }
+        }}
+        onUpdate={() => {
+          scheduleHitRegionSyncRef.current?.();
         }}
         onClick={handleIslandClick}
+        onDoubleClick={handleIslandDoubleClick}
         className={cn(
           "halo-mini-standalone pointer-events-auto relative isolate overflow-hidden bg-transparent text-white transform-gpu",
           canExpand ? "cursor-pointer" : "cursor-default",

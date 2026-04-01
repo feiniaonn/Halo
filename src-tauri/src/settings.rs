@@ -35,6 +35,8 @@ pub struct AppSettingsResponse {
     pub storage_display_path: String,
     pub legacy_roots: Vec<String>,
     pub launch_at_login: bool,
+    #[serde(default)]
+    pub developer_mode: bool,
     pub close_behavior: String,
     pub background_type: Option<String>,
     pub background_path: Option<String>,
@@ -57,6 +59,7 @@ impl Default for AppSettingsResponse {
             storage_display_path: default_storage_display_path(),
             legacy_roots: Vec::new(),
             launch_at_login: false,
+            developer_mode: false,
             close_behavior: "tray".to_string(),
             background_type: Some("none".to_string()),
             background_path: None,
@@ -226,6 +229,13 @@ pub fn set_storage_root(path: Option<String>) -> Result<(), String> {
 pub fn set_launch_at_login(enabled: bool) -> Result<(), String> {
     update_settings(|s| {
         s.launch_at_login = enabled;
+    })
+}
+
+#[tauri::command]
+pub fn set_developer_mode(enabled: bool) -> Result<(), String> {
+    update_settings(|s| {
+        s.developer_mode = enabled;
     })
 }
 
@@ -404,6 +414,10 @@ pub fn get_music_data_dir() -> PathBuf {
 
 pub fn get_vod_data_dir() -> PathBuf {
     app_data_dir().join("vod")
+}
+
+pub fn get_ai_data_dir() -> PathBuf {
+    app_data_dir().join("ai")
 }
 
 pub fn ensure_parent(path: &Path) -> Result<(), String> {

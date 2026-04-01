@@ -595,11 +595,13 @@ pub async fn music_get_control_sources(
 
 #[tauri::command]
 pub fn music_get_daily_summary() -> MusicDailySummary {
-    let top = crate::music::aggregated_top10().unwrap_or_default();
-    let total_play_events = top.iter().map(|v| v.play_count.max(0) as u64).sum();
-    MusicDailySummary {
-        total_play_events,
-        top_song: top.into_iter().next(),
+    let now_ms = chrono::Local::now().timestamp_millis();
+    match crate::db::query_today_summary(now_ms) {
+        Ok((total_play_events, top_song)) => MusicDailySummary {
+            total_play_events,
+            top_song,
+        },
+        Err(_) => MusicDailySummary::default(),
     }
 }
 

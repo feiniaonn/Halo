@@ -1,29 +1,31 @@
-import { useEffect } from 'react';
-import { AppWindow, HardDrive, Palette, RefreshCw } from 'lucide-react';
+import { useEffect } from "react";
+import { AppWindow, Code2, HardDrive, Palette, RefreshCw } from "lucide-react";
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { cn } from '@/lib/utils';
-import { BackgroundSettingsSection } from '@/modules/settings/components/BackgroundSettingsSection';
-import { StorageSettingsSection } from '@/modules/settings/components/StorageSettingsSection';
-import { UpdateSettingsSection } from '@/modules/settings/components/UpdateSettingsSection';
-import { WindowSettingsSection } from '@/modules/settings/components/WindowSettingsSection';
-import { useSettingsPageController } from '@/modules/settings/hooks/useSettingsPageController';
- '@/modules/settings/types/settings.types';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
+import { BackgroundSettingsSection } from "@/modules/settings/components/BackgroundSettingsSection";
+import { DeveloperSettingsSection } from "@/modules/settings/components/DeveloperSettingsSection";
+import { StorageSettingsSection } from "@/modules/settings/components/StorageSettingsSection";
+import { UpdateSettingsSection } from "@/modules/settings/components/UpdateSettingsSection";
+import { WindowSettingsSection } from "@/modules/settings/components/WindowSettingsSection";
+import { useSettingsPageController } from "@/modules/settings/hooks/useSettingsPageController";
 
 export function SettingsPage({
-  bgType = 'none',
+  bgType = "none",
   bgFsPath,
   bgBlur = 12,
+  developerMode = false,
   onBgChange,
   onBgBlurChange,
-  }: {
-  bgType?: 'none' | 'image' | 'video';
+  onDeveloperModeChange,
+}: {
+  bgType?: "none" | "image" | "video";
   bgFsPath?: string | null;
   bgBlur?: number;
-  onBgChange?: (type: 'none' | 'image' | 'video', path: string | null) => void;
+  developerMode?: boolean;
+  onBgChange?: (type: "none" | "image" | "video", path: string | null) => void;
   onBgBlurChange?: (blur: number) => void;
-  onMiniModeWidthChange?: (width: number) => void;
-  onMiniModeHeightChange?: (height: number) => void;
+  onDeveloperModeChange?: (enabled: boolean) => void;
 }) {
   const {
     updater,
@@ -43,6 +45,7 @@ export function SettingsPage({
     handleChooseBackground,
     handleLaunchAtLogin,
     handleCloseBehavior,
+    handleDeveloperMode,
     handleChooseFolder,
     handleRestoreDefaultStorage,
   } = useSettingsPageController({
@@ -51,11 +54,11 @@ export function SettingsPage({
     bgBlur,
     onBgChange,
     onBgBlurChange,
+    onDeveloperModeChange,
   });
 
-  // Auto-dismiss success notices after 3 s (must be before any early returns – Rules of Hooks)
   useEffect(() => {
-    if (!bgNotice || bgNotice.kind !== 'success') return;
+    if (!bgNotice || bgNotice.kind !== "success") return;
     const timer = window.setTimeout(() => setBgNotice(null), 3000);
     return () => window.clearTimeout(timer);
   }, [bgNotice, setBgNotice]);
@@ -68,19 +71,18 @@ export function SettingsPage({
         </h1>
         <div className="flex items-center gap-3">
           <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <p className="text-sm font-medium tracking-wide text-muted-foreground/80">
-            加载配置中...
-          </p>
+          <p className="text-sm font-medium tracking-wide text-muted-foreground/80">正在加载配置…</p>
         </div>
       </div>
     );
   }
 
   const tabs = [
-    { value: 'appearance', label: '个性预览', icon: Palette, desc: '背景与外观' },
-    { value: 'window', label: '窗口行为', icon: AppWindow, desc: '启动与关闭逻辑' },
-    { value: 'updates', label: '检查更新', icon: RefreshCw, desc: '版本与更新源' },
-    { value: 'storage', label: '存储管理', icon: HardDrive, desc: '数据目录与迁移' },
+    { value: "appearance", label: "个性外观", icon: Palette },
+    { value: "window", label: "窗口行为", icon: AppWindow },
+    { value: "developer", label: "开发者", icon: Code2 },
+    { value: "updates", label: "检查更新", icon: RefreshCw },
+    { value: "storage", label: "存储管理", icon: HardDrive },
   ] as const;
 
   return (
@@ -89,10 +91,10 @@ export function SettingsPage({
         <div className="pointer-events-none fixed right-6 top-16 z-[60] w-[min(480px,calc(100vw-3rem))] animate-in slide-in-from-top-4 slide-in-from-right-4 fade-in duration-500">
           <div
             className={cn(
-              'pointer-events-auto relative overflow-hidden rounded-2xl border p-4 shadow-lg backdrop-blur-xl',
-              bgNotice.kind === 'success'
-                ? 'border-emerald-500/20 bg-emerald-500/10'
-                : 'border-red-500/20 bg-red-500/10',
+              "pointer-events-auto relative overflow-hidden rounded-2xl border p-4 shadow-lg backdrop-blur-xl",
+              bgNotice.kind === "success"
+                ? "border-emerald-500/20 bg-emerald-500/10"
+                : "border-red-500/20 bg-red-500/10",
             )}
             role="status"
             aria-live="polite"
@@ -100,19 +102,19 @@ export function SettingsPage({
             <div className="relative z-10 flex items-start gap-4">
               <div
                 className={cn(
-                  'mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/20 text-sm font-bold shadow-inner',
-                  bgNotice.kind === 'success'
-                    ? 'bg-gradient-to-br from-emerald-400 to-emerald-600 text-white'
-                    : 'bg-gradient-to-br from-red-400 to-red-600 text-white',
+                  "mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/20 text-sm font-bold shadow-inner",
+                  bgNotice.kind === "success"
+                    ? "bg-gradient-to-br from-emerald-400 to-emerald-600 text-white"
+                    : "bg-gradient-to-br from-red-400 to-red-600 text-white",
                 )}
               >
-                {bgNotice.kind === 'success' ? '✓' : '!'}
+                {bgNotice.kind === "success" ? "✓" : "!"}
               </div>
               <div className="min-w-0 flex-1">
                 <div className="text-[15px] font-bold tracking-tight text-foreground/90">
                   {bgNotice.title}
                 </div>
-                <div className="mt-1 text-[13px] leading-relaxed text-muted-foreground/90 break-all">
+                <div className="mt-1 break-all text-[13px] leading-relaxed text-muted-foreground/90">
                   {bgNotice.detail}
                 </div>
                 {bgNotice.fileName && (
@@ -126,39 +128,35 @@ export function SettingsPage({
         </div>
       )}
 
-      <div className="shrink-0 px-8 pt-8 pb-2">
+      <div className="shrink-0 px-8 pb-2 pt-8">
         <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
-        <p className="text-xs text-muted-foreground mt-1">
-          管理应用外观、运行行为、版本更新及本地存储。
+        <p className="mt-1 text-xs text-muted-foreground">
+          管理应用外观、窗口行为、开发者功能、版本更新与本地存储。
         </p>
       </div>
 
       <Tabs defaultValue="appearance" className="flex h-full min-h-0 flex-col">
         <div className="shrink-0 px-8 pb-2">
-          
-            <TabsList className="flex h-12 w-full justify-start gap-2 p-1">
+          <TabsList className="flex h-12 w-full justify-start gap-2 p-1">
             {tabs.map((tab) => {
               const Icon = tab.icon;
               return (
                 <TabsTrigger
                   key={tab.value}
                   value={tab.value}
-                  className="relative flex items-center justify-center gap-2 rounded-xl px-4 py-2 font-medium text-muted-foreground transition-all duration-300 ease-out hover:text-foreground hover:bg-white/5 data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+                  className="relative flex items-center justify-center gap-2 rounded-xl px-4 py-2 font-medium text-muted-foreground transition-all duration-300 ease-out hover:bg-white/5 hover:text-foreground data-[state=active]:text-foreground data-[state=active]:shadow-sm"
                 >
                   <Icon className="size-4 shrink-0" />
                   <span>{tab.label}</span>
                 </TabsTrigger>
               );
             })}
-            </TabsList>
-          </div>
+          </TabsList>
+        </div>
 
         <div className="min-h-0 flex-1 overflow-hidden">
-          <div className="h-full min-h-0 overflow-y-auto px-8 py-6 custom-scrollbar-minimal bg-transparent">
-            <TabsContent
-              value="appearance"
-              className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500"
-            >
+          <div className="custom-scrollbar-minimal h-full min-h-0 overflow-y-auto bg-transparent px-8 py-6">
+            <TabsContent value="appearance" className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500">
               <BackgroundSettingsSection
                 bgType={bgType}
                 bgBlur={bgBlur}
@@ -170,37 +168,35 @@ export function SettingsPage({
                 onChooseBackground={(type) => void handleChooseBackground(type)}
                 onPreviewError={(type) => {
                   setStorageMessage(
-                    type === 'image'
-                      ? '背景图片预览失败，可重新选择新图片。'
-                      : '背景视频预览失败，可重新选择新视频。',
+                    type === "image"
+                      ? "背景图片预览失败，可以重新选择新图片。"
+                      : "背景视频预览失败，可以重新选择新视频。",
                   );
                 }}
               />
             </TabsContent>
 
-            <TabsContent
-              value="window"
-              className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500"
-            >
+            <TabsContent value="window" className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500">
               <WindowSettingsSection
-                  launchAtLogin={settings.launch_at_login}
-                  closeBehavior={settings.close_behavior}
-                  onLaunchAtLoginChange={(enabled) => void handleLaunchAtLogin(enabled)}
-                  onCloseBehaviorChange={(behavior) => void handleCloseBehavior(behavior)}
-                />
+                launchAtLogin={settings.launch_at_login}
+                closeBehavior={settings.close_behavior}
+                onLaunchAtLoginChange={(enabled) => void handleLaunchAtLogin(enabled)}
+                onCloseBehaviorChange={(behavior) => void handleCloseBehavior(behavior)}
+              />
             </TabsContent>
 
-            <TabsContent
-              value="updates"
-              className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500"
-            >
+            <TabsContent value="developer" className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500">
+              <DeveloperSettingsSection
+                developerMode={developerMode}
+                onDeveloperModeChange={(enabled) => void handleDeveloperMode(enabled)}
+              />
+            </TabsContent>
+
+            <TabsContent value="updates" className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500">
               <UpdateSettingsSection updater={updater} />
             </TabsContent>
 
-            <TabsContent
-              value="storage"
-              className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500"
-            >
+            <TabsContent value="storage" className="m-0 animate-in fade-in slide-in-from-bottom-2 duration-500">
               <StorageSettingsSection
                 storageDisplayPath={settings.storage_display_path}
                 storageMessage={storageMessage}
@@ -216,18 +212,3 @@ export function SettingsPage({
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

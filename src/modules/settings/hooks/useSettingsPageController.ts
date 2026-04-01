@@ -1,18 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useUpdater } from "@/modules/updater/hooks/useUpdater";
-import {
-  getAppSettings,
-  setStorageRoot,
-} from "@/modules/settings/services/settingsService";
+
 import { SETTINGS_MESSAGES } from "@/modules/settings/constants";
+import { useUpdater } from "@/modules/updater/hooks/useUpdater";
 import { reportRuntimeError } from "@/modules/shared/services/runtimeError";
+import { getAppSettings, setStorageRoot } from "@/modules/settings/services/settingsService";
+import type { AppSettingsResponse, MiniRestoreMode } from "@/modules/settings/types/settings.types";
+import { formatSettingsError, normalizeBackgroundType } from "@/modules/settings/utils";
+
 import { useBackgroundSettings } from "./useBackgroundSettings";
 import { useMigrationSettings } from "./useMigrationSettings";
 import { useWindowSettings } from "./useWindowSettings";
-import type { AppSettingsResponse, MiniRestoreMode } from "@/modules/settings/types/settings.types";
-import { formatSettingsError, normalizeBackgroundType } from "@/modules/settings/utils";
 
 export function useSettingsPageController({
   bgType,
@@ -22,6 +21,7 @@ export function useSettingsPageController({
   onBgBlurChange,
   onMiniModeWidthChange,
   onMiniModeHeightChange,
+  onDeveloperModeChange,
 }: {
   bgType: "none" | "image" | "video";
   bgFsPath?: string | null;
@@ -33,6 +33,7 @@ export function useSettingsPageController({
   onMiniRestoreModeChange?: (mode: MiniRestoreMode) => void;
   onMiniModeWidthChange?: (width: number) => void;
   onMiniModeHeightChange?: (height: number) => void;
+  onDeveloperModeChange?: (enabled: boolean) => void;
 }) {
   const isTauri = useMemo(() => isTauriRuntime(), []);
   const updater = useUpdater();
@@ -45,6 +46,7 @@ export function useSettingsPageController({
       setLoading(false);
       return;
     }
+
     try {
       const data = await getAppSettings();
       setSettings(data);
@@ -55,7 +57,7 @@ export function useSettingsPageController({
         error,
         source: "settings.page.load",
       });
-      setStorageMessage(`设置加载失败：`);
+      setStorageMessage("设置加载失败，请稍后重试。");
     } finally {
       setLoading(false);
     }
@@ -90,14 +92,15 @@ export function useSettingsPageController({
     setStorageMessage,
   });
 
-  const onMiniModeSizeChange = useCallback((w: number, h: number) => {
-    onMiniModeWidthChange?.(w);
-    onMiniModeHeightChange?.(h);
-  }, [onMiniModeWidthChange, onMiniModeHeightChange]);
+  const onMiniModeSizeChange = useCallback((width: number, height: number) => {
+    onMiniModeWidthChange?.(width);
+    onMiniModeHeightChange?.(height);
+  }, [onMiniModeHeightChange, onMiniModeWidthChange]);
 
   const {
     handleLaunchAtLogin,
     handleCloseBehavior,
+    handleDeveloperMode,
     handleMiniModeSize,
   } = useWindowSettings({
     isTauri,
@@ -106,6 +109,7 @@ export function useSettingsPageController({
     formatErrorMessage: formatSettingsError,
     setStorageMessage,
     onMiniModeSizeChange,
+    onDeveloperModeChange,
   });
 
   const {
@@ -134,6 +138,7 @@ export function useSettingsPageController({
       setStorageMessage(SETTINGS_MESSAGES.desktopOnly);
       return;
     }
+
     try {
       const selected = await open({ directory: true, multiple: false });
       const path = Array.isArray(selected) ? selected[0] : selected;
@@ -148,7 +153,7 @@ export function useSettingsPageController({
         error,
         source: "settings.storage.change",
       });
-      setStorageMessage(`${SETTINGS_MESSAGES.storage.switchFailed}：`);
+      setStorageMessage(`${SETTINGS_MESSAGES.storage.switchFailed}：${formatSettingsError(error)}`);
     }
   }, [isTauri, load]);
 
@@ -157,6 +162,7 @@ export function useSettingsPageController({
       setStorageMessage(SETTINGS_MESSAGES.desktopOnly);
       return;
     }
+
     try {
       await setStorageRoot(null);
       await load();
@@ -168,7 +174,7 @@ export function useSettingsPageController({
         error,
         source: "settings.storage.restore",
       });
-      setStorageMessage(`${SETTINGS_MESSAGES.storage.restoreFailed}：`);
+      setStorageMessage(`${SETTINGS_MESSAGES.storage.restoreFailed}：${formatSettingsError(error)}`);
     }
   }, [isTauri, load]);
 
@@ -208,6 +214,7 @@ export function useSettingsPageController({
     handleChooseBackground,
     handleLaunchAtLogin,
     handleCloseBehavior,
+    handleDeveloperMode,
     handleMiniModeSize,
     handleChooseFolder,
     handleRestoreDefaultStorage,
@@ -216,4 +223,3 @@ export function useSettingsPageController({
     handleMigrateNow,
   };
 }
-

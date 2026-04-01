@@ -4,8 +4,10 @@ import {
   enable as enableAutostart,
   isEnabled as isAutostartEnabled,
 } from "@tauri-apps/plugin-autostart";
+
 import {
   setCloseBehavior,
+  setDeveloperMode,
   setLaunchAtLogin,
   setMiniModeSize,
 } from "@/modules/settings/services/settingsService";
@@ -20,6 +22,7 @@ export function useWindowSettings({
   formatErrorMessage,
   setStorageMessage,
   onMiniModeSizeChange,
+  onDeveloperModeChange,
 }: {
   isTauri: boolean;
   settings: AppSettingsResponse | null;
@@ -27,6 +30,7 @@ export function useWindowSettings({
   formatErrorMessage: (error: unknown) => string;
   setStorageMessage: React.Dispatch<React.SetStateAction<string | null>>;
   onMiniModeSizeChange?: (width: number, height: number) => void;
+  onDeveloperModeChange?: (enabled: boolean) => void;
 }) {
   const hasSyncedAutostart = useRef(false);
 
@@ -68,7 +72,7 @@ export function useWindowSettings({
         source: "settings.window.launch-at-login",
       });
       console.error(error);
-      setStorageMessage(`${SETTINGS_MESSAGES.launchAtLoginFailed}锛?{formatErrorMessage(error)}`);
+      setStorageMessage(`${SETTINGS_MESSAGES.launchAtLoginFailed}：${formatErrorMessage(error)}`);
     }
   }, [formatErrorMessage, isTauri, setSettings, setStorageMessage, settings]);
 
@@ -85,14 +89,35 @@ export function useWindowSettings({
         source: "settings.window.close-behavior",
       });
       console.error(error);
-      setStorageMessage(`${SETTINGS_MESSAGES.closeBehaviorFailed}锛?{formatErrorMessage(error)}`);
+      setStorageMessage(`${SETTINGS_MESSAGES.closeBehaviorFailed}：${formatErrorMessage(error)}`);
     }
   }, [formatErrorMessage, setSettings, setStorageMessage, settings]);
-const handleMiniModeSize = useCallback(async (width: number, height: number) => {
+
+  const handleDeveloperMode = useCallback(async (enabled: boolean) => {
+    if (!settings) return;
+    try {
+      await setDeveloperMode(enabled);
+      setSettings((prev) => (prev ? { ...prev, developer_mode: enabled } : prev));
+      onDeveloperModeChange?.(enabled);
+    } catch (error) {
+      reportRuntimeError({
+        title: "Failed to update developer mode",
+        summary: "Developer mode could not be updated.",
+        error,
+        source: "settings.window.developer-mode",
+      });
+      console.error(error);
+      setStorageMessage(`开发者模式设置失败：${formatErrorMessage(error)}`);
+    }
+  }, [formatErrorMessage, onDeveloperModeChange, setSettings, setStorageMessage, settings]);
+
+  const handleMiniModeSize = useCallback(async (width: number, height: number) => {
     if (!settings) return;
     try {
       await setMiniModeSize(width, height);
-      setSettings((prev) => (prev ? { ...prev, mini_mode_width: width, mini_mode_height: height } : prev));
+      setSettings((prev) => (
+        prev ? { ...prev, mini_mode_width: width, mini_mode_height: height } : prev
+      ));
       onMiniModeSizeChange?.(width, height);
     } catch (error) {
       reportRuntimeError({
@@ -102,17 +127,14 @@ const handleMiniModeSize = useCallback(async (width: number, height: number) => 
         source: "settings.window.mini-size",
       });
       console.error(error);
-      setStorageMessage(`璁剧疆杩蜂綘绐楀彛澶у皬澶辫触锛?{formatErrorMessage(error)}`);
+      setStorageMessage(`迷你窗口尺寸设置失败：${formatErrorMessage(error)}`);
     }
-  }, [formatErrorMessage, setSettings, setStorageMessage, settings]);
+  }, [formatErrorMessage, onMiniModeSizeChange, setSettings, setStorageMessage, settings]);
 
   return {
     handleLaunchAtLogin,
     handleCloseBehavior,
+    handleDeveloperMode,
     handleMiniModeSize,
   };
 }
-
-
-
-

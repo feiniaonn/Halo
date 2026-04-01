@@ -1,4 +1,4 @@
-﻿import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
+import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   register,
@@ -14,10 +14,10 @@ import type {
 let initialized = false;
 let focusListenerAttached = false;
 let focusEnabled = false;
-let focusBindings = new Map<string, MusicCommand>();
+let focusBindings = new Map<string, string>();
 let triggerBusy = false;
 
-const actionByShortcut = new Map<string, MusicCommand>();
+const actionByShortcut = new Map<string, string>();
 
 function normalizeShortcut(input: string | null | undefined): string | null {
   if (!input) return null;
@@ -137,18 +137,26 @@ function onFocusKeydown(event: KeyboardEvent) {
   if (!command) return;
 
   event.preventDefault();
-  void triggerMusicCommand(command);
+  if (command === "restore_home") {
+    import("@tauri-apps/api/event").then(({ emit }) => {
+      void emit("mini-player:restore-home");
+    });
+    return;
+  }
+  void triggerMusicCommand(command as MusicCommand);
 }
 
-function bindingsToEntries(bindings: MusicHotkeysBindings): Array<[MusicCommand, string]> {
-  const output: Array<[MusicCommand, string]> = [];
+function bindingsToEntries(bindings: MusicHotkeysBindings): Array<[string, string]> {
+  const output: Array<[string, string]> = [];
   const previous = normalizeShortcut(bindings.previous);
   const playPause = normalizeShortcut(bindings.play_pause);
   const next = normalizeShortcut(bindings.next);
+  const restore = normalizeShortcut(bindings.restore_mini_home);
 
   if (previous) output.push(["previous", previous]);
   if (playPause) output.push(["play_pause", playPause]);
   if (next) output.push(["next", next]);
+  if (restore) output.push(["restore_home", restore]);
   return output;
 }
 
@@ -189,7 +197,14 @@ export async function applyMusicHotkeys(settings: MusicSettings) {
     if (!normalized) return;
     const command = actionByShortcut.get(normalized);
     if (!command) return;
-    void triggerMusicCommand(command);
+
+    if (command === "restore_home") {
+      import("@tauri-apps/api/event").then(({ emit }) => {
+        void emit("mini-player:restore-home");
+      });
+      return;
+    }
+    void triggerMusicCommand(command as MusicCommand);
   });
 }
 
@@ -210,4 +225,4 @@ export async function initializeMusicHotkeyManager() {
     if (!event.payload) return;
     void applyMusicHotkeys(event.payload);
   });
-}
+}

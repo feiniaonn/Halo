@@ -6,6 +6,7 @@ export interface AppSettingsResponse {
   storage_display_path: string;
   legacy_roots: string[];
   launch_at_login: boolean;
+  developer_mode: boolean;
   close_behavior: CloseBehavior;
   background_type?: string | null;
   background_path?: string | null;

@@ -1,12 +1,14 @@
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 import { reportStartupStep } from "@/lib/startupLog";
+
 import { FloatingPlayer } from "./FloatingPlayer";
 import { TitleBar } from "./TitleBar";
 import { AppSidebar } from "./AppSidebar";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
-type Page = "dashboard" | "media" | "music" | "island" | "settings";
+type Page = "dashboard" | "media" | "music" | "island" | "ai" | "settings";
 type ToggleAnchorRect = {
   left: number;
   top: number;
@@ -38,6 +40,7 @@ export function AppLayout({
   connectedAnimation,
   onToggleMini,
   startupReady = true,
+  developerModeEnabled = false,
 }: {
   children: ReactNode;
   currentPage?: Page;
@@ -53,11 +56,13 @@ export function AppLayout({
   connectedAnimation?: ConnectedAnimationPayload | null;
   onToggleMini?: (anchorRect?: ToggleAnchorRect) => void;
   startupReady?: boolean;
+  developerModeEnabled?: boolean;
 }) {
   const hasCustomBg = bgType !== "none" && !!bgPath;
   const [customBgFailed, setCustomBgFailed] = useState(false);
   const bgVideoRef = useRef<HTMLVideoElement | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
     reportStartupStep(`AppLayout mounted page=${currentPage}`);
   }, [currentPage]);
@@ -76,9 +81,9 @@ export function AppLayout({
     if (!el) return;
     try {
       el.load();
-      const p = el.play();
-      if (p && typeof p.catch === "function") {
-        p.catch(() => void 0);
+      const playPromise = el.play();
+      if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch(() => void 0);
       }
     } catch {
       void 0;
@@ -103,7 +108,7 @@ export function AppLayout({
     }, 2500);
 
     return () => window.clearTimeout(timer);
-  }, [bgType, bgPath, bgFsPath, customBgFailed, startupReady]);
+  }, [bgFsPath, bgPath, bgType, customBgFailed, startupReady]);
 
   useEffect(() => {
     if (!connectedAnimation) return;
@@ -123,44 +128,24 @@ export function AppLayout({
     const keyframes =
       connectedAnimation.phase === "expand"
         ? [
-            {
-              transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`,
-              opacity: 0,
-              boxShadow: "0 0 0 rgba(0,0,0,0)",
-              offset: 0,
-            },
+            { transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`, opacity: 0, boxShadow: "0 0 0 rgba(0,0,0,0)", offset: 0 },
             {
               transform: `translate(${dx * 0.46}px, ${dy * 0.46 + arc}px) scale(${sx + (1 - sx) * 0.72}, ${sy + (1 - sy) * 0.72})`,
               opacity: 1,
               boxShadow: "0 12px 28px rgba(0,0,0,0.18)",
               offset: 0.68,
             },
-            {
-              transform: "translate(0px, 0px) scale(1, 1)",
-              opacity: 1,
-              boxShadow: "0 16px 34px rgba(0,0,0,0.22)",
-              offset: 1,
-            },
+            { transform: "translate(0px, 0px) scale(1, 1)", opacity: 1, boxShadow: "0 16px 34px rgba(0,0,0,0.22)", offset: 1 },
           ]
         : [
-            {
-              transform: "translate(0px, 0px) scale(1, 1)",
-              opacity: 1,
-              boxShadow: "0 14px 30px rgba(0,0,0,0.2)",
-              offset: 0,
-            },
+            { transform: "translate(0px, 0px) scale(1, 1)", opacity: 1, boxShadow: "0 14px 30px rgba(0,0,0,0.2)", offset: 0 },
             {
               transform: `translate(${dx * 0.58}px, ${dy * 0.58 + arc}px) scale(${1 + (sx - 1) * 0.55}, ${1 + (sy - 1) * 0.55})`,
               opacity: 1,
               boxShadow: "0 10px 22px rgba(0,0,0,0.16)",
               offset: 0.72,
             },
-            {
-              transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`,
-              opacity: 0,
-              boxShadow: "0 0 0 rgba(0,0,0,0)",
-              offset: 1,
-            },
+            { transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`, opacity: 0, boxShadow: "0 0 0 rgba(0,0,0,0)", offset: 1 },
           ];
 
     el.style.transformOrigin = "50% 50%";
@@ -190,10 +175,7 @@ export function AppLayout({
 
   if (isMiniMode) {
     return (
-      <div
-        className="halo-mini-root relative h-full w-full overflow-hidden bg-transparent select-none"
-        style={{ borderRadius: `${shellRadius}px` }}
-      >
+      <div className="halo-mini-root relative h-full w-full overflow-hidden bg-transparent select-none" style={{ borderRadius: `${shellRadius}px` }}>
         {children}
       </div>
     );
@@ -225,19 +207,15 @@ export function AppLayout({
                 transform: `scale(${backgroundScale})`,
               }}
               onLoad={() => {
-                window.dispatchEvent(
-                  new CustomEvent("halo:bg-load-success", {
-                    detail: { kind: "image", path: bgFsPath ?? bgPath },
-                  }),
-                );
+                window.dispatchEvent(new CustomEvent("halo:bg-load-success", {
+                  detail: { kind: "image", path: bgFsPath ?? bgPath },
+                }));
               }}
               onError={() => {
                 setCustomBgFailed(true);
-                window.dispatchEvent(
-                  new CustomEvent("halo:bg-load-error", {
-                    detail: { kind: "image", path: bgFsPath ?? bgPath },
-                  }),
-                );
+                window.dispatchEvent(new CustomEvent("halo:bg-load-error", {
+                  detail: { kind: "image", path: bgFsPath ?? bgPath },
+                }));
               }}
             />
           ) : (
@@ -256,19 +234,15 @@ export function AppLayout({
               }}
               onLoadedData={() => {
                 setCustomBgFailed(false);
-                window.dispatchEvent(
-                  new CustomEvent("halo:bg-load-success", {
-                    detail: { kind: "video", path: bgFsPath ?? bgPath },
-                  }),
-                );
+                window.dispatchEvent(new CustomEvent("halo:bg-load-success", {
+                  detail: { kind: "video", path: bgFsPath ?? bgPath },
+                }));
               }}
               onError={() => {
                 setCustomBgFailed(true);
-                window.dispatchEvent(
-                  new CustomEvent("halo:bg-load-error", {
-                    detail: { kind: "video", path: bgFsPath ?? bgPath },
-                  }),
-                );
+                window.dispatchEvent(new CustomEvent("halo:bg-load-error", {
+                  detail: { kind: "video", path: bgFsPath ?? bgPath },
+                }));
               }}
               aria-hidden="true"
             />
@@ -283,14 +257,19 @@ export function AppLayout({
       <TitleBar isMiniMode={isMiniMode} isTransitioning={miniTransitioning} onToggleMini={onToggleMini} />
 
       <SidebarProvider defaultOpen className="relative flex flex-1 overflow-hidden bg-transparent">
-        <AppSidebar currentPage={currentPage} onNavigate={onNavigate} hasUpdate={hasUpdate} />
+        <AppSidebar
+          currentPage={currentPage}
+          onNavigate={onNavigate}
+          hasUpdate={hasUpdate}
+          developerModeEnabled={developerModeEnabled}
+        />
 
         <SidebarInset
           className={cn(
             "relative my-3 mr-3 min-w-0 flex-1 overflow-hidden rounded-[var(--radius-xl)]",
             showCustomBg
-              ? "bg-transparent px-5 pt-4 pb-4 md:px-6 shadow-[0_8px_40px_rgba(0,0,0,0.06)]"
-              : "bg-background/20 px-5 pt-4 pb-4 md:px-6 shadow-[0_8px_40px_rgba(0,0,0,0.06)] backdrop-blur-3xl border border-border/20",
+              ? "bg-transparent px-5 pb-4 pt-4 shadow-[0_8px_40px_rgba(0,0,0,0.06)] md:px-6"
+              : "border border-border/20 bg-background/20 px-5 pb-4 pt-4 shadow-[0_8px_40px_rgba(0,0,0,0.06)] backdrop-blur-3xl md:px-6",
           )}
         >
           {globalHint && (

@@ -1,13 +1,10 @@
- 
- 
- import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCurrentPlaying } from "@/modules/music/hooks/useCurrentPlaying";
-import { useMusicControl } from "@/modules/music/hooks/useMusicControl";
 import { useMusicLyrics } from "@/modules/music/hooks/useMusicLyrics";
 import { usePlaybackClock } from "@/modules/music/hooks/usePlaybackClock";
-import { getMusicSettings } from "@/modules/music/services/musicService";
+import { getMusicSettings, musicControl } from "@/modules/music/services/musicService";
 import type { MusicSettings } from "@/modules/music/types/music.types";
 import { resolveCurrentLyricText, resolvePlaybackMs } from "@/modules/music/utils/lyrics";
 import { NowPlayingBlock } from "@/modules/music/components/NowPlayingBlock";
@@ -29,11 +26,12 @@ function mapFloatSettings(settings: MusicSettings | null) {
 export function FloatingPlayer() {
   const { data: current } = useCurrentPlaying();
   const [floatSettings, setFloatSettings] = useState(DEFAULT_FLOAT_SETTINGS);
+  const [togglePending, setTogglePending] = useState(false);
+
   useEffect(() => {
     reportStartupStep("FloatingPlayer mounted");
   }, []);
 
-  const { state: controlState, runCommand, runningCommand } = useMusicControl();
   const playbackTrackKey = `${current?.source_app_id ?? ""}::${current?.artist ?? ""}::${current?.title ?? ""}`;
 
   const livePlaybackPositionSecs = usePlaybackClock(
@@ -68,8 +66,7 @@ export function FloatingPlayer() {
 
   useEffect(() => {
     if (!isTauriRuntime()) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-setFloatSettings(DEFAULT_FLOAT_SETTINGS);
+      setFloatSettings(DEFAULT_FLOAT_SETTINGS);
       return;
     }
 
@@ -97,12 +94,13 @@ setFloatSettings(DEFAULT_FLOAT_SETTINGS);
   }
 
   return (
-    <div 
+    <div
       className="fixed bottom-8 right-8 z-50 animate-in slide-in-from-bottom-6 fade-in duration-400 ease-out group cursor-pointer"
-      onDoubleClick={(e) => {
-        e.stopPropagation();
-        if (controlState?.target?.supports_play_pause && runningCommand === null) {
-          void runCommand("play_pause");
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        if (!togglePending) {
+          setTogglePending(true);
+          void musicControl("play_pause").finally(() => setTogglePending(false));
         }
       }}
       title="双击播放/暂停"

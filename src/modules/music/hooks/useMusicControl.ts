@@ -3,7 +3,6 @@ import { isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   EVENT_MUSIC_SETTINGS_CHANGED,
-  EVENT_MUSIC_TIMELINE_UPDATE,
   EVENT_MUSIC_TRACK_UPDATE,
 } from "@/modules/shared/services/events";
 import {
@@ -20,10 +19,11 @@ import type {
 } from "../types/music.types";
 
 const CONTROL_REFRESH_TIMEOUT_MS = 1800;
-const CONTROL_POLL_MS = 800;
-const CONTROL_FAST_POLL_MS = 160;
-const CONTROL_FAST_POLL_WINDOW_MS = 7000;
-const CONTROL_TARGET_SWITCH_GUARD_MS = 150;
+const CONTROL_POLL_MS = 2200;
+const CONTROL_FAST_POLL_MS = 700;
+const CONTROL_FAST_POLL_WINDOW_MS = 2500;
+const CONTROL_TARGET_SWITCH_GUARD_MS = 250;
+const CONTROL_SOURCES_REFRESH_MS = 5000;
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   let timer: number | null = null;
@@ -50,6 +50,7 @@ export function useMusicControl() {
   const lastTargetSwitchAt = useRef(0);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
   const fastRefreshUntilRef = useRef(0);
+  const lastSourcesRefreshAtRef = useRef(0);
 
   const requestFastRefresh = useCallback((windowMs = CONTROL_FAST_POLL_WINDOW_MS) => {
     fastRefreshUntilRef.current = Math.max(
@@ -58,7 +59,7 @@ export function useMusicControl() {
     );
   }, []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options?: { includeSources?: boolean }) => {
     if (!isTauri) {
       setLoading(false);
       return;
@@ -68,11 +69,18 @@ export function useMusicControl() {
       return;
     }
 
+    const shouldRefreshSources =
+      Boolean(options?.includeSources) ||
+      sources.length === 0 ||
+      Date.now() - lastSourcesRefreshAtRef.current >= CONTROL_SOURCES_REFRESH_MS;
+
     const refreshTask = (async () => {
       try {
         const [nextState, nextSources] = await Promise.all([
           withTimeout(getMusicControlState(), CONTROL_REFRESH_TIMEOUT_MS),
-          withTimeout(getMusicControlSources(), CONTROL_REFRESH_TIMEOUT_MS),
+          shouldRefreshSources
+            ? withTimeout(getMusicControlSources(), CONTROL_REFRESH_TIMEOUT_MS)
+            : Promise.resolve(null),
         ]);
 
         if (nextState) {
@@ -98,6 +106,7 @@ export function useMusicControl() {
         }
 
         if (nextSources) {
+          lastSourcesRefreshAtRef.current = Date.now();
           setSources(nextSources);
         }
       } finally {
@@ -113,11 +122,11 @@ export function useMusicControl() {
         refreshInFlightRef.current = null;
       }
     }
-  }, [isTauri]);
+  }, [isTauri, sources.length]);
 
   useEffect(() => {
     requestFastRefresh();
-    void refresh();
+    void refresh({ includeSources: true });
   }, [refresh, requestFastRefresh]);
 
   useEffect(() => {
@@ -133,19 +142,15 @@ export function useMusicControl() {
 
     const onVisibleOrFocus = () => {
       requestFastRefresh();
-      void refresh();
+      void refresh({ includeSources: true });
     };
     const offSettings = listen(EVENT_MUSIC_SETTINGS_CHANGED, () => {
       requestFastRefresh();
-      void refresh();
+      void refresh({ includeSources: true });
     });
     const offTrack = listen(EVENT_MUSIC_TRACK_UPDATE, () => {
       requestFastRefresh();
-      void refresh();
-    });
-    const offTimeline = listen(EVENT_MUSIC_TIMELINE_UPDATE, () => {
-      requestFastRefresh();
-      void refresh();
+      void refresh({ includeSources: true });
     });
 
     window.addEventListener("focus", onVisibleOrFocus);
@@ -160,7 +165,6 @@ export function useMusicControl() {
       document.removeEventListener("visibilitychange", onVisibleOrFocus);
       void offSettings.then((fn) => fn()).catch(() => void 0);
       void offTrack.then((fn) => fn()).catch(() => void 0);
-      void offTimeline.then((fn) => fn()).catch(() => void 0);
     };
   }, [isTauri, refresh, requestFastRefresh]);
 
@@ -184,7 +188,7 @@ export function useMusicControl() {
       requestFastRefresh();
       try {
         const result = await musicControl(command, options);
-        await refresh();
+        await refresh({ includeSources: true });
         return result;
       } finally {
         setRunningCommand(null);

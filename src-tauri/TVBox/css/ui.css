@@ -5,7 +5,11 @@ html {
 }
 
 body {
-  font-family: system-ui, -apple-system, Helvetica Neue, sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    Helvetica Neue,
+    sans-serif;
 }
 
 .page,

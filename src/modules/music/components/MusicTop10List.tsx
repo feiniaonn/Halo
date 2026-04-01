@@ -11,12 +11,12 @@ export function MusicTop10List({
 }) {
   return (
     <section className="flex-1 flex flex-col min-h-0 rounded-xl border border-white/5 bg-background/30 p-4">
-      <h2 className="text-sm font-semibold text-muted-foreground tracking-wide shrink-0 mb-3">播放次数 Top 10</h2>
+      <h2 className="text-sm font-semibold text-muted-foreground tracking-wide shrink-0 mb-3">今日播放次数 Top 10</h2>
       <div className="flex-1 overflow-y-auto no-scrollbar pr-1">
         {loading ? (
           <p className="mt-2 text-xs text-muted-foreground">加载中...</p>
         ) : records.length === 0 ? (
-          <p className="mt-4 text-xs text-muted-foreground text-center py-8">暂无数据</p>
+          <p className="mt-4 text-[13px] text-muted-foreground/70 text-center py-8 italic">开启新一天的听歌时光吧 ~</p>
         ) : (
           <div className="space-y-1">
             {records.map((item, i) => (

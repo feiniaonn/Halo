@@ -30,6 +30,10 @@ export async function setLaunchAtLogin(enabled: boolean): Promise<void> {
   return invoke("set_launch_at_login", { enabled });
 }
 
+export async function setDeveloperMode(enabled: boolean): Promise<void> {
+  return invoke("set_developer_mode", { enabled });
+}
+
 export async function setCloseBehavior(behavior: CloseBehavior): Promise<void> {
   return invoke("set_close_behavior", { behavior });
 }

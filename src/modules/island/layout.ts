@@ -1,7 +1,7 @@
-export const MINI_WINDOW_HORIZONTAL_PADDING = 56;
-export const MINI_WINDOW_TOP_PADDING = 30;
-export const MINI_WINDOW_BOTTOM_PADDING = 34;
-export const MINI_ISLAND_TOP_OFFSET = 20;
+export const MINI_WINDOW_HORIZONTAL_PADDING = 0;
+export const MINI_WINDOW_TOP_PADDING = 0;
+export const MINI_WINDOW_BOTTOM_PADDING = 0;
+export const MINI_ISLAND_TOP_OFFSET = 0;
 
 export type MiniIslandLayout = {
   capsuleWidth: number;
@@ -21,11 +21,12 @@ export function resolveMiniIslandLayout(capsuleWidth: number, capsuleHeight: num
 
 export function resolveMiniWindowLogicalSize(
   layout: MiniIslandLayout,
-  minWidth = 0,
-  minHeight = 0,
+  mode: "capsule" | "expanded" = "capsule",
 ) {
+  const baseWidth = mode === "expanded" ? layout.expandedWidth : layout.capsuleWidth;
+  const baseHeight = mode === "expanded" ? layout.expandedHeight : layout.capsuleHeight;
   return {
-    width: Math.max(minWidth, layout.expandedWidth + MINI_WINDOW_HORIZONTAL_PADDING),
-    height: Math.max(minHeight, layout.expandedHeight + MINI_WINDOW_TOP_PADDING + MINI_WINDOW_BOTTOM_PADDING),
+    width: baseWidth + MINI_WINDOW_HORIZONTAL_PADDING,
+    height: baseHeight + MINI_WINDOW_TOP_PADDING + MINI_WINDOW_BOTTOM_PADDING,
   };
 }

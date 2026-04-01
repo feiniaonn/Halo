@@ -92,7 +92,7 @@ pub(crate) fn query_current_via_qqmusic_process_probe(
         if active { "Playing".to_string() } else { "Paused".to_string() }
     });
 
-    let position_secs = if playback_active.unwrap_or(false) {
+    let estimated_position_secs = if playback_active.unwrap_or(false) {
         estimate_runtime_position_secs(track_anchor_ms, duration_secs)
     } else {
         None
@@ -111,7 +111,7 @@ pub(crate) fn query_current_via_qqmusic_process_probe(
 
     if debug_enabled {
         eprintln!("[music-debug] qqmusic process probe parsed title='{}' artist='{}' pid={:?} playback_active={:?} duration_secs={:?} position_secs={:?} anchor_ms={:?} has_cover={}",
-            title, artist, process_id, playback_active, duration_secs, position_secs, track_anchor_ms, cover_data_url.is_some()
+            title, artist, process_id, playback_active, duration_secs, estimated_position_secs, track_anchor_ms, cover_data_url.is_some()
         );
     }
 
@@ -121,7 +121,7 @@ pub(crate) fn query_current_via_qqmusic_process_probe(
         cover_path: None,
         cover_data_url,
         duration_secs,
-        position_secs,
+        position_secs: None,
         position_sampled_at_ms: Some(chrono::Utc::now().timestamp_millis()),
         timeline_updated_at_ms: Some(chrono::Utc::now().timestamp_millis()),
         playback_status,

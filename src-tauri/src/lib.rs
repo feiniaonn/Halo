@@ -1,5 +1,8 @@
 mod compat_helper;
 mod db;
+mod ai_management;
+#[path = "ai_music_v2.rs"]
+mod ai_music;
 mod icon_extractor;
 mod java_runtime;
 mod media_bootstrap;
@@ -8,6 +11,7 @@ mod music;
 mod music_control;
 mod music_lyrics;
 mod music_media_key;
+mod music_play_stats;
 mod music_process_probe;
 mod music_qqmusic_cache;
 mod music_settings;
@@ -44,6 +48,7 @@ use settings::{
     cancel_migrate_legacy_data, get_app_settings, get_close_behavior, get_migration_progress,
     import_background_asset, migrate_legacy_data, prepare_video_optimizer,
     set_allow_component_download, set_background, set_background_blur, set_close_behavior,
+    set_developer_mode,
     set_launch_at_login, set_mini_mode_size, set_mini_restore_mode, set_storage_root,
     start_migrate_legacy_data, MigrationController,
 };
@@ -212,11 +217,12 @@ unsafe extern "system" fn halo_hit_test_window_proc(
     use windows::Win32::Foundation::{LRESULT, POINT};
     use windows::Win32::Graphics::Gdi::ScreenToClient;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallWindowProcW, DefWindowProcW, HTTRANSPARENT, WM_NCHITTEST, WNDPROC,
+        CallWindowProcW, DefWindowProcW, HTTRANSPARENT, WM_NCHITTEST, WNDPROC, GetAncestor, GA_ROOT
     };
 
     if msg == WM_NCHITTEST {
-        let window_key = hwnd.0 as isize;
+        let root_hwnd = GetAncestor(hwnd, GA_ROOT);
+        let window_key = root_hwnd.0 as isize;
         let active_region = window_hit_test_regions()
             .lock()
             .ok()
@@ -228,7 +234,7 @@ unsafe extern "system" fn halo_hit_test_window_proc(
                 y: ((lparam.0 >> 16) & 0xffff) as i16 as i32,
             };
 
-            if unsafe { ScreenToClient(hwnd, &mut point) }.as_bool()
+            if unsafe { ScreenToClient(root_hwnd, &mut point) }.as_bool()
                 && !point_in_rounded_rect(point.x, point.y, region)
             {
                 return LRESULT(HTTRANSPARENT as isize);
@@ -250,13 +256,40 @@ unsafe extern "system" fn halo_hit_test_window_proc(
 }
 
 #[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_child_hit_test_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    _lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::core::BOOL {
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
+    let window_key = hwnd.0 as isize;
+    if let Ok(mut procs) = window_hit_test_original_procs().lock() {
+        if !procs.contains_key(&window_key) {
+            let previous_proc = SetWindowLongPtrW(
+                hwnd,
+                GWLP_WNDPROC,
+                halo_hit_test_window_proc as *const () as usize as isize,
+            );
+            if previous_proc != 0 {
+                procs.insert(window_key, previous_proc);
+            }
+        }
+    }
+    windows::core::BOOL::from(true)
+}
+
+#[cfg(target_os = "windows")]
 fn ensure_window_hit_test_subclass<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
-    use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, SetWindowLongPtrW, GWLP_WNDPROC};
 
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
     let window_key = hwnd.0 as isize;
+    
+    unsafe {
+        let _ = EnumChildWindows(Some(hwnd), Some(enum_child_hit_test_proc), windows::Win32::Foundation::LPARAM(0));
+    }
+
     let mut procs = window_hit_test_original_procs()
         .lock()
         .map_err(|_| "window hit test proc lock poisoned".to_string())?;
@@ -1154,6 +1187,7 @@ pub fn run() {
             get_app_settings,
             set_storage_root,
             set_launch_at_login,
+            set_developer_mode,
             set_close_behavior,
             get_close_behavior,
             set_mini_restore_mode,
@@ -1238,6 +1272,15 @@ pub fn run() {
             compat_helper::compat_helper_start,
             compat_helper::compat_helper_stop,
             compat_helper::compat_helper_trace_last_failure,
+            ai_management::ai_get_connection_settings,
+            ai_management::ai_save_connection_settings,
+            ai_management::ai_detect_models,
+            ai_management::ai_probe_connection,
+            ai_management::ai_test_latency,
+            ai_management::ai_test_chat,
+            ai_music::ai_music_get_settings,
+            ai_music::ai_music_save_settings,
+            ai_music::ai_music_get_recommendation,
             get_builtin_mpv_path,
             native_player::native_player_init_or_attach,
             native_player::native_player_load,
@@ -1262,6 +1305,12 @@ pub fn run() {
         .setup(move |app| {
             eprintln!("[startup][rust] setup begin");
             let handle = app.handle().clone();
+            if let Err(error) = db::repair_today_daily_stats_once(
+                "repair-2026-03-31-reset-today-daily-stats",
+                chrono::Local::now().timestamp_millis(),
+            ) {
+                eprintln!("[music] failed to apply one-time daily stats repair: {error}");
+            }
 
             // 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?Window setup + close behaviour 闂傚倸鍊搁崐鎼佸磹閹间礁纾瑰瀣捣閻棗銆掑锝呬壕閻庤娲﹂崹璺虹暦缁嬭鏃堝焵椤掑嫬纾奸柕濠忓缁♀偓婵犵數濮撮崐缁樻櫠閺囩姷妫柟顖嗗瞼鍚嬮梺鍝勭灱閸犳牕鐣峰鍡╂Ь闁汇埄鍨遍惄顖炲蓟閿濆绠婚柛鎰级濞堝姊洪崫鍕拱缂佸鐗滅划璇测槈閵忕姷顔撻梺鍛婂姀閺佲晠鏁傞悾宀€顔?
             if let Some(w) = handle.get_webview_window("main") {
